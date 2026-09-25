@@ -1,0 +1,22 @@
+{
+  "schema_version": 3,
+  "mode": "userspace_multipath",
+  "listen_port": 1081,
+  "tcp_enabled": true,
+  "udp_enabled": true,
+  "transport_key": "REPLACE_WITH_64_HEX_CHARACTERS_FROM_YOUR_LANDING",
+  "relays": [
+    {
+      "host": "192.0.2.10",
+      "port": 24001,
+      "download_mbps": 50.0,
+      "upload_mbps": 20.0
+    },
+    {
+      "host": "198.51.100.20",
+      "port": 24001,
+      "download_mbps": 50.0
+    }
+  ],
+  "scheduler_mode": "weighted"
+}

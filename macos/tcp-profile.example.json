@@ -1,0 +1,10 @@
+{
+  "schema_version": 2,
+  "mode": "tcp_forward",
+  "listen_port": 1081,
+  "udp_enabled": true,
+  "relays": [
+    { "host": "192.0.2.1", "port": 21001 },
+    { "host": "192.0.2.2", "port": 21002 }
+  ]
+}
