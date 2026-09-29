@@ -1,12 +1,12 @@
-# 0.9.4 / MPX/3 Rev5
+# 0.9.5 / MPX/3 Rev5
 
-0.9.4 正式新增 Weighted 调度。每条 Relay 可在客户端填写下行 Mbps（必填）和上行 Mbps（选填）；上行留空时 Mac→Landing 方向继续自动估速。配置随认证 hello 发送，Landing 使用下行能力、Mac 使用上行能力，不需要在服务器维护第二份权重文件。
+0.9.5 在 0.9.4 Weighted 基础上新增可选“后台常驻”：使用 macOS 登录项、监听 sleep/wake、等待网络恢复后重建 engine/session，并对意外退出使用 1/2/5/10/30 秒退避；连续 5 次仍未恢复则停止本轮自动重试并提示需要处理。手动点击“停止”会清除自动运行意图，不会被重新拉起；关闭后台常驻会撤销登录项，但不强制停止当前转发。
 
-Weighted 只替换正常 DATA 调度的容量先验和 flight 预算，实时 RTT、queue、断线、penalty、delivery timeout、reinject 和重传保护都保留。Auto/Aggregate/Protect 的 0x41/0x42/0x43 hello 与 0.9.3 保持兼容；Weighted 0x44 必须双端 0.9.4。
+线协议仍是 Rev5，与 0.9.4 完全兼容。0.9.5 Mac 可以继续连接 0.9.4 Landing 使用 Weighted；Auto/Aggregate/Protect 仍与 0.9.3 hello 兼容。Weighted 下行必填、上行选填以及 RTT/queue/penalty/timeout/reinject/重传保护全部保留。
 
-资源边界不扩大：2048 streams、128 MiB session credit、128 MiB sender DATA pending、128 MiB physical receive allocator、16 MiB 单流窗口上限保持不变。实际通过、失败和未运行项目以随包 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、CAPACITY.json、RUNTIME.json 为准；实验室回归不代表公网测速。
+资源边界不扩大：2048 streams、128 MiB session credit、128 MiB sender DATA pending、128 MiB physical receive allocator、16 MiB 单流窗口上限保持不变。实际通过、失败和未运行项目以随包 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、CAPACITY.json、RUNTIME.json 为准。
 
-以下保留的是先前架构说明／历史资料；当前 0.9.4 Rev5 的精确边界以随包文档和验收回执为准。
+以下保留的是先前架构说明／历史资料；当前 0.9.5 Rev5 的精确边界以随包文档和验收回执为准。
 
 ---
 
@@ -18,7 +18,7 @@ Universal macOS 13+工程实验版，沿用窗口/菜单栏生命周期、Relay�
 
 本地127.0.0.1:1081是透明入口，不是SOCKS5；使用原Surge/SS/AnyTLS等代理配置，原账号密码不改变。当前版本支持2048个轻量逻辑流，OPEN不等待receive credit，DATA以显式WINDOW背压。每流16KiB bootstrap，总会话信用128MiB，其中32MiB保护基础、96MiB供增长；sender DATA pending为128MiB，物理接收页独立限制128MiB。
 
-正常退出旧App后从DMG替换Applications中的应用，处理正常系统及钥匙串提示后启动。不要关闭SIP/Gatekeeper或导出钥匙串。只有ad-hoc签名，未公证。关闭主窗口不停止转发，菜单栏可打开窗口/停止/退出；没有自动开机服务或自动Native降级。
+正常退出旧App后从DMG替换Applications中的应用，处理正常系统及钥匙串提示后启动。不要关闭SIP/Gatekeeper或导出钥匙串。只有ad-hoc签名，未公证。关闭主窗口不停止转发，菜单栏可打开窗口/停止/退出；0.9.5 可选后台常驻/登录自启和唤醒恢复，不提供自动 Native 降级。
 
 诊断页显示入口TCP、MPX占槽/2048、base/growth信用、DATA/control pending、窗口阻塞writer和生命周期；非敏感最新快照在用户Library/Logs/MPTCPDesk/latest-transport.json，owner-only，不含key/password/profile。Native仍使用原配置/内核路径，切换需同时选择对应旧Relay入口。
 

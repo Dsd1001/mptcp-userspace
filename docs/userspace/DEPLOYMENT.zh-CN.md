@@ -1,35 +1,53 @@
-# 0.9.4 配套部署与回滚
+# 0.9.5 配套部署、后台常驻与回滚
 
-0.9.4 新增 MPX/3 Rev5 Weighted。Weighted 必须 Mac 与 Landing 都升级到 0.9.4；Auto / Aggregate / Protect 继续使用 0.9.3 的 0x41/0x42/0x43 hello，因此只使用旧三模式时可以与 0.9.3 对接。0.9.0 Rev2、Rev3 候选及更早协议仍不能混连。
+0.9.5 继续使用 MPX/3 Rev5，网络协议与 0.9.4 相同。0.9.5 Mac 可以直接连接 0.9.4 Landing 并使用 Weighted；只有 0.9.3 及更早 Landing 不理解 Weighted 0x44。Auto / Aggregate / Protect 仍保持与 0.9.3 的 hello 兼容。
 
-旧 schema 3 Profile 可以直接载入，默认仍为 Auto。只有选择 Weighted 时才要求为每条 Relay 填写下行 Mbps；上行 Mbps 可留空，表示 Mac→Landing 方向继续自动估算。Relay 仍只转发普通 TCP 字节，无需协议改造；backend、传输密钥和端口模型不变。
+## Mac：后台常驻
 
-部署前核对交付物 SHA256 和 Source-ID，保留上一版 DMG、Landing 二进制及配置。构建成功不等于真实 App+Surge 或公网性能验收；精确状态以随包 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、CAPACITY.json 和 RUNTIME.json 为准。
+0.9.5 新增可选“后台常驻”。开启后：
 
-## Landing：Linux amd64
+- 使用 macOS ServiceManagement 注册当前 App 为登录项；
+- 记住“转发应保持运行”的用户意图；
+- 监听系统 sleep / wake；
+- 唤醒后主动重建 engine/session，而不是尝试延续睡前 TCP socket；
+- 用 Network framework 等待网络可用后再拨 Relay；
+- engine 意外退出时使用 1 / 2 / 5 / 10 / 30 秒退避；连续 5 次仍未恢复到 listening 时停止本轮自动重试并提示需要处理；
+- 用户手动点击“停止”会清除运行意图，后台逻辑不会再自动拉起；
+- 关闭后台常驻会撤销登录项，但不会强制停止当前已运行的转发。
 
-`mptcp-landing` 同时是服务和交互管理程序。可使用 `./mptcp-landing menu`、`version`、`doctor`、`status`、`config`。不要把传输密钥输出到报告或聊天。
+后台常驻要求 macOS 13+，与本 App 的最低系统版本一致。它不是 root LaunchDaemon，也不会修改系统代理、路由、DNS、防火墙或内核 MPTCP。
 
-已有托管安装可走受控升级：
+若系统设置把登录项状态标记为“需要批准”，App 会显示对应状态；需要用户在 macOS 登录项设置中允许后，下一次登录自启才会生效。睡眠/唤醒和当前 App 会话内的 engine 恢复不依赖 root 权限。
+
+旧 schema 3 Profile 可直接载入。Weighted 每条 Relay 的下行 Mbps 仍必填、上行 Mbps 仍选填；上行留空表示 Mac→Landing 继续自动估算。
+
+## Landing：0.9.4 可继续使用
+
+本版本没有新的 wire revision，因此已经部署的 0.9.4 Landing **无需为了 0.9.5 Mac 再升级**。如希望版本号统一，也可以部署 0.9.5 Landing；其协议与资源边界不变。
+
+Landing 管理命令仍为：
+
+```sh
+./mptcp-landing version
+./mptcp-landing doctor
+./mptcp-landing status
+```
+
+受控升级示例：
 
 ```sh
 chmod 755 /root/mptcp-landing
-/root/mptcp-landing version
-/root/mptcp-landing upgrade --source /root/mptcp-landing --sha256 <交付校验文件中的完整SHA256>
+/root/mptcp-landing upgrade --source /root/mptcp-landing --sha256 <完整SHA256>
 /usr/local/bin/mptcp-landing doctor
 /usr/local/bin/mptcp-landing status
 ```
 
-管理器保留上一份二进制和配置，支持 `mptcp-landing rollback`。若使用 Weighted，回滚 Landing 时 Mac 也必须退出 Weighted 或回滚到配套版本。
+管理器会保留上一份二进制和配置用于 rollback。不要把 transport key 输出到报告或聊天。
 
-对于现有 HKT 部署，继续沿用现有 Landing 监听端口、backend、max_sessions 和 transport key，除非另有明确要求。不要顺手调整 Soga、Native、Relay 转发、防火墙或 UDP 开关，也不要重启无关服务。
+## 安装与回滚
 
-## Mac
+替换 App 前保留上一版 DMG。0.9.5 使用新的 UserDefaults 标志记录后台常驻与“应保持运行”意图；关闭“后台常驻”即可撤销登录项并清除自动运行意图。回滚到 0.9.4 时，0.9.4 不读取这些新标志，因此不会实现自动唤醒恢复。
 
-停止旧版转发后再用配套 Universal DMG 替换 App。该包为 ad-hoc 签名，未做公证；请先核对 Source-ID，再按 macOS 正常授权流程打开，不自动清除扩展属性或绕过系统安全策略。
+构建成功不等于物理 App+Surge 或公网性能验收。精确验证状态以随包 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、CAPACITY.json、RUNTIME.json 为准。
 
-默认 Auto；也可选择 Aggregate、Protect 或 Weighted。运行期间配置锁定。Weighted 每条 Relay 的“下行 Mbps”为必填，“上行 Mbps”为选填；上行留空时该方向继续原自动估速。显式 0 或超过 1 位小数会被配置校验拒绝。
-
-双端升级后核对版本、Source-ID、capability revision、carrier 数量、Configured/Effective Scheduler、每条路径的 Weighted rate、重传和资源账目。路径历史 `last_error` 不代表当前仍处于 penalty，应结合当前连接、时间和业务流量判断。
-
-本发行流程不会自动替换已安装 Mac App，也不会自动部署 HKT。实际部署必须是单独、明确的操作。
+本发行流程不会自动替换已安装 Mac App，也不会自动部署 HKT；部署是单独、明确的操作。不要顺手调整 Surge、Soga、Relay、Native、防火墙或 UDP 设置。

@@ -25,8 +25,8 @@
 ## 验证与 Release
 
 - [验证边界](userspace/VALIDATION.md)
-- [0.9.4 Release Notes](userspace/RELEASE.zh-CN.md)
+- [0.9.5 Release Notes](userspace/RELEASE.zh-CN.md)
 
 Release 中的 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、PROVENANCE.json 等是对应二进制的冻结验收证据，不在 main 重复维护副本。
 
-v0.9.4 Tag 固定对应正式发布源码；Tag 之后 main 可以继续增加文档提交。
+v0.9.5 Tag 固定对应正式发布源码；Tag 之后 main 可以继续增加文档提交。

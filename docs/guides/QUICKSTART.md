@@ -2,23 +2,23 @@
 
 [中文版](QUICKSTART.zh-CN.md)
 
-This guide uses the published v0.9.4 release artifacts. It assumes that you already have reachable TCP Relay endpoints and a Linux amd64 machine that will run Landing.
+This guide uses the published v0.9.5 release artifacts. It assumes that you already have reachable TCP Relay endpoints and a Linux amd64 machine that will run Landing.
 
-Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.4
+Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.5
 
 ## 1. Download and verify
 
 Download at least:
 
-- MPTCP-Desk-0.9.4-universal.dmg
+- MPTCP-Desk-0.9.5-universal.dmg
 - mptcp-landing
-- MPTCP-Desk-0.9.4-SHA256SUMS
+- MPTCP-Desk-0.9.5-SHA256SUMS
 - mptcp-landing.sha256
 
 Verify the macOS DMG on macOS:
 
 ~~~sh
-shasum -a 256 -c MPTCP-Desk-0.9.4-SHA256SUMS
+shasum -a 256 -c MPTCP-Desk-0.9.5-SHA256SUMS
 ~~~
 
 Verify Landing on Linux:
@@ -27,10 +27,10 @@ Verify Landing on Linux:
 sha256sum -c mptcp-landing.sha256
 ~~~
 
-The v0.9.4 release Source-ID is:
+The v0.9.5 release Source-ID is:
 
 ~~~text
-d4b8f362a8179257f2889abfea587c480755470bac6a78d8c023c3496c66f2bf
+3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
 ~~~
 
 ## 2. Prepare Landing
@@ -67,6 +67,8 @@ The DMG contains a Universal arm64/x86_64 build for macOS 13+.
 
 The DMG is ad-hoc signed and not notarized.
 
+v0.9.5 also adds optional Background Resident mode. When enabled, the app registers as a macOS login item, remembers the intended running state, waits for network availability after wake, and rebuilds the engine/session instead of trying to reuse pre-sleep carrier sockets. Explicit Stop suppresses automatic restart.
+
 ## 4. Configure the profile
 
 The Userspace local entry is normally:
@@ -93,9 +95,9 @@ If upstream is omitted, Mac → Landing uses learned Aggregate capacity for that
 
 ## 5. Version compatibility
 
-Weighted requires v0.9.4 on both endpoints.
+Weighted requires MPX/3 Rev5 on both endpoints. A v0.9.5 Mac can use Weighted with either a v0.9.4 or v0.9.5 Landing.
 
-Auto, Aggregate and Protect in v0.9.4 keep the same scheduler hello bytes as v0.9.3 and can interoperate with v0.9.3.
+Auto, Aggregate and Protect in v0.9.5 keep the same scheduler hello bytes as v0.9.3 and can interoperate with v0.9.3.
 
 MPX/2 and older protocol candidates are not compatible with MPX/3 Rev5.
 

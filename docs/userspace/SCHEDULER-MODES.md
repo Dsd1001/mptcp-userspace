@@ -1,4 +1,4 @@
-# 0.9.4 / MPX/3 Rev5 scheduler compatibility
+# 0.9.5 / MPX/3 Rev5 scheduler compatibility
 
 Auto / Aggregate / Protect behavior is retained and Weighted is added as the fourth configured policy. Rev5 adds authenticated scheduler byte 0x44 plus per-carrier directional capacity fields; 0x41/0x42/0x43 and their zero capacity bytes remain unchanged for compatibility with 0.9.3. Actual-data credit safety and the 2048-stream scale apply independently of all four policies. Use the source-matched SCHEDULER-MODES.json for release evidence.
 
@@ -20,7 +20,7 @@ Auto 是策略选择器：同质路径使用 Aggregate，稳定异质或交付�
 
 48 字节 MPX/3 hello 的第 7 字节（从零计数）在 Rev5 使用：`0x41` Auto、`0x42` Aggregate、`0x43` Protect、`0x44` Weighted。Weighted 时字节 40..41 / 42..43 分别是下行/上行容量，单位 0.1 Mbps；前三种模式这四字节继续为零。整个 hello 属于 client-proof/server-proof 的 HMAC transcript。非法能力或非法 Weighted 容量在会话分配前拒绝。
 
-**Weighted 必须 Mac 与 Landing 都是 0.9.4。** 0.9.4 的 Auto/Aggregate/Protect 保留 0.9.3 的 0x41/0x42/0x43 hello，因此这三种模式可与 0.9.3 对接；0x44 Weighted 对旧端会 fail closed。0.9.0 Rev2、Rev3 候选、MPX/1、MPX/2 仍不兼容。
+**Weighted 必须双端都支持 Rev5。** 0.9.5 不改变 0.9.4 的 Rev5 hello，所以 0.9.5 Mac 可以与 0.9.4 Landing 使用 Weighted。Auto/Aggregate/Protect 继续保留 0.9.3 的 0x41/0x42/0x43 hello；0x44 Weighted 对 0.9.3 会 fail closed。0.9.0 Rev2、Rev3 候选、MPX/1、MPX/2 仍不兼容。
 
 ## 路径角色与滞回
 
@@ -50,7 +50,7 @@ Mac 路径诊断页显示配置策略、本端当前策略、切换原因和各�
 
 ## 验收记录
 
-功能测试、实验室性能、容量、构建来源和实际 App/Surge 现场是独立证据。0.9.4 `SCHEDULER-MODES.json` 必须绑定当前 Source-ID，至少记录四模式配置/协议/UI、Weighted 方向容量认证、上行留空回退、timeout/penalty 保护、旧三模式回归和 Weighted 高 BDP 回归。完整 2048/容量矩阵和实际 App+Surge 仍是独立、更高层级的验收。
+功能测试、实验室性能、容量、构建来源和实际 App/Surge 现场是独立证据。0.9.5 `SCHEDULER-MODES.json` 必须绑定当前 Source-ID，至少记录四模式配置/协议/UI、Weighted 方向容量认证、上行留空回退、timeout/penalty 保护、旧三模式回归和 Weighted 高 BDP 回归。完整 2048/容量矩阵和实际 App+Surge 仍是独立、更高层级的验收。
 
 300 Mbps 档 30/50 ms 门槛仍为 240 Mbps；500 Mbps 档仍为 300 Mbps。100 ms 实测值必须保留，不把无固定门槛解释成可以忽略退化。原始随机 64 MiB、16 MiB 暖机、完整 SHA/FIN 检查和计时范围不变，不挑最好样本、不用扩大资源或改系统设置制造通过。
 

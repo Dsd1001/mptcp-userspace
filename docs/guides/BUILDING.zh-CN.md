@@ -2,16 +2,16 @@
 
 [English](BUILDING.md)
 
-如果要复现正式 v0.9.4，先切到发布 Tag：
+如果要复现正式 v0.9.5，先切到发布 Tag：
 
 ~~~sh
-git checkout v0.9.4
+git checkout v0.9.5
 ~~~
 
-v0.9.4 冻结 Source-ID：
+v0.9.5 冻结 Source-ID：
 
 ~~~text
-d4b8f362a8179257f2889abfea587c480755470bac6a78d8c023c3496c66f2bf
+3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
 ~~~
 
 可以用以下命令核对：
@@ -105,7 +105,7 @@ Landing 使用：
 
 构建脚本会在构建前后重新计算 Source-ID，避免构建过程中源码漂移。
 
-GitHub 上的 v0.9.4 Tag 是正式 Release 二进制对应的权威源码快照。
+GitHub 上的 v0.9.5 Tag 是正式 Release 二进制对应的权威源码快照。
 
 为了允许继续改进公开说明而不改变正式发布源码身份：
 
@@ -115,13 +115,13 @@ GitHub 上的 v0.9.4 Tag 是正式 Release 二进制对应的权威源码快照�
 
 这些使用说明不进入 release source manifest。
 
-因此 main 可以继续完善使用文档，而 v0.9.4 的 Source-ID 仍保持不变。
+因此 main 可以继续完善使用文档，而 v0.9.5 的 Source-ID 仍保持不变。
 
 ## 测试与 Release Gate
 
 “成功编译”不等于“完整验收通过”。
 
-仓库包含 release/scheduler gate 脚本，但公开 v0.9.4 Release 中的验收文件才是该版本的权威记录。
+仓库包含 release/scheduler gate 脚本，但公开 v0.9.5 Release 中的验收文件才是该版本的权威记录。
 
 尤其不要因为本地 build 成功，就宣称已经完成：
 
@@ -134,4 +134,4 @@ GitHub 上的 v0.9.4 Tag 是正式 Release 二进制对应的权威源码快照�
 详见：
 
 - [验证边界](../userspace/VALIDATION.md)
-- [0.9.4 Release Notes](../userspace/RELEASE.zh-CN.md)
+- [0.9.5 Release Notes](../userspace/RELEASE.zh-CN.md)

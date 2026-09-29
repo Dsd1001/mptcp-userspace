@@ -74,7 +74,7 @@ Native 模式与 Userspace 模式是两条独立路径，不应混为一谈。
 
 Weighted 的方向容量属于 HMAC transcript，因此中间 Relay 不能静默篡改。
 
-0.9.4 使用 capability revision 5：
+0.9.5 继续使用 0.9.4 引入的 capability revision 5：
 
 - 0x41 Auto
 - 0x42 Aggregate
@@ -135,7 +135,7 @@ MPX/3 同时存在：
 - sender DATA pending 限制；
 - physical receive page accounting。
 
-v0.9.4 的主要上限：
+v0.9.5 的主要上限：
 
 - 2048 occupied stream identities；
 - 128 MiB session credit；
@@ -179,7 +179,7 @@ v0.9.4 的主要上限：
 MPX/3 使用 PSK 认证与 AES-GCM 保护记录，但：
 
 - 不是 TLS PKI；
-- 0.9.4 不提供 forward secrecy；
+- 0.9.5 不提供 forward secrecy；
 - 不应把 transport key 放进仓库或公开日志；
 - Relay 看见的是普通 TCP carrier，不需要持有协议密钥。
 

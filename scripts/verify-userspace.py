@@ -139,7 +139,7 @@ def main() -> None:
                 rebuilt_ui=work/('MPTCPDesk-'+goarch)
                 run(['xcrun','swiftc','-O','-swift-version','5','-parse-as-library','-target',arch+'-apple-macosx13.0',
                      '-module-cache-path','/tmp/mptcp-swift-cache','-debug-prefix-map',str(frozen)+'=.',
-                     str(frozen/'macos/Profile.swift'),str(frozen/'macos/App.swift'),'-o',str(rebuilt_ui)])
+                     str(frozen/'macos/Lifecycle.swift'),str(frozen/'macos/Profile.swift'),str(frozen/'macos/App.swift'),'-o',str(rebuilt_ui)])
                 thin_ui=work/('packaged-ui-'+goarch)
                 run(['lipo',str(ui),'-thin',arch,'-output',str(thin_ui)])
                 if macho_sections(thin_ui)!=macho_sections(rebuilt_ui):

@@ -1,4 +1,4 @@
-# MPX/3 capability revision 5 (0.9.4)
+# MPX/3 capability revision 5 (0.9.5)
 
 ## Scope and baseline
 
@@ -45,7 +45,7 @@ CREDIT_PROBE regenerates a stream WINDOW, including for a terminal identity; it 
 
 ## Wire compatibility
 
-Authenticated hello scheduler byte is 0x41/0x42/0x43 for Auto/Aggregate/Protect and 0x44 for Weighted. Weighted adds authenticated fixed-size direction capacities in hello bytes 40..43; old three modes keep those bytes zero. Shared-credit/final-size controls and MPX/3 AEAD framing remain mandatory. Weighted requires 0.9.4 on both endpoints; Relay remains an opaque TCP forwarder.
+Authenticated hello scheduler byte is 0x41/0x42/0x43 for Auto/Aggregate/Protect and 0x44 for Weighted. Weighted adds authenticated fixed-size direction capacities in hello bytes 40..43; old three modes keep those bytes zero. Shared-credit/final-size controls and MPX/3 AEAD framing remain mandatory. Weighted requires Rev5 on both endpoints; 0.9.5 keeps the 0.9.4 Rev5 bytes unchanged, so 0.9.5 Mac and 0.9.4 Landing interoperate. Relay remains an opaque TCP forwarder.
 
 ## Memory and error scope
 

@@ -11,7 +11,7 @@ spec=importlib.util.spec_from_file_location('preview_package',ROOT/'scripts/pack
 package=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
 ID='a'*64
-VERSION='0.9.4'
+VERSION='0.9.5'
 
 class PreviewPackageTests(unittest.TestCase):
     def setUp(self):

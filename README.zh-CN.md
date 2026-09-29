@@ -6,9 +6,9 @@ MPTCP Userspace 是一个运行在应用层的多路径传输系统，由 macOS 
 
 它**不是内核 MPTCP，也不是 QUIC**。macOS Userspace 模式使用普通 TCP carrier；Linux Landing 负责终止 MPX/3，再将业务字节转发到 backend。
 
-当前正式版本：**v0.9.4 / MPX/3 capability revision 5**。
+当前正式版本：**v0.9.5 / MPX/3 capability revision 5**。
 
-- Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.4
+- Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.5
 - macOS：arm64/x86_64 Universal DMG，macOS 13+
 - Landing：Linux amd64 静态二进制
 - 调度模式：Auto / Aggregate / Protect / Weighted
@@ -71,18 +71,19 @@ Weighted 不是“严格按比例无脑分流”。配置带宽主要替代正�
 
 | Mac | Landing | Auto / Aggregate / Protect | Weighted |
 |---|---|---:|---:|
-| 0.9.4 | 0.9.4 | 支持 | 支持 |
-| 0.9.4 | 0.9.3 | 支持 | 不支持 |
-| 0.9.3 | 0.9.4 | 支持 | 不支持 |
+| 0.9.5 | 0.9.5 / 0.9.4 | 支持 | 支持 |
+| 0.9.5 | 0.9.3 | 支持 | 不支持 |
+| 0.9.4 | 0.9.5 / 0.9.4 | 支持 | 支持 |
+| 0.9.3 | 0.9.5 / 0.9.4 | 支持 | 不支持 |
 | MPX/2 / 更早候选 | MPX/3 Rev5 | 不兼容 | 不兼容 |
 
-0.9.4 的 Auto/Aggregate/Protect 继续使用 0.9.3 的 0x41 / 0x42 / 0x43 hello，Weighted 使用 0x44 和认证过的方向容量字段。
+0.9.5 保持 0.9.4 引入的 Rev5 线格式不变：Auto/Aggregate/Protect 继续使用与 0.9.3 兼容的 0x41 / 0x42 / 0x43 hello，Weighted 仍使用 0x44 和认证过的方向容量字段。
 
-**Weighted 必须 Mac 与 Landing 双端都升级到 0.9.4。**
+**Weighted 要求双端都支持 MPX/3 Rev5；0.9.5 Mac 可以直接连接 0.9.4 或 0.9.5 Landing。**
 
 ## 资源边界
 
-0.9.4 没有通过扩大资源上限来获得性能：
+0.9.5 没有通过扩大资源上限来获得性能：
 
 - 最多 2048 个占用中的逻辑流身份；
 - 128 MiB session credit；
@@ -138,23 +139,24 @@ MPX/3 使用 PSK 认证握手，并为两个方向派生独立 AES-GCM key/count
 同时要明确：
 
 - 这不是 TLS PKI；
-- 0.9.4 不提供 forward secrecy；
+- 0.9.5 不提供 forward secrecy；
 - 没有宣称经过独立安全认证；
 - transport key 不应提交到 Git 仓库、Issue、聊天记录或公开日志；
 - macOS DMG 为 ad-hoc 签名，**未 notarize**。
 
-## 0.9.4 验证边界
+## 0.9.5 验证边界
 
-v0.9.4 已完成与冻结 Source-ID 匹配的：
+v0.9.5 已完成与冻结 Source-ID 匹配的：
 
 - Go / Swift 正确性与回归门禁；
+- 后台常驻、sleep/wake 恢复策略与有界重试逻辑；
 - Weighted 方向容量认证；
 - 配置校验；
 - 旧三模式兼容回归；
 - disconnect / penalty / delivery timeout 保护；
 - source-matched 实验室 Weighted 高 BDP 回归。
 
-本次正式 Weighted release **没有把完整 30 秒 capacity matrix 和真实 180 秒 App+Surge/WAN 现场验收声明为已完成**。
+本次 0.9.5 release **没有把物理合盖/唤醒与登录项授权交互、完整 30 秒 capacity matrix、真实 180 秒 App+Surge/WAN 现场验收声明为已完成**。
 
 准确状态以 Release 中这些文件为准：
 
@@ -167,14 +169,13 @@ v0.9.4 已完成与冻结 Source-ID 匹配的：
 
 ## Release 来源与 main 分支
 
-v0.9.4 Tag 固定指向生成 Release 二进制的冻结源码：
+v0.9.5 Tag 固定指向生成 Release 二进制的冻结源码：
 
 ~~~text
-Commit:    f97f810b393c5f67dca02607ccefb41d78c7c169
-Source-ID: d4b8f362a8179257f2889abfea587c480755470bac6a78d8c023c3496c66f2bf
+Source-ID: 3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
 ~~~
 
-main 在正式 Tag 之后可以继续增加**文档类提交**。因此复现或审计 v0.9.4 二进制时，应以 v0.9.4 Tag 与对应 Source-ID 为准，而不是假定最新 main 的文档树仍与冻结 Source-ID 完全相同。
+main 在正式 Tag 之后可以继续增加**文档类提交**。因此复现或审计 v0.9.5 二进制时，应以 v0.9.5 Tag 与对应 Source-ID 为准，而不是假定最新 main 的文档树仍与冻结 Source-ID 完全相同。
 
 ## 文档入口
 
@@ -191,4 +192,4 @@ main 在正式 Tag 之后可以继续增加**文档类提交**。因此复现或
 - [部署与回滚](docs/userspace/DEPLOYMENT.zh-CN.md)
 - [验证边界](docs/userspace/VALIDATION.md)
 - [故障排查](docs/guides/TROUBLESHOOTING.zh-CN.md)
-- [0.9.4 Release Notes](docs/userspace/RELEASE.zh-CN.md)
+- [0.9.5 Release Notes](docs/userspace/RELEASE.zh-CN.md)

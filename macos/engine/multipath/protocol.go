@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	Version             = "0.9.4"
+	Version             = "0.9.5"
 	CapabilityRevision  = 5
 	MaxPayload          = 32768
 	StreamWindow        = 16 << 10 // bootstrap target; never implicit sending credit

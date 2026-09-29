@@ -19,7 +19,7 @@ for arch in arm64 amd64; do
     [[ $arch != amd64 ]] || swift_arch=x86_64
     xcrun swiftc -O -swift-version 5 -parse-as-library -target "$swift_arch-apple-macosx13.0" \
         -module-cache-path /tmp/mptcp-swift-cache -debug-prefix-map "$ROOT"=. \
-        "$ROOT/macos/Profile.swift" "$ROOT/macos/App.swift" -o "$BUILD/MPTCPDesk-$arch"
+        "$ROOT/macos/Lifecycle.swift" "$ROOT/macos/Profile.swift" "$ROOT/macos/App.swift" -o "$BUILD/MPTCPDesk-$arch"
     (
         cd "$ROOT/macos/engine"
         CGO_ENABLED=1 GOOS=darwin GOARCH=$arch CC="clang -arch $swift_arch -isysroot $SDK -mmacosx-version-min=13.0" \

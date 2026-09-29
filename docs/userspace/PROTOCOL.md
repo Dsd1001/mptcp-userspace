@@ -1,4 +1,4 @@
-# MPX/3 capability revision 5 (0.9.4)
+# MPX/3 capability revision 5 (0.9.5)
 
 MPX is a custom application transport over ordinary TCP carriers, not kernel MPTCP and not QUIC. Each carrier explicitly disables native MultipathTCP. Backend bytes remain opaque. Native fallback and UDP datagram transport remain separate.
 
@@ -17,7 +17,7 @@ For Auto/Aggregate/Protect, bytes 40..43 remain zero exactly as in 0.9.3. For We
 
 The supported configured range is 0.1–6553.5 Mbps with 0.1 Mbps precision. The Landing sending direction uses download capacity; the Mac sending direction uses upload capacity when supplied. Capacity values are authenticated before the Landing allocates or joins the session, so a network intermediary cannot silently change weights.
 
-0.9.4 Auto/Aggregate/Protect keep the 0.9.3 0x41/0x42/0x43 hello values and zero capacity bytes and can interoperate with 0.9.3. Weighted uses 0x44 and therefore requires 0.9.4 on both endpoints. Revision-1/2/3 values 0x11..0x33 are rejected.
+0.9.5 keeps the exact Rev5 hello layout introduced by 0.9.4. Auto/Aggregate/Protect retain the 0.9.3 0x41/0x42/0x43 values and zero capacity bytes; Weighted remains 0x44. A 0.9.5 Mac can therefore use Weighted with a 0.9.4 Rev5 Landing. Revision-1/2/3 values 0x11..0x33 are rejected.
 
 Each direction uses independent AES-GCM keys/counters derived from the PSK handshake transcript. Existing random 32-byte transport keys can be reused. This update does not add TLS PKI, forward secrecy or a security certification.
 
@@ -62,4 +62,4 @@ FIN and RESET are independently accounted for each sending direction. Ordinary D
 
 Physical receive pages remain independently charged with a 128 MiB page-accounting limit. Sparse pages can hit this limit before DATA credit is exhausted; this is a typed stream resource failure, not permission to tear down the whole session.
 
-Controls remain bounded and reliable/periodically regenerated where applicable. No socket or backend I/O holds `Session.mu`. WINDOW and SESSION_WINDOW never decrease; retransmission does not mint credit. 0.9.4 does not increase any credit, stream-count or physical receive-memory limit.
+Controls remain bounded and reliable/periodically regenerated where applicable. No socket or backend I/O holds `Session.mu`. WINDOW and SESSION_WINDOW never decrease; retransmission does not mint credit. 0.9.5 does not increase any credit, stream-count or physical receive-memory limit. Its background-resident lifecycle is entirely outside the wire protocol.

@@ -25,11 +25,11 @@ Mac 端确认 carrier 数量、连接状态和 configured/effective scheduler。
 
 ## 2. Weighted 一开就连接失败
 
-最常见原因是 Landing 不是 0.9.4。
+最常见原因是 Landing 不支持 MPX/3 Rev5（例如仍是 0.9.3 或更早）。
 
-Weighted 使用 0x44 hello 和 Rev5 方向容量字段，必须双端都是 0.9.4。
+Weighted 使用 0x44 hello 和 Rev5 方向容量字段，要求双端都支持 Rev5；0.9.5 Mac 可以连接 0.9.4 或 0.9.5 Landing。
 
-如果暂时不能升级 Landing，可先切回 Auto / Aggregate / Protect；0.9.4 在这三个模式下与 0.9.3 保持 hello 兼容。
+如果暂时不能升级 Landing，可先切回 Auto / Aggregate / Protect；0.9.5 在这三个模式下仍与 0.9.3 保持 hello 兼容。
 
 ## 3. 某一条 Relay 基本没有流量
 
@@ -153,7 +153,7 @@ last_error 是历史诊断信息。
 
 ## 10. macOS 无法正常打开 DMG 内 App
 
-v0.9.4 DMG 是 ad-hoc 签名，未 notarize。
+v0.9.5 DMG 是 ad-hoc 签名，未 notarize。
 
 请使用正常 macOS 安全提示流程处理，不建议：
 

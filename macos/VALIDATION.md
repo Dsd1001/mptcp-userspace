@@ -1,10 +1,10 @@
-# 0.9.4 / MPX/3 Rev5
+# 0.9.5 / MPX/3 Rev5
 
-0.9.4 的发布重点是正式 Weighted：方向容量认证、下行必填/上行选填配置、故障保护不被固定容量覆盖，以及旧 Auto/Aggregate/Protect 回归。当前 Source-ID 必须通过 Go test/vet/race、Swift UI/Profile 检查和 Weighted 高 BDP 实验室回归后才能进入 weighted-release 包。
+0.9.5 的发布重点是 macOS 后台常驻、登录自启、睡眠/唤醒后的网络感知恢复和有界退避。当前 Source-ID 必须通过生命周期纯逻辑测试、macOS 13 ServiceManagement/Network/NSWorkspace 编译、Swift UI/Profile/Scheduler harness、Go test/vet/race 和原 Rev5/Weighted 高 BDP/timeout 回归后才能进入 background-release 包。
 
-完整 30 秒容量矩阵和真实 App+Surge 180 秒现场仍是独立的更高层验收；未重跑时必须明确记录为 not-run-for-weighted-release，不能拿历史结果替代。资源上限仍是 2048 streams、128 MiB session credit、128 MiB DATA pending 和 128 MiB physical receive pages。
+完整 30 秒容量矩阵、真实 App+Surge 180 秒现场，以及真实物理合盖/登录项权限交互仍是独立的更高层验收；未重跑时必须明确记录为 not-run-for-background-release。资源上限仍是 2048 streams、128 MiB session credit、128 MiB DATA pending 和 128 MiB physical receive pages。
 
-以下保留的是先前架构说明／历史资料；当前 0.9.4 Rev5 的精确验收以随包回执为准。
+以下保留的是先前架构说明／历史资料；当前 0.9.5 Rev5 的精确验收以随包回执为准。
 
 ---
 

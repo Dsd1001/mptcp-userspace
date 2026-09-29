@@ -1,21 +1,25 @@
-# 0.9.4 / MPX/3 Rev5 validation and release limits
+# 0.9.5 / MPX/3 Rev5 validation and release limits
 
-0.9.4 is the formal Weighted feature release. Release evidence must bind the final frozen Source-ID. Unit success is not a throughput claim, and an offscreen render is not physical App+Surge acceptance.
+0.9.5 is the background-resident and sleep/wake recovery release on top of the 0.9.4 Weighted transport. The wire protocol remains capability revision 5. Release evidence must bind the final frozen Source-ID.
 
-The required 0.9.4 feature gates are:
+Required 0.9.5 feature gates:
 
-1. Go full test and vet for the complete engine and Landing packages.
-2. Race-enabled tests covering the multipath package and Weighted protocol/direction/fault paths.
-3. Swift type-check plus the existing UI/Profile harnesses for both old profiles and Weighted fields.
-4. Authenticated Weighted hello tests proving download/upload fields are inside the HMAC transcript and legacy 0x41/0x42/0x43 hello bytes remain unchanged.
-5. Direction tests proving Landing→Mac uses required download capacity and Mac→Landing uses optional upload capacity; omitted upload must fall back to learned Aggregate behavior.
-6. Fault tests proving configured capacity does not override disconnect, penalty or delivery-timeout/reinjection protection.
-7. Source-matched laboratory high-BDP Weighted runs using six 50 Mbps paths and the observed RTT set used during development. The report must retain all repetitions and not discard a slow sample.
+1. Pure Swift lifecycle-policy harness proving recovery is allowed only when background resident and the persisted run intent are both enabled, and is suppressed during sleep, quit and explicit manual stop.
+2. Bounded restart schedule verification for 1 / 2 / 5 / 10 / 30 seconds with a 30-second cap.
+3. macOS 13 compile/type-check for ServiceManagement, NSWorkspace sleep/wake and Network path monitoring.
+4. Existing Profile/UI/Scheduler offscreen harnesses, now compiled with Lifecycle.swift.
+5. Go full test and vet for the engine/Landing packages.
+6. Race-enabled multipath and Weighted/main tests.
+7. Actual stdin engine coverage for Auto / Aggregate / Protect / Weighted.
+8. Rev5/Weighted direction, optional-upload fallback, penalty/timeout/reinjection and source-matched six-path high-BDP regression.
+9. Universal DMG and Linux Landing provenance verification rebuilt from the frozen source archive.
 
-The 2048 stream, 128 MiB session credit, 32/96 MiB bootstrap/growth split, 128 MiB sender DATA pending, 128 MiB physical receive allocation and 16 MiB per-stream window limits are unchanged. Existing capacity boundary tests remain valid regression targets and must not be weakened to make Weighted pass.
+The 0.9.5 lifecycle change must not modify MPX/3 hello bytes, capability revision, frame formats, 2048-stream bound, 128 MiB session credit, 128 MiB sender DATA pending, 128 MiB physical receive allocation or 16 MiB per-stream maximum window.
 
-The formal Weighted release package may be produced when current-source correctness and Weighted laboratory gates pass even if the full ten-case 30-second capacity matrix and physical 180-second App+Surge run have not been rerun. In that case CAPACITY.json and RUNTIME.json must explicitly say `not-run-for-weighted-release`; ACCEPTANCE.md must not imply those higher-level gates were completed.
+The lifecycle harness is deterministic logic coverage. It does not prove that a particular user's macOS login-item privacy setting grants launch-at-login. The real App reports SMAppService status, including requires-approval. Offscreen UI rendering also does not simulate a physical lid-close, Wi-Fi reassociation or actual login session.
 
-A production deployment is separate from package creation. HKT, installed App, Surge, Soga, Relay, firewall and Native services are not modified by the validation or packaging scripts.
+The formal background-resident release package may be produced when current-source lifecycle/correctness gates and the unchanged Weighted laboratory gates pass, even if the full ten-case 30-second capacity matrix and physical 180-second App+Surge run are not rerun. In that case CAPACITY.json and RUNTIME.json must explicitly say `not-run-for-background-release`.
 
-The delivery's ACCEPTANCE.md, TESTS.json, SCHEDULER-MODES.json, PROVENANCE.json, CAPACITY.json and RUNTIME.json are the source of truth. Laboratory tests do not certify a user's provider bandwidth, multi-day stability, physical Intel hardware or security.
+A production deployment is separate from package creation. Validation and packaging must not replace the installed App, deploy HKT, or modify Surge, Soga, Relay, firewall or Native services.
+
+The delivery's ACCEPTANCE.md, TESTS.json, SCHEDULER-MODES.json, PROVENANCE.json, CAPACITY.json and RUNTIME.json remain the source of truth.

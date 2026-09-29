@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import Network
+import ServiceManagement
 
 final class Model: ObservableObject {
     static let shared = Model()
@@ -46,12 +48,157 @@ final class Model: ObservableObject {
     private var reader: FileHandle?
     private var pending = Data()
     private var forwardingActivity: NSObjectProtocol?
+    @Published var backgroundResident = false
+    @Published var backgroundResidentStatus = "关闭"
+    private let networkMonitor = NWPathMonitor()
+    private let networkQueue = DispatchQueue(label: "org.mptcp.desktop.network-monitor")
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var recoveryWorkItem: DispatchWorkItem?
+    private var recoveryAttempt = 0
+    private var wantsForwarding = false
+    private var sleeping = false
+    private var quitting = false
+    private var manualStopRequested = false
+    private var needsRecovery = false
+    private var networkAvailable = false
+    private static let residentKey = "background-resident-v1"
+    private static let wantsForwardingKey = "background-resident-wants-forwarding-v1"
 
     private func endForwardingActivity() {
         if let activity = forwardingActivity {
             ProcessInfo.processInfo.endActivity(activity)
             forwardingActivity = nil
         }
+    }
+
+    private func setWantsForwarding(_ value: Bool) {
+        wantsForwarding = value
+        UserDefaults.standard.set(value, forKey: Self.wantsForwardingKey)
+    }
+    private var shouldRecover: Bool {
+        BackgroundRecoveryPolicy.shouldRecover(
+            backgroundResident: backgroundResident,
+            wantsForwarding: wantsForwarding,
+            sleeping: sleeping,
+            quitting: quitting,
+            manualStopRequested: manualStopRequested
+        )
+    }
+    private func refreshLoginItemStatus() {
+        switch SMAppService.mainApp.status {
+        case .enabled: backgroundResidentStatus = "登录自启已启用"
+        case .requiresApproval: backgroundResidentStatus = "需在系统设置允许登录项"
+        case .notRegistered: backgroundResidentStatus = backgroundResident ? "登录项未注册" : "关闭"
+        case .notFound: backgroundResidentStatus = "登录项不可用"
+        @unknown default: backgroundResidentStatus = "登录项状态未知"
+        }
+    }
+    private func registerLoginItem() {
+        do {
+            if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
+            refreshLoginItemStatus()
+        } catch {
+            backgroundResidentStatus = "登录项注册失败"
+            problem = "后台常驻已开启，但登录自启注册失败：\(error.localizedDescription)"
+        }
+    }
+    func setBackgroundResident(_ enabled: Bool) {
+        backgroundResident = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.residentKey)
+        recoveryWorkItem?.cancel(); recoveryWorkItem = nil
+        if enabled {
+            if running || busy { setWantsForwarding(true) }
+            registerLoginItem()
+            append("后台常驻已开启：登录自启、唤醒恢复和引擎异常恢复已启用")
+            if wantsForwarding {
+                needsRecovery = true
+                requestRecovery(reason: "后台常驻恢复", immediate: true)
+            }
+        } else {
+            needsRecovery = false
+            setWantsForwarding(false)
+            backgroundResidentStatus = "正在关闭登录项"
+            Task { @MainActor [weak self] in
+                do { try await SMAppService.mainApp.unregister() }
+                catch { self?.problem = "关闭登录自启失败：\(error.localizedDescription)" }
+                self?.refreshLoginItemStatus()
+            }
+            append("后台常驻已关闭；当前转发不会被强制停止，但之后不再自动恢复")
+        }
+    }
+    private func startLifecycleObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.handleWillSleep()
+        })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.handleDidWake()
+        })
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let wasAvailable = self.networkAvailable
+                self.networkAvailable = path.status == .satisfied
+                if self.networkAvailable && !wasAvailable && self.needsRecovery {
+                    self.append("网络已恢复，准备重建转发")
+                    self.requestRecovery(reason: "网络恢复", immediate: true)
+                }
+            }
+        }
+        networkMonitor.start(queue: networkQueue)
+    }
+    private func handleWillSleep() {
+        sleeping = true
+        recoveryWorkItem?.cancel(); recoveryWorkItem = nil
+        if backgroundResident && wantsForwarding {
+            needsRecovery = true
+            append("系统即将睡眠；唤醒并恢复网络后将重建转发")
+        }
+    }
+    private func handleDidWake() {
+        sleeping = false
+        guard backgroundResident && wantsForwarding else { return }
+        recoveryAttempt = 0
+        needsRecovery = true
+        networkAvailable = false
+        status = "唤醒后等待网络"
+        append("系统已唤醒；将丢弃睡眠前连接并重建 Userspace/Native 转发")
+        requestRecovery(reason: "系统唤醒", forceRestart: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, self.shouldRecover else { return }
+            self.networkAvailable = self.networkMonitor.currentPath.status == .satisfied
+            if self.networkAvailable { self.requestRecovery(reason: "唤醒网络确认", immediate: true) }
+            else { self.status = "等待网络恢复" }
+        }
+    }
+    private func requestRecovery(reason: String, immediate: Bool = false, forceRestart: Bool = false) {
+        guard shouldRecover else { return }
+        guard BackgroundRecoveryPolicy.canRetry(attempt: recoveryAttempt) else {
+            needsRecovery = false
+            status = "需要处理"
+            problem = "后台自动恢复连续失败，请检查配置、钥匙串、本地端口和网络后手动启动"
+            append("后台自动恢复已达到本轮 5 次上限，已停止重试")
+            return
+        }
+        needsRecovery = true
+        if forceRestart, let child = process, child.isRunning {
+            status = "正在重建转发"
+            child.terminate()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { if child.isRunning { kill(child.processIdentifier, SIGKILL) } }
+            return
+        }
+        guard networkAvailable else { status = "等待网络恢复"; return }
+        guard process == nil && !busy && !running else { return }
+        recoveryWorkItem?.cancel()
+        let delay = immediate ? 0.25 : BackgroundRecoveryPolicy.retryDelay(attempt: recoveryAttempt)
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.shouldRecover, self.networkAvailable, self.process == nil, !self.busy, !self.running else { return }
+            self.status = "后台恢复中"
+            self.append("后台常驻自动启动转发 · \(reason)")
+            self.launch("run", automatic: true)
+        }
+        recoveryWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     init() {
@@ -68,6 +215,19 @@ final class Model: ObservableObject {
                   let profile = try? JSONDecoder().decode(Profile.self, from: data), (try? profile.validate()) != nil {
             apply(profile)
             append("已载入 0.5.1 配置并保持 Native MPTCP；切换 Userspace 必须改用新版 Landing/Relay 入口")
+        }
+        backgroundResident = UserDefaults.standard.bool(forKey: Self.residentKey)
+        wantsForwarding = UserDefaults.standard.bool(forKey: Self.wantsForwardingKey)
+        if !backgroundResident { wantsForwarding = false }
+        startLifecycleObservers()
+        if backgroundResident {
+            registerLoginItem()
+            if wantsForwarding {
+                needsRecovery = true
+                status = "等待网络恢复"
+            }
+        } else {
+            refreshLoginItemStatus()
         }
     }
     func apply(_ p: Profile) {
@@ -140,14 +300,17 @@ final class Model: ObservableObject {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch { /* Diagnostics must not terminate or delay forwarding. */ }
     }
-    func launch(_ requestedAction: String) {
+    func launch(_ requestedAction: String, automatic: Bool = false) {
         guard !busy && !running else {return}
         let action = requestedAction == "doctor" && userspace ? "doctor-userspace" : requestedAction
         let checking = action.hasPrefix("doctor")
         guard let engine = Bundle.main.url(forResource: "mptcp-desktop-engine", withExtension: nil) else {problem = "安装包缺少传输引擎";return}
         do {
             var data = Data()
-            if action == "run" { data = try JSONEncoder().encode(profile()); save(); if problem != nil {return} }
+            if action == "run" {
+                data = try JSONEncoder().encode(profile())
+                if !automatic { save(); if problem != nil { return } }
+            }
             problem = nil; busy = true; status = checking ? "检查环境中" : "连接中"
             udpConnections = 0; udpSent = 0; udpReceived = 0
             paths = 0; connections = 0; sent = 0; received = 0
@@ -173,13 +336,28 @@ final class Model: ObservableObject {
                     self.endForwardingActivity()
                     self.connections = 0
                     self.udpConnections = 0
-                    if stopped.terminationStatus != 0 && self.problem == nil {self.problem = "传输引擎已退出，请检查日志"}
-                    self.status = self.problem == nil ? (checking ? "引擎环境检查通过" : "已停止") : "需要处理"
+                    let recover = action == "run" && self.shouldRecover
+                    if recover {
+                        self.needsRecovery = true
+                        self.recoveryAttempt += 1
+                        self.problem = nil
+                        self.status = self.networkAvailable ? "后台恢复中" : "等待网络恢复"
+                        self.append("传输引擎已退出；后台常驻将自动恢复")
+                        self.requestRecovery(reason: "引擎退出")
+                    } else {
+                        if stopped.terminationStatus != 0 && self.problem == nil && !self.manualStopRequested && !self.quitting {
+                            self.problem = "传输引擎已退出，请检查日志"
+                        }
+                        self.status = self.problem == nil ? (checking ? "引擎环境检查通过" : "已停止") : "需要处理"
+                    }
+                    self.manualStopRequested = false
                 }
             }
             process = child
             try child.run()
             if action == "run" {
+                if !automatic && backgroundResident { setWantsForwarding(true) }
+                needsRecovery = false
                 forwardingActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "TCP / UDP forwarding")
             }
             if !data.isEmpty {try input.fileHandleForWriting.write(contentsOf: data)}
@@ -199,7 +377,10 @@ final class Model: ObservableObject {
             guard let event = try? JSONDecoder().decode(EngineEvent.self, from: line) else {continue}
             receiveSchedulerEvent(event)
             switch event.kind {
-            case "listening": running = true; busy = false; status = userspace ? (tcpEnabled ? "Userspace 入口已启动" : "Userspace UDP 入口已启动") : "Native 入口已启动"
+            case "listening":
+                running = true; busy = false
+                recoveryAttempt = 0; needsRecovery = false; problem = nil
+                status = userspace ? (tcpEnabled ? "Userspace 入口已启动" : "Userspace UDP 入口已启动") : "Native 入口已启动"
             case "error": problem = event.message;status = "连接失败"
             case "connecting": status = event.message ?? "连接中"
             case "ready": status = event.message ?? "环境可用"
@@ -233,12 +414,23 @@ final class Model: ObservableObject {
         }
     }
     func stop() {
-        guard let child = process else {return}
+        manualStopRequested = true
+        needsRecovery = false
+        recoveryWorkItem?.cancel(); recoveryWorkItem = nil
+        setWantsForwarding(false)
+        guard let child = process else {
+            busy = false; running = false; status = "已停止"
+            manualStopRequested = false
+            return
+        }
         status = "停止中"; busy = true
         child.terminate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { if child.isRunning {kill(child.processIdentifier, SIGKILL)} }
     }
     func quit() {
+        quitting = true
+        recoveryWorkItem?.cancel(); recoveryWorkItem = nil
+        if !backgroundResident { setWantsForwarding(false) }
         defer { endForwardingActivity() }
         guard let child = process, child.isRunning else {return}
         child.terminate()
@@ -272,7 +464,7 @@ struct DesktopView: View {
                     HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
                 }
                 Spacer()
-                Text("Multipath 0.9.4 · Weighted 调度").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("Multipath 0.9.5 · Weighted + 后台常驻").font(.system(size: 11)).foregroundColor(.secondary)
             }
             Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2)}.pickerStyle(.segmented)
             if model.tab == 0 {
@@ -292,7 +484,7 @@ struct DesktopView: View {
                                 .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
                         }
                         SecureField("Landing 传输密钥（64 位十六进制，不是 SS 密码）", text: $model.transportKey)
-                        Text("本版支持 MPX/3 Rev5 Weighted。Weighted 需要 Mac 与 Landing 均为 0.9.4；Auto / Aggregate / Protect 继续使用兼容的 Rev4 hello。不要连接 Native 或 SS 入口。")
+                        Text("本版继续使用 MPX/3 Rev5 Weighted；协议与 0.9.4 相同。Weighted 需要 Landing 0.9.4 或更新版本；Auto / Aggregate / Protect 继续兼容 0.9.3。不要连接 Native 或 SS 入口。")
                             .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
                     }
                     HStack {Text("本地转发入口").frame(width: 120, alignment: .leading);Text("127.0.0.1").foregroundColor(.secondary);TextField("端口", text: $model.listenPort).frame(width: 85);Spacer();Button {let p = NSPasteboard.general;p.clearContents();p.setString("127.0.0.1:\(model.listenPort)",forType:.string)} label:{Image(systemName:"doc.on.doc")}.help("复制本地 TCP 入口")}
@@ -325,6 +517,15 @@ struct DesktopView: View {
                     }.frame(height: 150)
                     Divider()
                 }.disabled(locked)
+                VStack(alignment:.leading,spacing:4) {
+                    HStack {
+                        Toggle("后台常驻", isOn: Binding(get:{model.backgroundResident}, set:{model.setBackgroundResident($0)})).toggleStyle(.switch)
+                        Spacer()
+                        Text(model.backgroundResidentStatus).font(.system(size:11)).foregroundColor(.secondary)
+                    }
+                    Text("开启后注册 macOS 登录项；曾处于运行状态时，登录、睡眠唤醒、网络恢复或引擎意外退出后会自动重建转发。手动点击“停止”后不会自动拉起。")
+                        .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                }
                 HStack(spacing:20) {
                     metric(model.userspace ? "TCP 载路" : "Native 子流",model.paths < 0 ? "未知" : String(model.paths));metric("连接",String(model.connections))
                     metric("上传",ByteCountFormatter.string(fromByteCount:model.sent,countStyle:.binary))
@@ -457,6 +658,7 @@ struct StatusMenu: View {
             Text("TCP 连接：\(model.connections)")
             if model.udpEnabled { Text("UDP 映射：\(model.udpConnections)") }
         }
+        Text("后台常驻：\(model.backgroundResident ? model.backgroundResidentStatus : "关闭")")
         Divider()
         Button("打开主窗口") {
             openWindow(id: "main")

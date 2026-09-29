@@ -14,7 +14,7 @@ import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FIXED = (
-    'macos/VERSION', 'macos/App.swift', 'macos/Profile.swift', 'macos/Icon.swift',
+    'macos/VERSION', 'macos/App.swift', 'macos/Lifecycle.swift', 'macos/Profile.swift', 'macos/Icon.swift',
     'macos/Info.plist', 'macos/build.sh', 'macos/README.zh-CN.md',
     'macos/VALIDATION.md', 'macos/tcp-profile.example.json',
     'macos/userspace-profile.example.json', 'macos/engine/go.mod',

@@ -6,9 +6,9 @@ MPTCP Userspace is an application-layer multipath transport for macOS and Linux.
 
 It is **not kernel MPTCP** and it is **not QUIC**. The macOS client explicitly uses ordinary TCP carriers; the Linux Landing terminates MPX/3 and forwards opaque backend TCP bytes.
 
-Current release: **v0.9.4 / MPX/3 capability revision 5**.
+Current release: **v0.9.5 / MPX/3 capability revision 5**.
 
-- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.4
+- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.5
 - macOS: Universal arm64/x86_64 DMG, macOS 13+
 - Landing: Linux amd64 static binary
 - Scheduler modes: Auto, Aggregate, Protect, Weighted
@@ -52,22 +52,23 @@ For Weighted:
 - upload_mbps is optional and is used by Mac → Landing.
 - If upload capacity is omitted, only Mac → Landing falls back to learned Aggregate capacity.
 - Supported configured range: 0.1–6553.5 Mbps, 0.1 Mbps precision.
-- Weighted requires **0.9.4 on both Mac and Landing**.
+- Weighted requires **MPX/3 Rev5 on both endpoints**. v0.9.4 and v0.9.5 are wire-compatible for Weighted.
 
 ## Compatibility
 
 | Mac | Landing | Auto / Aggregate / Protect | Weighted |
 |---|---|---:|---:|
-| 0.9.4 | 0.9.4 | Yes | Yes |
-| 0.9.4 | 0.9.3 | Yes | No |
-| 0.9.3 | 0.9.4 | Yes | No |
+| 0.9.5 | 0.9.5 / 0.9.4 | Yes | Yes |
+| 0.9.5 | 0.9.3 | Yes | No |
+| 0.9.4 | 0.9.5 / 0.9.4 | Yes | Yes |
+| 0.9.3 | 0.9.5 / 0.9.4 | Yes | No |
 | MPX/2 / older candidates | MPX/3 Rev5 | No | No |
 
-0.9.4 keeps the 0.9.3 scheduler hello values 0x41, 0x42, 0x43 for Auto/Aggregate/Protect. Weighted uses 0x44 and authenticated directional capacity fields.
+0.9.5 keeps the exact Rev5 wire layout introduced by 0.9.4. Auto/Aggregate/Protect retain the 0.9.3-compatible 0x41, 0x42 and 0x43 hello values; Weighted remains 0x44 with authenticated directional capacity fields.
 
 ## Resource boundaries
 
-v0.9.4 does not increase the established resource limits:
+v0.9.5 does not increase the established resource limits:
 
 - up to 2048 occupied logical stream identities;
 - 128 MiB session credit;
@@ -107,16 +108,16 @@ MPX/3 uses an authenticated PSK handshake and independent AES-GCM keys/counters 
 Important limits:
 
 - this is not TLS PKI;
-- v0.9.4 does not provide forward secrecy;
+- v0.9.5 does not provide forward secrecy;
 - no independent security certification is claimed;
 - transport keys must not be committed to repositories or pasted into logs/issues;
 - the macOS DMG is ad-hoc signed and **not notarized**.
 
 ## Validation scope
 
-The v0.9.4 release passed source-matched correctness, authenticated directional capacity, failure-protection and laboratory Weighted high-BDP gates.
+The v0.9.5 release passed source-matched Go/Swift correctness, background-recovery policy tests, four-mode scheduler regression, authenticated directional capacity/failure protection and the unchanged Rev5/Weighted laboratory high-BDP gate.
 
-The release does **not** claim that the complete 30-second capacity matrix or a physical 180-second App+Surge/WAN acceptance run was completed for this Weighted release. Exact evidence and limitations are in the release assets:
+The release does **not** claim physical lid-close/wake or login-item approval interaction, the complete 30-second capacity matrix, or a physical 180-second App+Surge/WAN acceptance run. Exact evidence and limitations are in the release assets:
 
 - ACCEPTANCE.md
 - TESTS.json
@@ -127,11 +128,10 @@ Laboratory results are not a guarantee of ISP bandwidth, arbitrary WAN throughpu
 
 ## Release provenance
 
-The v0.9.4 tag points to the frozen source commit used for the published release assets:
+The v0.9.5 tag points to the frozen source used for the published release assets:
 
 ~~~text
-Commit:    f97f810b393c5f67dca02607ccefb41d78c7c169
-Source-ID: d4b8f362a8179257f2889abfea587c480755470bac6a78d8c023c3496c66f2bf
+Source-ID: 3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
 ~~~
 
 The default main branch may contain documentation-only commits after the release tag. Use the tag and Source-ID when reproducing or auditing the released binaries.
@@ -148,4 +148,4 @@ Key documents:
 - [Deployment](docs/userspace/DEPLOYMENT.zh-CN.md)
 - [Validation](docs/userspace/VALIDATION.md)
 - [Troubleshooting](docs/guides/TROUBLESHOOTING.zh-CN.md)
-- [v0.9.4 release notes](docs/userspace/RELEASE.zh-CN.md)
+- [v0.9.5 release notes](docs/userspace/RELEASE.zh-CN.md)

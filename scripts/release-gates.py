@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Bind 0.9.4 to ten actual 30s capacity cases and a 180s physical mixed run.
+"""Bind 0.9.5 to ten actual 30s capacity cases and a 180s physical mixed run.
 Only reads recorded evidence; never starts traffic, changes a service or GUI.
 """
 from __future__ import annotations
 import argparse, hashlib, importlib.util, json, pathlib
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-VERSION='0.9.4'
+VERSION='0.9.5'
 TARGETS=[128,256,512,1024,2048]
 MAX_STREAMS=2048
 CAPS={'active_streams':MAX_STREAMS,'receive_credit_bytes':128<<20,'bootstrap_credit_bytes':32<<20,

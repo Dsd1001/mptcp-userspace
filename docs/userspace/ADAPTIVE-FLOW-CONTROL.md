@@ -1,6 +1,6 @@
-# Adaptive windows in 0.9.4 / MPX/3 Rev5
+# Adaptive windows in 0.9.5 / MPX/3 Rev5
 
-0.9.4 retains the 0.9.3 warm-seed contention guard unchanged. Weighted does not change stream-window growth, shared credit, consumption accounting or any resource limit.
+0.9.5 retains the 0.9.4/0.9.3 flow-control behavior unchanged. Background resident and sleep/wake recovery do not change stream-window growth, shared credit, consumption accounting, Weighted scheduling or any resource limit.
 
 The per-stream 16 KiB bootstrap, demand-driven growth and recent single-flow warm seed remain. Idle reduces the future window target but never retracts an advertised absolute limit. Maximum per-stream span remains 16 MiB.
 

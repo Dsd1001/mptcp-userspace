@@ -2,23 +2,23 @@
 
 [English](QUICKSTART.md)
 
-本文按 GitHub Release v0.9.4 的正式交付物说明最短部署路径。假设你已经有可用的 TCP Relay，并有一台 Linux amd64 机器作为 Landing。
+本文按 GitHub Release v0.9.5 的正式交付物说明最短部署路径。假设你已经有可用的 TCP Relay，并有一台 Linux amd64 机器作为 Landing。
 
-Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.4
+Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.5
 
 ## 1. 下载并校验
 
 至少下载：
 
-- MPTCP-Desk-0.9.4-universal.dmg
+- MPTCP-Desk-0.9.5-universal.dmg
 - mptcp-landing
-- MPTCP-Desk-0.9.4-SHA256SUMS
+- MPTCP-Desk-0.9.5-SHA256SUMS
 - mptcp-landing.sha256
 
 macOS 上校验 DMG：
 
 ~~~sh
-shasum -a 256 -c MPTCP-Desk-0.9.4-SHA256SUMS
+shasum -a 256 -c MPTCP-Desk-0.9.5-SHA256SUMS
 ~~~
 
 Linux 上校验 Landing：
@@ -27,10 +27,10 @@ Linux 上校验 Landing：
 sha256sum -c mptcp-landing.sha256
 ~~~
 
-v0.9.4 的冻结 Source-ID：
+v0.9.5 的冻结 Source-ID：
 
 ~~~text
-d4b8f362a8179257f2889abfea587c480755470bac6a78d8c023c3496c66f2bf
+3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
 ~~~
 
 如果校验不一致，不要继续安装。
@@ -83,6 +83,8 @@ DMG 是 macOS 13+ 的 arm64/x86_64 Universal 构建。
 
 当前 DMG 是 ad-hoc 签名，未 notarize。
 
+0.9.5 还新增可选“后台常驻”：开启后会注册 macOS 登录项、记住转发应保持运行的状态；睡眠唤醒后等待网络恢复并重建 engine/session，而不是复用睡前 carrier socket。用户手动点击“停止”会抑制自动拉起。
+
 ## 4. 配置 Userspace
 
 本地入口通常是：
@@ -118,9 +120,9 @@ DMG 是 macOS 13+ 的 arm64/x86_64 Universal 构建。
 
 ## 5. 检查版本兼容
 
-Weighted 必须双端都是 0.9.4。
+Weighted 要求双端都支持 MPX/3 Rev5；0.9.5 Mac 可以直接连接 0.9.4 或 0.9.5 Landing。
 
-0.9.4 的 Auto / Aggregate / Protect 继续沿用 0.9.3 的 hello，因此这些模式可以与 0.9.3 对接。
+0.9.5 的 Auto / Aggregate / Protect 继续沿用 0.9.3 的 hello，因此这些模式可以与 0.9.3 对接。
 
 MPX/2、Rev2/Rev3 候选和更早协议不能与 MPX/3 Rev5 混连。
 
