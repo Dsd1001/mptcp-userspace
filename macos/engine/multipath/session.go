@@ -145,6 +145,10 @@ type Session struct {
 	clockStart                                      time.Time
 	pending                                         map[uint64]*outbound
 	paths                                           map[byte]*carrier
+	carrierUsed                                     [9]bool
+	highestGeneration                               [9]uint64
+	nextCandidateGeneration                         [9]uint64
+	generationExhausted                             [9]bool
 	pathCapacities                                  [9]PathCapacity
 	seen                                            map[uint64]bool
 	maxSeen, nextStream, nextPacket, dispatchCursor uint64
@@ -249,6 +253,18 @@ func (s *Session) addCarrier(id byte, address string, conn *secureConn) error {
 		conn.Close()
 		return net.ErrClosed
 	}
+	// Draft 04 commits Highest Accepted Generation only after the candidate has
+	// completed its authenticated handshake and while holding the Session lock.
+	if err := s.commitCarrierGenerationLocked(id, conn.generation); err != nil {
+		s.mu.Unlock()
+		// A simultaneous candidate can lose the Generation comparison only after
+		// both Finished messages completed. Report the registered conflict on this
+		// authenticated candidate before terminating it.
+		_ = conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+		_ = conn.writeFrame(frame{kind: kindCarrierClose, offset: mpx4ErrCarrierConflict, data: []byte("carrier generation conflict")})
+		conn.Close()
+		return fmt.Errorf("%w: carrier %d generation %d", err, id, conn.generation)
+	}
 	c := &carrier{id: id, generation: conn.generation, address: address, conn: conn, active: true, done: make(chan struct{}), queue: make(chan sendTask, carrierQueue), control: make(chan frame, 512), reliableControl: make(chan sendTask, controlCarrierQueue), rtt: 50 * time.Millisecond, goodput: 4 << 20, configuredRateBPS: conn.configuredRateBPS, sampleAt: time.Now()}
 	c.scheduler.role = RoleLearning
 	c.scheduler.lastRoleReason = "awaiting_3_delivery_samples"
@@ -259,12 +275,10 @@ func (s *Session) addCarrier(id byte, address string, conn *secureConn) error {
 		c.capacitySamples[i] = c.goodput
 	}
 	if old := s.paths[id]; old != nil {
-		if old.conn != nil && conn.generation <= old.generation {
-			s.mu.Unlock()
-			conn.Close()
-			return fmt.Errorf("%w: stale or conflicting carrier generation", ErrProtocol)
-		}
-		s.detachLocked(old, fmt.Errorf("carrier replaced"))
+		// The Generation commit above makes every lower incarnation superseded
+		// atomically. detachLocked removes it from scheduling and requeues any
+		// outstanding Attempts while retaining Session-owned Transmission IDs.
+		s.detachLocked(old, fmt.Errorf("carrier superseded by generation %d", conn.generation))
 		c.sent = old.sent
 		c.received = old.received
 		c.errors = old.errors
@@ -365,11 +379,35 @@ func (s *Session) readCarrier(c *carrier) {
 		}
 		f, err := c.conn.readFrame()
 		if err != nil {
-			s.carrierFailure(c, err)
+			if errors.Is(err, ErrAuthentication) {
+				// Integrity failures are Carrier-scoped and need not be reported on
+				// the wire because the failed input is not authenticated.
+				s.carrierFailure(c, err)
+			} else if errors.Is(err, ErrProtocol) {
+				s.protocolCarrierFailure(c, &mpx4Failure{code: mpx4ErrFrameEncoding, scope: mpx4ScopeCarrier, reason: err.Error(), cause: err})
+			} else {
+				s.carrierFailure(c, err)
+			}
+			return
+		}
+		if f.kind == kindCarrierClose {
+			s.carrierFailure(c, remoteCloseError("carrier", f))
+			return
+		}
+		if f.kind == kindSessionClose {
+			s.stop(remoteCloseError("session", f))
 			return
 		}
 		if err = s.handleFrame(c, f); err != nil {
-			s.carrierFailure(c, err)
+			if isLocalClosed(err) {
+				return
+			}
+			failure := normalizeEstablishedFailure(err, f)
+			if failure.scope == mpx4ScopeCarrier {
+				s.protocolCarrierFailure(c, failure)
+			} else {
+				s.protocolSessionFailure(c, failure)
+			}
 			return
 		}
 	}
@@ -490,8 +528,16 @@ func (s *Session) removePendingLocked(p *outbound) {
 
 func (s *Session) ackLocked(c *carrier, f frame) error {
 	p := s.pending[f.id]
-	if p == nil || p.f.stream != f.stream {
+	if p == nil {
+		// Draft 04 distinguishes compacted/settled duplicate acknowledgements
+		// from IDs that this endpoint has never allocated.
+		if f.id > s.nextPacket {
+			return transmissionIDFailure("acknowledges never-allocated Transmission ID")
+		}
 		return nil
+	}
+	if p.f.stream != f.stream {
+		return transmissionIDFailure("acknowledgement Stream ID does not match Transmission ID")
 	}
 	if p.f.kind == kindOpen && f.kind != kindOpenOK {
 		return nil
@@ -584,22 +630,22 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 		if st == nil {
 			if term, ok := s.terminal[f.stream]; ok {
 				if f.offset+uint64(len(f.data)) > term.rxFinal {
-					return ErrProtocol
+					return finalSizeFailure("late STREAM_DATA exceeds retired final size")
 				}
 			} else if !s.seen[f.stream] && !(s.maxSeen > 8192 && f.stream <= s.maxSeen-8192) {
-				return ErrProtocol
+				return streamStateFailure("STREAM_DATA for unknown Stream")
 			}
 			s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id})
 			return nil
 		}
 		if !st.open && s.server && !st.closed {
-			return ErrProtocol
+			return streamStateFailure("STREAM_DATA before Stream acceptance")
 		}
 		if err := st.receiveLocked(f.offset, f.data); err != nil {
 			if !errors.Is(err, ErrResourceLimit) {
 				return err
 			}
-			s.resetLocked(st, 4, true)
+			s.resetLocked(st, mpx4ErrResourceLimit, true)
 			st.err = err
 			return nil
 		}
@@ -616,12 +662,12 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 	case kindFinalConsumed:
 		return s.handleFinalConsumedLocked(c, f)
 	case kindOpenReject:
-		if f.id == 0 || f.offset < 1 || f.offset > 4 {
-			return ErrProtocol
+		if f.id == 0 || !validOpenRejectCode(f.offset) {
+			return protocolViolation("invalid STREAM_OPEN_REJECT Error Code")
 		}
 		if st := s.streams[f.stream]; st != nil {
 			if f.id != st.openID {
-				return ErrProtocol
+				return transmissionIDFailure("STREAM_OPEN_REJECT Transmission ID mismatch")
 			}
 			// A duplicate OPEN already captured by another writer can reach the peer
 			// after that peer retired it. Its rejection cannot revoke an accepted OPEN.
@@ -629,9 +675,9 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 				return nil
 			}
 			if st.txNext != 0 || st.rxHigh != 0 {
-				return ErrProtocol
+				return streamStateFailure("STREAM_OPEN_REJECT after Stream acceptance evidence")
 			}
-			if f.offset == 4 {
+			if f.offset == mpx4ErrResourceLimit || f.offset == mpx4ErrStreamLimit {
 				s.resourceLocked(LimitRemote, false)
 			}
 			s.resetLocked(st, f.offset, false)
@@ -727,7 +773,7 @@ func (s *Session) sweepLocked(now time.Time) {
 		}
 		if now.Sub(p.created) > 30*time.Second {
 			if st := s.streams[p.f.stream]; st != nil {
-				s.resetLocked(st, 1, true)
+				s.resetLocked(st, mpx4ErrInternal, true)
 			} else {
 				s.removePendingLocked(p)
 			}

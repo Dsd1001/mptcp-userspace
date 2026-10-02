@@ -10,7 +10,7 @@ ROOT=pathlib.Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('background_package',ROOT/'scripts/package-userspace.py')
 package=importlib.util.module_from_spec(spec);spec.loader.exec_module(package)
 ID='a'*64
-VERSION='0.9.5'
+VERSION='0.9.8'
 
 class BackgroundPackageTests(unittest.TestCase):
     def setUp(self):
@@ -22,7 +22,7 @@ class BackgroundPackageTests(unittest.TestCase):
             path=self.root/(name+'.log');path.write_text('passed\n')
             self.tests['commands'].append({'name':name,'exit_code':0,'log':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
         self.scheduler={
-            'version':VERSION,'source_id':ID,'wire_protocol':3,'scheduler_capability_revision':5,
+            'version':VERSION,'source_id':ID,'wire_protocol':4,'scheduler_capability_revision':5,
             'verified':True,'status':'background-release-passed','default_mode':'auto',
             'configured_modes':['auto','aggregate','protect','weighted'],
             'checks':{

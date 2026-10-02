@@ -11,7 +11,7 @@ spec=importlib.util.spec_from_file_location('preview_package',ROOT/'scripts/pack
 package=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
 ID='a'*64
-VERSION='0.9.5'
+VERSION='0.9.8'
 
 class PreviewPackageTests(unittest.TestCase):
     def setUp(self):
@@ -22,7 +22,7 @@ class PreviewPackageTests(unittest.TestCase):
         for name in ('go-test','go-vet','go-race','warm-seed-race','release-script-tests'):
             path=self.root/(name+'.log');path.write_text('passed\n')
             self.tests['commands'].append({'name':name,'exit_code':0,'log':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
-        self.scheduler={'version':VERSION,'source_id':ID,'wire_protocol':3,'scheduler_capability_revision':5,'verified':False,'status':'preview-with-known-limitations','known_limitations':['small-request p99 and duplex targets not all met']}
+        self.scheduler={'version':VERSION,'source_id':ID,'wire_protocol':4,'scheduler_capability_revision':5,'verified':False,'status':'preview-with-known-limitations','known_limitations':['small-request p99 and duplex targets not all met']}
     def check(self):
         package.check_preview(self.tests,self.scheduler,ID,VERSION,root=self.root)
     def test_preview_retains_known_limitations(self):

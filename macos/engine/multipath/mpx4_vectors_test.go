@@ -23,7 +23,7 @@ func requireHex(t *testing.T, name string, got []byte, want string) {
 	}
 }
 
-func TestMPX4Draft03OfficialKeyScheduleVector(t *testing.T) {
+func TestMPX4Draft04OfficialKeyScheduleVector(t *testing.T) {
 	key := mustHex(t, "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf")
 	preface := mustHex(t, "4d50580004")
 	ci := mustHex(t, "01405901001000112233445566778899aabbccddeeff020001000300010104000100050020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0700048000800008000480010000090002480010000101")
@@ -67,7 +67,7 @@ func TestMPX4Draft03OfficialKeyScheduleVector(t *testing.T) {
 	requireHex(t, "server_iv", siv, "1a4f47ec14b6f5c3673e9c8a")
 }
 
-func TestMPX4Draft03OfficialFrameVectors(t *testing.T) {
+func TestMPX4Draft04OfficialFrameVectors(t *testing.T) {
 	cases := []struct {
 		f    frame
 		wire string
@@ -87,7 +87,7 @@ func TestMPX4Draft03OfficialFrameVectors(t *testing.T) {
 	}
 }
 
-func TestMPX4Draft03OfficialSecureRecordVectors(t *testing.T) {
+func TestMPX4Draft04OfficialSecureRecordVectors(t *testing.T) {
 	key := mustHex(t, "77073510941704d465e98dbb9542bda302465094bef1a8f1a50312b730e7ef68")
 	a, err := aeadFor(key)
 	if err != nil {

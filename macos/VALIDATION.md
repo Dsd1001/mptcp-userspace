@@ -1,15 +1,19 @@
-# 0.9.7 / MPX/4 Draft 03 + Provisioning
+# 0.9.8 / MPX/4 Draft 04 + Provisioning
 
-0.9.7 发布候选至少需要通过：
+0.9.8 发布候选至少必须通过：
 
-- Go engine / Landing 全量 `go test ./...` 与 `go vet ./...`；
-- MPX/4 Draft 03 既有 VarInt / Frame / key-schedule / Secure-Record 回归；
+- engine / Landing 全量 `go test ./...` 与 `go vet ./...`；
+- MPX/4 VarInt / Frame / key-schedule / Secure-Record 字节级向量；
+- Draft 04 `carrier-generation.json` 与 `error-scope.json` 官方语义向量；
+- Carrier Generation：first=0、stale/equal reject、failed candidate no-commit、higher commit、SUPERSEDED、simultaneous equal、maximum no-wrap；
+- Error Scope：STREAM_OPEN_REJECT、Carrier-scoped FRAME_ENCODING/AUTH、Session-scoped FLOW_CONTROL/FINAL_SIZE/TRANSMISSION_ID/STREAM_STATE；
+- CARRIER_CLOSE / SESSION_CLOSE body 与 UTF-8/256-byte reason 限制；
+- Transmission ACK future/stale/Stream-ID mismatch；
+- 多 Carrier、loss/rejoin、retransmission/reinjection、scheduler negotiation；
 - Provisioning 服务 `go test` / `go vet`；
-- Provisioning URL HTTPS/localhost policy、redirect rejection、64 KiB response bound；
-- 完整远程 Profile 的 Userspace/Native 校验与 key-free UserDefaults 持久化；
-- 管理网页创建/修改/删除配置及 API URL rotation；
-- 公共随机 API URL 到 Swift 客户端的真实 HTTP 联调；
+- Provisioning URL HTTPS/localhost policy、redirect rejection、64 KiB response bound、完整 Profile 校验与 key-free preferences；
 - arm64 / x86_64 Swift 编译与 managed-mode UI harness；
-- Universal DMG 与 Linux amd64 `mpx-provision` 静态二进制构建。
+- Universal DMG、Linux amd64 Landing、Linux amd64 `mpx-provision`；
+- 所有发布组件使用同一个 Source-ID。
 
-Provisioning 不改变 MPX/4 Draft 03 wire bytes，0.9.7 Mac 与 0.9.6 Landing 保持线协议兼容。macOS DMG 仍为 ad-hoc 签名、未 notarize。
+macOS DMG 为 ad-hoc 签名、未 notarize。

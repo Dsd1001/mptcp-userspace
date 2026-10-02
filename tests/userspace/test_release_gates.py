@@ -8,7 +8,7 @@ ID='synthetic-unit-test-not-a-source-freeze'
 
 
 def records():
-    capacity={'version':'0.9.5','wire_protocol':3,'source_id':ID,'verified':True,'mode':'actual-logical-streams-30sx2','cases':[]}
+    capacity={'version':'0.9.8','wire_protocol':4,'source_id':ID,'verified':True,'mode':'actual-logical-streams-30sx2','cases':[]}
     for n in [128,256,512,1024,2048]:
         for round_number in [1,2]:
             capacity['cases'].append({'target_streams':n,'round':round_number,'seconds':30.1,'passed':True,
@@ -18,9 +18,9 @@ def records():
     for d in capacity['cases']:
         for who in ['client_peak','server_peak']:
             for k in ['receive_credit_bytes','bootstrap_credit_bytes','growth_credit_bytes','receive_allocated_bytes','data_pending_frames','data_pending_bytes','control_pending_frames','control_pending_bytes']:d[who][k]=0
-            d[who]['capability_revision']=5
+            d[who]['capability_revision']=4
         d.update(exchanges=d['target_streams'],churn_reopens=8,bulk_segments=8,typed_next_stream_rejection=d['target_streams']==2048,evidence_sha256='0'*64)
-    runtime={'version':'0.9.5','wire_protocol':3,'source_id':ID,'verified':True,'workload':'segmented-mixed-180s',
+    runtime={'version':'0.9.8','wire_protocol':4,'source_id':ID,'verified':True,'workload':'segmented-mixed-180s',
              'observed_seconds':180.1,'short_attempts':200,'short_failures':0,'idle_keepalive_connections':6,
              'idle_integrity':True,'minimum_sampled_paths':6,'final_paths':6,'open_receive_credit_waits':0,
              'admission_deadline_exceeded':0,'resource_refusals':0,'bulk_segments':[]}

@@ -12,7 +12,7 @@ import (
 
 type streamAddr string
 
-func (a streamAddr) Network() string { return "mpx3" }
+func (a streamAddr) Network() string { return "mpx4" }
 func (a streamAddr) String() string  { return string(a) }
 
 // Receive storage uses bounded, lazily allocated 32 KiB pages. A larger flow
@@ -103,8 +103,11 @@ func (s *Session) Open(ctx context.Context) (*Stream, error) {
 
 func (st *Stream) receiveLocked(offset uint64, data []byte) error {
 	end := offset + uint64(len(data))
-	if end < offset || (st.hasFIN && end > st.rxFIN) {
-		return ErrProtocol
+	if end < offset {
+		return protocolViolation("Stream DATA offset overflow")
+	}
+	if st.hasFIN && end > st.rxFIN {
+		return finalSizeFailure("Stream DATA exceeds established final size")
 	}
 	if end <= st.rxRead {
 		return nil
@@ -383,7 +386,7 @@ func (st *Stream) Close() error {
 		s.wakeLocked()
 		return nil
 	}
-	s.resetLocked(st, 1, true)
+	s.resetLocked(st, mpx4ErrNoError, true)
 	return nil
 }
 
@@ -396,8 +399,8 @@ func (st *Stream) releaseReceiveLocked() {
 	st.pages = nil
 }
 
-func (st *Stream) LocalAddr() net.Addr  { return streamAddr("mpx3/local") }
-func (st *Stream) RemoteAddr() net.Addr { return streamAddr("mpx3/peer") }
+func (st *Stream) LocalAddr() net.Addr  { return streamAddr("mpx4/local") }
+func (st *Stream) RemoteAddr() net.Addr { return streamAddr("mpx4/peer") }
 func (st *Stream) SetDeadline(t time.Time) error {
 	st.s.mu.Lock()
 	defer st.s.mu.Unlock()

@@ -29,7 +29,7 @@ def sha(data: bytes) -> str:
 
 def collect(root: pathlib.Path = ROOT) -> dict[str, bytes]:
     names = set(FIXED)
-    for directory, pattern in [('macos/engine', '*.go'), ('docs/userspace', '*.md'),
+    for directory, pattern in [('macos/engine', '*.go'), ('macos/engine/multipath/testdata', '*.json'), ('docs/userspace', '*.md'),
                                ('tests/userspace', '*.py'), ('tests/userspace', '*.swift'), ('tests/userspace', '*.go'), ('tests/userspace', '*.pl'),
                                ('provisioning', '*.go'), ('provisioning/web', '*.html')]:
         names.update(p.relative_to(root).as_posix() for p in (root/directory).rglob(pattern))

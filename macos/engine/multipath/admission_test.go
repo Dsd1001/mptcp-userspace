@@ -155,7 +155,7 @@ func TestSlowHandshakesDoNotStarveOtherSource(t *testing.T) {
 }
 
 func TestPartialHelloDeadlineAndOldWireRejection(t *testing.T) {
-	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 03 conformance tests")
+	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 04 conformance tests")
 	key, _ := ParseKey(testToken)
 	for _, legacy := range []bool{false, true} {
 		a, b := net.Pipe()

@@ -10,7 +10,7 @@ import (
 )
 
 func TestRev4RejectsAllOlderSchedulerHellos(t *testing.T) {
-	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 03 conformance tests")
+	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 04 conformance tests")
 	key, _ := ParseKey(testToken)
 	for _, old := range []byte{0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x31, 0x32, 0x33} {
 		a, b := net.Pipe()
@@ -203,13 +203,13 @@ func TestRev2LateOpenRejectCannotRevokeAcceptedStream(t *testing.T) {
 	s, c := rev2Fixture()
 	st := rev2Stream(s, 1)
 	st.openID = 77
-	if e := s.handleFrame(c, frame{kind: kindOpenReject, stream: 1, id: 77, offset: 1}); e != nil {
+	if e := s.handleFrame(c, frame{kind: kindOpenReject, stream: 1, id: 77, offset: mpx4ErrStreamState}); e != nil {
 		t.Fatal(e)
 	}
 	if !st.open || st.closed || s.closed {
 		t.Fatal("late OPEN rejection harmed active stream")
 	}
-	if e := s.handleFrame(c, frame{kind: kindOpenReject, stream: 1, id: 78, offset: 1}); !errors.Is(e, ErrProtocol) {
+	if e := s.handleFrame(c, frame{kind: kindOpenReject, stream: 1, id: 78, offset: mpx4ErrStreamState}); !errors.Is(e, ErrProtocol) {
 		t.Fatal("unrelated OPEN id accepted")
 	}
 }

@@ -15,7 +15,7 @@ This directory contains the public documentation for MPTCP Userspace.
 
 ## Protocol and scheduling
 
-- [MPX/3 protocol](userspace/PROTOCOL.md) — authenticated hello, records, directionality and Rev5 capacity fields.
+- [MPX/4 Draft 04 protocol profile](userspace/PROTOCOL.md) — handshake, Secure Records, Generation replacement, Streams, error scopes and scheduler contracts.
 - [Scheduler modes](userspace/SCHEDULER-MODES.md) — Auto, Aggregate, Protect and Weighted.
 - [MPX/3 credit](userspace/MPX3-CREDIT.md) — stream/session flow control and memory boundaries.
 - [Adaptive flow control](userspace/ADAPTIVE-FLOW-CONTROL.md)
@@ -24,7 +24,7 @@ This directory contains the public documentation for MPTCP Userspace.
 ## Validation and release
 
 - [Validation](userspace/VALIDATION.md)
-- [v0.9.5 release notes](userspace/RELEASE.zh-CN.md)
+- [v0.9.8 release notes](userspace/RELEASE.zh-CN.md)
 
 Published release evidence such as ACCEPTANCE.md, TESTS.json, SCHEDULER-MODES.json and PROVENANCE.json is attached to the GitHub Release rather than duplicated into the default branch.
 

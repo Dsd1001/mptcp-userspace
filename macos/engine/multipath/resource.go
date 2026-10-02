@@ -31,7 +31,7 @@ const (
 // errors.Is(err, ErrResourceLimit) remains compatible with existing callers.
 type ResourceLimitError struct{ Reason string }
 
-func (e *ResourceLimitError) Error() string { return "MPX/3 resource limit: " + e.Reason }
+func (e *ResourceLimitError) Error() string { return "MPX/4 resource limit: " + e.Reason }
 func (e *ResourceLimitError) Unwrap() error { return ErrResourceLimit }
 func ResourceReason(err error) string {
 	var e *ResourceLimitError

@@ -1,9 +1,6 @@
 package multipath
 
-import (
-	"fmt"
-	"time"
-)
+import "time"
 
 // Rev2 charges offset commitment, not WINDOW entitlement. These counters are
 // directional and protected by Session.mu. Retransmission never calls commit.
@@ -71,7 +68,7 @@ func (s *Session) advertiseSessionCreditLocked(now time.Time, force bool) {
 func (s *Session) receiveSessionCreditLocked(f frame) error {
 	fc := &s.credit
 	if f.stream != 0 || len(f.data) != 0 || f.id < f.offset || f.id-f.offset > SessionCreditLimit || f.offset > fc.txCommitted {
-		return fmt.Errorf("%w: invalid session credit", ErrProtocol)
+		return flowControlFailure("invalid session credit")
 	}
 	fc.peerConsumed = max(fc.peerConsumed, f.offset)
 	fc.peerLimit = max(fc.peerLimit, f.id)
@@ -83,21 +80,24 @@ func (s *Session) receiveSessionCreditLocked(f frame) error {
 // is reordered. A repeated/overlapping DATA or final-size declaration adds zero.
 func (st *Stream) receiveCommitLocked(end uint64) error {
 	s, fc := st.s, &st.s.credit
-	if end > st.rxLimit || (st.hasFIN && end > st.rxFIN) {
-		return fmt.Errorf("%w: stream credit/final size", ErrProtocol)
+	if st.hasFIN && end > st.rxFIN {
+		return finalSizeFailure("Stream DATA exceeds established final size")
+	}
+	if end > st.rxLimit {
+		return flowControlFailure("Stream DATA exceeds advertised credit")
 	}
 	if end <= st.rxHigh {
 		return nil
 	}
 	delta := end - st.rxHigh
 	if fc.rxCommitted > fc.rxLimit || delta > fc.rxLimit-fc.rxCommitted {
-		return fmt.Errorf("%w: session MAX_DATA exceeded", ErrProtocol)
+		return flowControlFailure("Session DATA exceeds advertised credit")
 	}
 	old := int(st.rxHigh - st.rxRead)
 	newGrowth := s.receiveGrowth + growthOf(old+int(delta)) - growthOf(old)
 	newUsed := s.receiveCredit + int(delta)
 	if newGrowth > GrowthCreditLimit || newUsed-newGrowth > BootstrapCreditLimit || newUsed > SessionCreditLimit {
-		return fmt.Errorf("%w: actual DATA pool exceeded", ErrProtocol)
+		return flowControlFailure("Session committed-byte accounting exceeds advertised limit")
 	}
 	fc.rxCommitted += delta
 	st.rxHigh = end
@@ -123,7 +123,7 @@ func (st *Stream) releaseReadCreditLocked(oldRead uint64) {
 
 func (st *Stream) releaseSendCreditLocked(consumed uint64) error {
 	if consumed > st.txNext {
-		return fmt.Errorf("%w: consumption beyond committed DATA", ErrProtocol)
+		return flowControlFailure("peer consumption exceeds committed DATA")
 	}
 	if consumed <= st.peerConsumed {
 		return nil
@@ -133,7 +133,7 @@ func (st *Stream) releaseSendCreditLocked(consumed uint64) error {
 	old := int(st.txNext - st.peerConsumed)
 	growth := growthOf(old) - growthOf(old-n)
 	if n > s.credit.txUsed || growth > s.credit.txGrowth {
-		return fmt.Errorf("%w: inconsistent consumption ledger", ErrProtocol)
+		return flowControlFailure("peer consumption contradicts Session credit ledger")
 	}
 	s.credit.txUsed -= n
 	s.credit.txGrowth -= growth

@@ -16,12 +16,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
-	Version             = "0.9.7"
-	CapabilityRevision  = 3 // MPX/4 Draft 03
+	Version             = "0.9.8"
+	CapabilityRevision  = 4 // MPX/4 Draft 04
 	MaxPayload          = 32768
 	MaxRecordSize       = 65536
 	StreamWindow        = 16 << 10
@@ -52,6 +54,8 @@ const (
 	kindOpenReject
 	kindCreditProbe
 	kindFinalConsumed
+	kindCarrierClose
+	kindSessionClose
 )
 
 const (
@@ -263,12 +267,21 @@ func readFields(src []byte, count int) ([]uint64, int, error) {
 }
 
 func encodeV4Frame(f frame) ([]byte, error) {
-	if f.kind == kindResetStream || f.kind == kindRST {
+	switch f.kind {
+	case kindResetStream, kindRST:
 		if len(f.data) != 8 {
 			return nil, ErrProtocol
 		}
-	} else if f.kind != kindData && len(f.data) != 0 {
-		return nil, ErrProtocol
+	case kindData:
+		// validated below
+	case kindCarrierClose, kindSessionClose:
+		if len(f.data) > 256 || !utf8.Valid(f.data) {
+			return nil, ErrProtocol
+		}
+	default:
+		if len(f.data) != 0 {
+			return nil, ErrProtocol
+		}
 	}
 	var typ uint64
 	var body []byte
@@ -324,6 +337,14 @@ func encodeV4Frame(f frame) ([]byte, error) {
 	case kindPong:
 		typ = mpx4FramePong
 		body, err = appendField(nil, f.offset)
+	case kindCarrierClose, kindSessionClose:
+		if f.kind == kindCarrierClose {
+			typ = mpx4FrameCarrierClose
+		} else {
+			typ = mpx4FrameSessionClose
+		}
+		body, err = appendField(nil, f.offset, f.id, uint64(len(f.data)))
+		body = append(body, f.data...)
 	default:
 		return nil, ErrProtocol
 	}
@@ -427,10 +448,21 @@ func decodeV4Frame(typ uint64, body []byte) (frame, error) {
 			return f, ErrProtocol
 		}
 		f.kind, f.stream = kindCreditProbe, v[0]
-	case mpx4FrameCarrierClose:
-		return f, io.EOF
-	case mpx4FrameSessionClose:
-		return f, ErrSessionExpired
+	case mpx4FrameCarrierClose, mpx4FrameSessionClose:
+		v, n, err := readFields(body, 3)
+		if err != nil || v[2] > 256 || v[2] > uint64(len(body)-n) || n+int(v[2]) != len(body) {
+			return f, ErrProtocol
+		}
+		reason := body[n:]
+		if !utf8.Valid(reason) {
+			return f, ErrProtocol
+		}
+		f.kind = kindCarrierClose
+		if typ == mpx4FrameSessionClose {
+			f.kind = kindSessionClose
+		}
+		f.offset, f.id = v[0], v[1]
+		f.data = append([]byte(nil), reason...)
 	default:
 		if typ >= 0x40 && typ <= 0x3fff {
 			return f, errSkipFrame
@@ -477,6 +509,7 @@ func parseV4Frames(plain []byte) ([]frame, error) {
 
 type secureConn struct {
 	net.Conn
+	txMu                 sync.Mutex
 	reader               *bufio.Reader
 	send, receive        cipher.AEAD
 	txIV, rxIV           [12]byte
@@ -522,6 +555,8 @@ func (c *secureConn) writeRecord(plain []byte) error {
 }
 
 func (c *secureConn) writeFrames(frames []frame) error {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	if len(frames) == 0 || len(frames) > carrierBatchFrames {
 		return ErrResourceLimit
 	}
@@ -1077,7 +1112,7 @@ func clientHandshakePolicyGeneration(c net.Conn, key []byte, sid sessionID, carr
 	r := bufio.NewReaderSize(c, 64<<10)
 	typ, serverBody, serverInit, err := readHandshakeMessage(r)
 	if err != nil || typ != mpx4HSServerInit {
-		// Draft 03 permits an unauthenticated handshake rejection to be signaled
+		// Draft 04 permits an unauthenticated handshake rejection to be signaled
 		// by transport close. A JOIN that is rejected before SERVER_INIT most
 		// commonly means the Session is absent; callers already treat this as a
 		// terminal restart condition rather than retrying the stale Session ID.

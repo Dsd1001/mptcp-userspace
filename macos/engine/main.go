@@ -438,7 +438,7 @@ func main() {
 			emit(Event{Kind: "ready", Mode: "userspace_multipath", Message: fmt.Sprintf("Userspace 引擎可用；RLIMIT_NOFILE 已提升/满足 %d，可承载 %d 业务流；尚未检查 Relay、Landing 密钥和端口", userspaceDesiredNOFILE, multipath.MaxStreams)})
 		}
 	case len(os.Args) == 2 && os.Args[1] == "version":
-		emit(Event{Kind: "ready", Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Message: "mptcp-desktop-engine " + multipath.Version + " MPX/4 Draft 03 + Native fallback"})
+		emit(Event{Kind: "ready", Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Message: "mptcp-desktop-engine " + multipath.Version + " MPX/4 Draft 04 + Native fallback"})
 	case len(os.Args) == 2 && os.Args[1] == "run":
 		var c Config
 		c, err = readConfig(os.Stdin)

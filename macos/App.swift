@@ -567,7 +567,7 @@ struct DesktopView: View {
                     HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
                 }
                 Spacer()
-                Text("Multipath 0.9.7 · MPX/4 Draft 03 + Provisioning").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("Multipath 0.9.8 · MPX/4 Draft 04 + Provisioning").font(.system(size: 11)).foregroundColor(.secondary)
             }
             Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2)}.pickerStyle(.segmented)
             if model.tab == 0 {
@@ -612,7 +612,7 @@ struct DesktopView: View {
                                     .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
                             }
                             SecureField("Landing 传输密钥（64 位十六进制，不是 SS 密码）", text: $model.transportKey)
-                            Text("本版 TCP Userspace 线协议为 MPX/4 Draft 03。也可以只保存上面的 Provisioning API 链接，将全部参数改由网页托管。")
+                            Text("本版 TCP Userspace 协议为 MPX/4 Draft 04。也可以只保存上面的 Provisioning API 链接，将全部参数改由网页托管。")
                                 .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
                         }
                         HStack {Text("本地转发入口").frame(width: 120, alignment: .leading);Text("127.0.0.1").foregroundColor(.secondary);TextField("端口", text: $model.listenPort).frame(width: 85);Spacer();Button {let p = NSPasteboard.general;p.clearContents();p.setString("127.0.0.1:\(model.listenPort)",forType:.string)} label:{Image(systemName:"doc.on.doc")}.help("复制本地 TCP 入口")}

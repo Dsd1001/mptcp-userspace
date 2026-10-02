@@ -11,6 +11,8 @@ const maxTerminalStreams = 8192
 
 type terminalStream struct {
 	txFinal, rxFinal, rxLimit uint64
+	openID                    uint64
+	openAccepted              bool
 }
 
 func resetPayload(code uint64) []byte {
@@ -20,10 +22,13 @@ func resetPayload(code uint64) []byte {
 }
 
 func resetError(code uint64) error {
-	if code == 4 {
+	if code == mpx4ErrResourceLimit || code == mpx4ErrStreamLimit {
 		return &ResourceLimitError{Reason: LimitRemote}
 	}
-	return fmt.Errorf("MPX stream reset (code %d)", code)
+	if code == mpx4ErrNoError {
+		return net.ErrClosed
+	}
+	return fmt.Errorf("MPX/4 Stream reset (code 0x%x)", code)
 }
 
 func (s *Session) rememberTerminalLocked(id uint64, t terminalStream) {
@@ -63,7 +68,7 @@ func (s *Session) tryRetireStreamLocked(st *Stream) {
 		}
 	}
 	delete(s.closing, st.id)
-	s.rememberTerminalLocked(st.id, terminalStream{st.txNext, st.rxFIN, st.rxLimit})
+	s.rememberTerminalLocked(st.id, terminalStream{txFinal: st.txNext, rxFinal: st.rxFIN, rxLimit: st.rxLimit, openID: st.openID, openAccepted: st.open})
 	s.wakeLocked()
 }
 
@@ -155,17 +160,17 @@ func (s *Session) resetLocked(st *Stream, code uint64, send bool) {
 
 func (s *Session) handleResetStreamLocked(c *carrier, f frame) error {
 	if f.id == 0 || len(f.data) != 8 {
-		return ErrProtocol
+		return protocolViolation("invalid RESET_STREAM encoding")
 	}
 	code := binary.BigEndian.Uint64(f.data)
-	if code < 1 || code > 4 {
-		return ErrProtocol
+	if code > mpx4VarIntMax {
+		return protocolViolation("RESET_STREAM Error Code exceeds MPX VarInt")
 	}
 	st := s.streamForCreditLocked(f.stream)
 	if st == nil {
 		if term, ok := s.terminal[f.stream]; ok {
 			if f.offset != term.rxFinal {
-				return fmt.Errorf("%w: changed retired final size", ErrProtocol)
+				return finalSizeFailure("RESET_STREAM changes retired final size")
 			}
 			s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id})
 			return nil
@@ -187,12 +192,12 @@ func (s *Session) handleResetStreamLocked(c *carrier, f frame) error {
 		return nil
 	}
 	if f.offset < st.rxHigh || f.offset < st.rxRead || f.offset > st.rxLimit || (st.hasFIN && f.offset != st.rxFIN) {
-		return fmt.Errorf("%w: reset final size", ErrProtocol)
+		return finalSizeFailure("RESET_STREAM contradicts final size")
 	}
 	if err := st.receiveCommitLocked(f.offset); err != nil {
 		return err
 	}
-	if !st.receivedReset && code == 4 {
+	if !st.receivedReset && (code == mpx4ErrResourceLimit || code == mpx4ErrStreamLimit) {
 		s.resourceLocked(LimitRemote, false)
 	}
 	st.receivedReset = true
@@ -220,8 +225,8 @@ func (s *Session) queueTerminalResetLocked(id, final, code uint64) {
 }
 
 func (s *Session) handleStopReceivingLocked(c *carrier, f frame) error {
-	if f.id == 0 || f.offset < 1 || f.offset > 4 || len(f.data) != 0 {
-		return ErrProtocol
+	if f.id == 0 || f.offset > mpx4VarIntMax || len(f.data) != 0 {
+		return protocolViolation("invalid STOP_SENDING")
 	}
 	if st := s.streamForCreditLocked(f.stream); st != nil {
 		s.resetSendLocked(st, f.offset)
@@ -247,7 +252,7 @@ func (s *Session) handleFinalLocked(c *carrier, f frame) error {
 	if st == nil {
 		if term, ok := s.terminal[f.stream]; ok {
 			if f.offset != term.rxFinal {
-				return fmt.Errorf("%w: changed retired FIN size", ErrProtocol)
+				return finalSizeFailure("STREAM_FIN changes retired final size")
 			}
 			s.controlLocked(c, frame{kind: kindWindow, stream: f.stream, offset: term.rxFinal, id: term.rxLimit})
 		}
@@ -255,7 +260,7 @@ func (s *Session) handleFinalLocked(c *carrier, f frame) error {
 		return nil
 	}
 	if f.offset < st.rxHigh || f.offset < st.rxRead || f.offset > st.rxLimit || (st.hasFIN && f.offset != st.rxFIN) {
-		return fmt.Errorf("%w: FIN final size", ErrProtocol)
+		return finalSizeFailure("STREAM_FIN contradicts final size")
 	}
 	if err := st.receiveCommitLocked(f.offset); err != nil {
 		return err
@@ -312,7 +317,7 @@ func (st *Stream) CloseRead() error {
 	if st.closed {
 		return net.ErrClosed
 	}
-	s.stopReceiveLocked(st, 1)
+	s.stopReceiveLocked(st, mpx4ErrNoError)
 	return nil
 }
 
@@ -332,8 +337,11 @@ func (s *Session) handleFinalConsumedLocked(c *carrier, f frame) error {
 		return ErrProtocol
 	}
 	if st := s.streamForCreditLocked(f.stream); st != nil {
-		if (!st.writeFIN && !st.sendReset) || f.offset != st.txNext {
-			return ErrProtocol
+		if !st.writeFIN && !st.sendReset {
+			return streamStateFailure("STREAM_CONSUMED before local final size")
+		}
+		if f.offset != st.txNext {
+			return finalSizeFailure("STREAM_CONSUMED contradicts local final size")
 		}
 		if err := st.releaseSendCreditLocked(f.offset); err != nil {
 			return err
@@ -342,7 +350,7 @@ func (s *Session) handleFinalConsumedLocked(c *carrier, f frame) error {
 		s.tryRetireStreamLocked(st)
 	} else {
 		if term, ok := s.terminal[f.stream]; ok && f.offset != term.txFinal {
-			return ErrProtocol
+			return finalSizeFailure("STREAM_CONSUMED contradicts retired final size")
 		}
 		s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id})
 	}

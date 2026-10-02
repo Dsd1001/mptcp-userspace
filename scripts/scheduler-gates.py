@@ -36,7 +36,7 @@ def require(condition: bool, message: str) -> None:
 
 def check(record: dict, identity: str, *, verify_evidence: bool = False,
           root: pathlib.Path = ROOT) -> None:
-    require(record.get('version') == '0.9.6' and record.get('wire_protocol') == 4,
+    require(record.get('version') == '0.9.8' and record.get('wire_protocol') == 4,
             'Scheduler version/wire mismatch')
     require(record.get('source_id') == identity and len(identity) == 64,
             'Scheduler source mismatch')

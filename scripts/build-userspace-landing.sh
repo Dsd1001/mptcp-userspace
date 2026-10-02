@@ -23,7 +23,7 @@ chmod 755 "$OUT/mptcp-landing"
 cd "$OUT"
 shasum -a 256 mptcp-landing > mptcp-landing.sha256
 {
-    printf 'Component: mptcp-landing\nVersion: %s\nSource-ID: %s\nTarget: linux/amd64\nCGO_ENABLED: 0\nProtocol: MPX/4 Draft 03\n' "$VERSION" "$SOURCE_ID"
+    printf 'Component: mptcp-landing\nVersion: %s\nSource-ID: %s\nTarget: linux/amd64\nCGO_ENABLED: 0\nProtocol: MPX/4 Draft 04\n' "$VERSION" "$SOURCE_ID"
     "$GO" version
     "$GO" version -m mptcp-landing
 } > mptcp-landing.BUILDINFO

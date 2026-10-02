@@ -124,7 +124,7 @@ func (st *Stream) advertiseCreditLocked(now time.Time) {
 
 func (st *Stream) receiveCreditLocked(f frame) error {
 	if f.id < f.offset || f.id-f.offset > MaxStreamWindow || f.offset > st.txNext {
-		return ErrProtocol
+		return flowControlFailure("invalid Stream credit advertisement")
 	}
 	if err := st.releaseSendCreditLocked(f.offset); err != nil {
 		return err
@@ -170,7 +170,7 @@ func (c *carrier) observeDelivery(now time.Time, p *outbound, receiverStamp uint
 			c.startupDone = true
 		}
 	}
-	// MPX/3 DATA receipts contain the receiver's monotonic arrival clock.
+	// MPX/4 DATA receipts contain the receiver's monotonic arrival clock.
 	// A busy reverse-direction carrier can compress/delay ACKs; measuring
 	// their local arrival spacing would misclassify equal forward links.
 	// Only time differences on that same remote clock are used (no sync).

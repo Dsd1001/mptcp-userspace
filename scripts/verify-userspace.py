@@ -101,9 +101,16 @@ def main() -> None:
             cwd=frozen/'macos/engine',env=dict(env,CGO_ENABLED='0',GOOS='linux',GOARCH='amd64'))
         if linux.read_bytes()!=(out/'mptcp-landing').read_bytes():
             raise ValueError('Landing is not byte-reproducible from frozen source')
-        checks.append('Linux amd64 ELF byte-identical rebuild from source archive')
-        reproduced['linux-amd64']={'sha256':source.sha(linux.read_bytes()),'comparison':'entire binary'}
-        for info in ['mptcp-landing.BUILDINFO','MPTCP-Desk.BUILDINFO']:
+        checks.append('Linux amd64 Landing ELF byte-identical rebuild from source archive')
+        reproduced['linux-amd64']={'sha256':source.sha(linux.read_bytes()),'comparison':'entire Landing binary'}
+        provision=work/'mpx-provision'
+        run([go,'build','-trimpath','-buildvcs=false','-ldflags=-s -w -buildid=','-o',str(provision),'.'],
+            cwd=frozen/'provisioning',env=dict(env,CGO_ENABLED='0',GOOS='linux',GOARCH='amd64'))
+        if provision.read_bytes()!=(out/'mpx-provision').read_bytes():
+            raise ValueError('Provisioning service is not byte-reproducible from frozen source')
+        checks.append('Linux amd64 Provisioning ELF byte-identical rebuild from source archive')
+        reproduced['provision-linux-amd64']={'sha256':source.sha(provision.read_bytes()),'comparison':'entire Provisioning binary'}
+        for info in ['mptcp-landing.BUILDINFO','MPTCP-Desk.BUILDINFO','mpx-provision.BUILDINFO']:
             if 'Source-ID: '+identity not in (out/info).read_text():
                 raise ValueError('Buildinfo does not bind source: '+info)
         run(['hdiutil','verify',str(out/dmg_name)])
@@ -126,7 +133,7 @@ def main() -> None:
             sdk=run(['xcrun','--sdk','macosx','--show-sdk-path']).decode().strip()
             for arch,goarch in [('arm64','arm64'),('x86_64','amd64')]:
                 event=json.loads(run(['/usr/bin/arch','-'+arch,str(engine),'version'],timeout=30))
-                if event.get('source_id')!=identity or event.get('version')!=version or event.get('wire_protocol')!=3 or event.get('capability_revision')!=5:
+                if event.get('source_id')!=identity or event.get('version')!=version or event.get('wire_protocol')!=4 or event.get('capability_revision')!=4:
                     raise ValueError('Actual packaged engine identity differs')
                 rebuilt=work/('engine-'+goarch)
                 cc=f'clang -arch {arch} -isysroot {sdk} -mmacosx-version-min=13.0'
@@ -149,7 +156,7 @@ def main() -> None:
             for name in ['README.zh-CN.md','VALIDATION.md','tcp-profile.example.json','userspace-profile.example.json']:
                 if (resources/name).read_bytes()!=files['macos/'+name]:
                     raise ValueError('Packaged documentation/example differs: '+name)
-            for name in ['DEPLOYMENT.zh-CN.md','PROTOCOL.md','VALIDATION.md','ADAPTIVE-FLOW-CONTROL.md','MPX3-CREDIT.md','SCHEDULER-MODES.md','REV2-SHARED-CREDIT.md']:
+            for name in ['DEPLOYMENT.zh-CN.md','PROTOCOL.md','PROVISIONING.md','VALIDATION.md','ADAPTIVE-FLOW-CONTROL.md','MPX3-CREDIT.md','SCHEDULER-MODES.md','REV2-SHARED-CREDIT.md']:
                 if (resources/'docs/userspace'/name).read_bytes()!=files['docs/userspace/'+name]:
                     raise ValueError('Packaged protocol/deployment documentation differs')
             run([str(engine),'validate'],input=files['macos/tcp-profile.example.json'])
@@ -165,7 +172,7 @@ def main() -> None:
             run(['hdiutil','detach',str(mount)])
     if source.manifest(source.collect())!=sums:
         raise ValueError('Sources changed during verification')
-    artifacts=[dmg_name,'mptcp-landing',source_name,'mptcp-landing.BUILDINFO','MPTCP-Desk.BUILDINFO']
+    artifacts=[dmg_name,'mptcp-landing','mpx-provision',source_name,'mptcp-landing.BUILDINFO','MPTCP-Desk.BUILDINFO','mpx-provision.BUILDINFO']
     receipt={'version':version,'source_id':identity,'verified':True,'checks':checks,'reproduced':reproduced,
              'artifact_sha256':{name:source.sha((out/name).read_bytes()) for name in artifacts},
              'limitations':['Not a reproducible DMG filesystem container','No Developer ID notarization',

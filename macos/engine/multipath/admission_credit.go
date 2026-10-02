@@ -43,13 +43,13 @@ func (s *Session) openWithAdmission(ctx context.Context) (*Stream, error) {
 	st := s.newStreamLocked(id) // zero receive/send credit, no receive pages
 	p := s.queueLocked(frame{kind: kindOpen, stream: id})
 	if p == nil {
-		s.resetLocked(st, 4, false)
+		s.resetLocked(st, mpx4ErrResourceLimit, false)
 		return nil, &ResourceLimitError{s.resources.LastReason}
 	}
 	st.openID = p.f.id
 	for {
 		if err := ctx.Err(); err != nil {
-			s.resetLocked(st, 1, true)
+			s.resetLocked(st, mpx4ErrNoError, true)
 			return nil, err
 		}
 		if st.closed {
@@ -63,7 +63,7 @@ func (s *Session) openWithAdmission(ctx context.Context) (*Stream, error) {
 		err := waitChange(ctx, ch, time.Time{})
 		s.mu.Lock()
 		if err != nil {
-			s.resetLocked(st, 1, true)
+			s.resetLocked(st, mpx4ErrNoError, true)
 			return nil, err
 		}
 	}
@@ -85,11 +85,11 @@ func (s *Session) rememberStreamLocked(id uint64) {
 
 func (s *Session) handleOpenLocked(c *carrier, f frame) error {
 	if !s.server || f.id == 0 || f.offset != 0 {
-		return ErrProtocol
+		return streamStateFailure("invalid STREAM_OPEN state")
 	}
 	if st := s.streams[f.stream]; st != nil {
 		if st.openID != f.id {
-			return ErrProtocol
+			return transmissionIDFailure("STREAM_OPEN reused Stream ID with different Transmission ID")
 		}
 		if st.open {
 			s.controlLocked(c, frame{kind: kindOpenOK, stream: st.id, id: st.openID})
@@ -97,20 +97,43 @@ func (s *Session) handleOpenLocked(c *carrier, f frame) error {
 		}
 		return nil
 	}
-	if s.closing[f.stream] != nil || s.seen[f.stream] || (s.maxSeen > 8192 && f.stream <= s.maxSeen-8192) {
-		s.controlLocked(c, frame{kind: kindOpenReject, stream: f.stream, offset: 1, id: f.id})
+	if st := s.closing[f.stream]; st != nil {
+		if st.openID != 0 && st.openID != f.id {
+			return transmissionIDFailure("STREAM_OPEN reused closing Stream ID with different Transmission ID")
+		}
+		if st.open {
+			s.controlLocked(c, frame{kind: kindOpenOK, stream: f.stream, id: f.id})
+		} else {
+			s.controlLocked(c, frame{kind: kindOpenReject, stream: f.stream, offset: mpx4ErrStreamState, id: f.id})
+		}
+		return nil
+	}
+	if term, ok := s.terminal[f.stream]; ok {
+		if term.openID != 0 && term.openID != f.id {
+			return transmissionIDFailure("STREAM_OPEN reused tombstoned Stream ID with different Transmission ID")
+		}
+		if term.openAccepted {
+			s.controlLocked(c, frame{kind: kindOpenOK, stream: f.stream, id: f.id})
+		} else {
+			s.controlLocked(c, frame{kind: kindOpenReject, stream: f.stream, offset: mpx4ErrStreamState, id: f.id})
+		}
+		return nil
+	}
+	if s.seen[f.stream] || (s.maxSeen > 8192 && f.stream <= s.maxSeen-8192) {
+		// Detailed response state has been compacted. Draft 04 treats this as
+		// retired identity: ignore without recreating application Stream state.
 		return nil
 	}
 	if len(s.streams)+len(s.closing) >= MaxStreams {
 		s.resourceLocked(LimitStreams, false)
-		s.controlLocked(c, frame{kind: kindOpenReject, stream: f.stream, offset: 4, id: f.id})
+		s.controlLocked(c, frame{kind: kindOpenReject, stream: f.stream, offset: mpx4ErrStreamLimit, id: f.id})
 		return nil
 	}
 	s.rememberStreamLocked(f.stream)
 	st := s.newStreamLocked(f.stream)
 	st.openID = f.id
 	if s.onOpen == nil {
-		s.resetLocked(st, 3, true)
+		s.resetLocked(st, mpx4ErrInternal, true)
 	} else {
 		go s.onOpen(st)
 	}

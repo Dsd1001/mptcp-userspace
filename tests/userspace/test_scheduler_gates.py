@@ -19,7 +19,7 @@ def fixture():
              for rate in [300, 500] for paths in [2, 3, 6] for ms in [30, 50, 100]]
     cases += [{'name': 'asymmetric-fastest-only', 'mbps': 270.0},
               {'name': 'asymmetric-300+20+180Mbps', 'mbps': 380.0}]
-    return {'version': '0.9.5', 'wire_protocol': 3, 'source_id': IDENTITY,
+    return {'version': '0.9.8', 'wire_protocol': 4, 'source_id': IDENTITY,
             'scheduler_capability_revision': 5, 'verified': True, 'status': 'passed',
             'candidate_frozen_after_short_acceptance': True, 'failures': [],
             'checks': dict.fromkeys(gate.REQUIRED_CHECKS, True),

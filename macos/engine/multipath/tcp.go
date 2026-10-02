@@ -107,10 +107,6 @@ func (s *Session) maintainCarrier(id byte, address string, key []byte) {
 		c := s.paths[id]
 		closed := s.closed
 		active := c != nil && c.active
-		generation := uint64(0)
-		if c != nil && c.conn != nil {
-			generation = c.generation + 1
-		}
 		s.mu.Unlock()
 		if closed {
 			return
@@ -126,6 +122,18 @@ func (s *Session) maintainCarrier(id byte, address string, key []byte) {
 		if s.ctx.Err() != nil {
 			return
 		}
+
+		// Draft 04 allocates a candidate Generation independently from the
+		// accepted Generation high-water mark. Failed candidates do not advance
+		// Highest Accepted Generation and Generation values never wrap.
+		s.mu.Lock()
+		generation, ok := s.nextCarrierCandidateGenerationLocked(id)
+		s.mu.Unlock()
+		if !ok {
+			s.recordDialError(id, address, fmt.Errorf("%w: carrier generation exhausted", ErrCarrierConflict))
+			return
+		}
+
 		s.recordDialAttempt(id, address)
 		conn, err := PlainDial(s.ctx, address)
 		if err == nil {
@@ -148,10 +156,9 @@ func (s *Session) maintainCarrier(id byte, address string, key []byte) {
 			delay = 200 * time.Millisecond
 			continue
 		}
-		// A Draft 03 JOIN may be rejected by transport close before an authenticated
-		// error can be distinguished from a transient relay failure. Keep the
-		// logical Session alive while another Carrier remains usable; scheduler
-		// mismatch is the only locally unambiguous terminal policy error here.
+		// A candidate JOIN rejection is Carrier-scoped and must not mutate the
+		// live Session. Scheduler mismatch is a local Session policy mismatch and
+		// remains terminal for this configured client profile.
 		if errors.Is(err, ErrSchedulerMismatch) {
 			s.stop(err)
 			return
@@ -329,6 +336,11 @@ func (srv *Server) attach(c net.Conn) error {
 		status = 2
 	} else if existing.scheduler.configured != h.scheduler {
 		status = 4
+	} else if err := existing.validateCarrierGeneration(h.carrier, h.generation); err != nil {
+		status = 5
+	}
+	if h.create && h.generation != 0 {
+		status = 5
 	}
 	srv.mu.Unlock()
 
@@ -348,7 +360,9 @@ func (srv *Server) attach(c net.Conn) error {
 	sc, err := h.finish(srv.key, status)
 	if err != nil {
 		srv.mu.Lock()
-		if status == 4 {
+		if status == 5 {
+			srv.handshakeOutcomeLocked("carrier_generation_conflict")
+		} else if status == 4 {
 			srv.handshakeOutcomeLocked("scheduler_mode_conflict")
 		} else if status == 2 {
 			srv.handshakeOutcomeLocked("session_missing")
@@ -394,7 +408,15 @@ func (srv *Server) attach(c net.Conn) error {
 	}
 	srv.mu.Unlock()
 
-	return s.addCarrier(h.carrier, c.RemoteAddr().String(), sc)
+	if err := s.addCarrier(h.carrier, c.RemoteAddr().String(), sc); err != nil {
+		if errors.Is(err, ErrCarrierConflict) {
+			srv.mu.Lock()
+			srv.handshakeOutcomeLocked("carrier_generation_conflict")
+			srv.mu.Unlock()
+		}
+		return err
+	}
+	return nil
 }
 
 func (srv *Server) openBackend(st *Stream) {
@@ -403,7 +425,7 @@ func (srv *Server) openBackend(st *Stream) {
 	cancel()
 	if err != nil {
 		st.s.mu.Lock()
-		st.s.resetLocked(st, 3, true)
+		st.s.resetLocked(st, mpx4ErrInternal, true)
 		st.s.mu.Unlock()
 		return
 	}

@@ -1,4 +1,4 @@
-# MPTCP Desk 0.9.7 Provisioning
+# MPTCP Desk 0.9.8 Provisioning
 
 MPTCP Desk supports a managed mode in which the Mac stores only one secret Provisioning API URL. Every time forwarding starts (including background recovery), the client fetches and validates the complete current configuration before starting the transport engine.
 

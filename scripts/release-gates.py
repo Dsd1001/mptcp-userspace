@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Bind 0.9.5 to ten actual 30s capacity cases and a 180s physical mixed run.
+"""Bind the 0.9.8 candidate to ten actual 30s capacity cases and a 180s physical mixed run.
 Only reads recorded evidence; never starts traffic, changes a service or GUI.
 """
 from __future__ import annotations
 import argparse, hashlib, importlib.util, json, pathlib
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-VERSION='0.9.5'
+VERSION='0.9.8'
 TARGETS=[128,256,512,1024,2048]
 MAX_STREAMS=2048
 CAPS={'active_streams':MAX_STREAMS,'receive_credit_bytes':128<<20,'bootstrap_credit_bytes':32<<20,
@@ -23,7 +23,7 @@ def sha(path: pathlib.Path) -> str:
 
 def bounds(snapshot: dict) -> None:
     r=snapshot['resources']
-    require(r.get('capability_revision')==5,'Capacity evidence is not MPX/3 Rev5')
+    require(r.get('capability_revision')==4,'Capacity evidence is not MPX/4 Draft 04')
     for field,limit in CAPS.items():
         require(isinstance(r[field],int) and 0<=r[field]<=limit,'Invalid resource bound: '+field)
     require(r['receive_credit_bytes']==r['bootstrap_credit_bytes']+r['growth_credit_bytes'],'Credit subledger mismatch')
@@ -42,7 +42,7 @@ def collect(directory: pathlib.Path, identity: str) -> dict:
         for round_number in [1,2]:
             path=directory/f'capacity-{target}-{round_number}.json'
             d=json.loads(path.read_text())
-            require(d['version']==VERSION and d['source_id']==identity and d['wire_protocol']==3,'Capacity source/version mismatch')
+            require(d['version']==VERSION and d['source_id']==identity and d['wire_protocol']==4,'Capacity source/version mismatch')
             require(d['target_streams']==target and d['round']==round_number,'Capacity case mismatch')
             require(d['passed'] is True and d['acceptance_eligible'] is True and not d['failures'],'Failed or ineligible capacity case')
             require(d['requested_seconds']==30 and 30<=d['observed_seconds']<=35,'Not a bounded 30-second case')
@@ -82,14 +82,14 @@ def collect(directory: pathlib.Path, identity: str) -> dict:
                 'open_receive_credit_waits':0,'admission_deadline_exceeded':0,'unexpected_resource_refusals':0,
                 'six_carriers_preserved':True,'same_session':True,'reclaimed':True,
                 'typed_next_stream_rejection':d['typed_next_stream_rejection'],'evidence_sha256':sha(path),'passed':True})
-    return {'version':VERSION,'wire_protocol':3,'source_id':identity,'verified':True,'status':'passed',
+    return {'version':VERSION,'wire_protocol':4,'source_id':identity,'verified':True,'status':'passed',
             'mode':'actual-logical-streams-30sx2','cases':cases,
             'scope':'Six shaped loopback TCP carriers; 128/256/512/1024/2048 actual simultaneous logical streams. Not HTTP request totals or public-WAN/App capacity.'}
 
 
 def check(capacity: dict, runtime: dict, identity: str, *, required: bool) -> bool:
     for record in [capacity,runtime]:
-        require(record.get('version')==VERSION and record.get('wire_protocol')==3 and record.get('source_id')==identity,'Acceptance record identity mismatch')
+        require(record.get('version')==VERSION and record.get('wire_protocol')==4 and record.get('source_id')==identity,'Acceptance record identity mismatch')
     if capacity.get('verified') is True:
         require(capacity.get('mode')=='actual-logical-streams-30sx2','Wrong capacity workload')
         cases=capacity.get('cases',[])
