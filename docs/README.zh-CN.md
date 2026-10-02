@@ -30,3 +30,5 @@
 Release 中的 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、PROVENANCE.json 等是对应二进制的冻结验收证据，不在 main 重复维护副本。
 
 v0.9.5 Tag 固定对应正式发布源码；Tag 之后 main 可以继续增加文档提交。
+
+- [客户端集中配置 / Provisioning](userspace/PROVISIONING.md) — 网页管理完整 Mac 配置并生成独立 API URL。

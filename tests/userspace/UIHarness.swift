@@ -40,8 +40,12 @@ import Foundation
         precondition(decodedEvent.resources?.rejections.isEmpty == true)
         precondition(decodedEvent.lifecycle?.closed == false)
         model.resources = decodedEvent.resources; model.lifecycle = decodedEvent.lifecycle
-        for (name,mode,tab) in [("userspace-connect","userspace_multipath",0),("native-connect","native_mptcp",0),("userspace-paths","userspace_multipath",2)] {
+        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false)] {
             model.mode=mode;model.tab=tab;model.problem=nil;model.running=false;model.busy=false
+            model.provisioningURL=api ? "https://config.example.test/v1/profile/synthetic-secret-token" : ""
+            model.provisioningStatus=api ? "Synthetic Profile · 已同步 · 1" : "手动配置"
+            model.provisioningRevision=api ? "1" : ""
+            model.provisioningDisplayName=api ? "Synthetic Profile" : ""
             let host=NSHostingView(rootView:DesktopView().environment(\.colorScheme,.light))
             let frame=NSRect(x:0,y:0,width:710,height:850)
             let window=NSWindow(contentRect:frame,styleMask:.borderless,backing:.buffered,defer:false)
@@ -55,6 +59,6 @@ import Foundation
             print("Rendered \(name): \(bitmap.pixelsWide)x\(bitmap.pixelsHigh), \(png.count) bytes")
             window.contentView=nil
         }
-        print("PASS: legacy profile stays Native; schema 3 validation; weak-key and both-disabled rejection; three offscreen SwiftUI views")
+        print("PASS: legacy profile stays Native; schema 3 validation; weak-key and both-disabled rejection; four offscreen SwiftUI views including managed Provisioning mode")
     }
 }

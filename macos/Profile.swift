@@ -247,3 +247,134 @@ enum TransportKeyStore {
         return value
     }
 }
+
+// Versioned full-client provisioning response. The provisioning URL and
+// transport key are credentials; neither is stored in UserDefaults or logs.
+struct RelayProvisioningPayload: Decodable {
+    var schema_version: Int
+    var revision: String?
+    var display_name: String?
+    var mode: String
+    var listen_port: Int
+    var scheduler_mode: String?
+    var tcp_enabled: Bool
+    var udp_enabled: Bool
+    var background_resident: Bool?
+    var transport_key: String?
+    var relays: [RelayRow]
+
+    func validatedProfile() throws -> Profile {
+        guard schema_version == 1 else { throw ProfileError("Provisioning API schema_version 仅支持 1") }
+        if let revision, revision.utf8.count > 128 { throw ProfileError("Provisioning revision 过长") }
+        if let display_name, display_name.utf8.count > 128 { throw ProfileError("Provisioning display_name 过长") }
+        guard ["userspace_multipath", "native_mptcp"].contains(mode) else { throw ProfileError("Provisioning mode 仅支持 userspace_multipath 或 native_mptcp") }
+        let p = Profile(
+            schema_version: 3,
+            mode: mode,
+            listen_port: listen_port,
+            relays: relays,
+            udp_enabled: udp_enabled,
+            tcp_enabled: tcp_enabled,
+            transport_key: mode == "userspace_multipath" ? transport_key : nil,
+            scheduler_mode: mode == "userspace_multipath" ? (scheduler_mode ?? SchedulerPolicy.auto.rawValue) : nil
+        )
+        try p.validate()
+        return p
+    }
+}
+
+private final class RelayProvisioningNoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) { completionHandler(nil) }
+}
+
+enum RelayProvisioningClient {
+    static let maximumResponseBytes = 64 * 1024
+
+    static func endpointURL(_ raw: String) throws -> URL {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, var parts = URLComponents(string: value), let scheme = parts.scheme?.lowercased(), let host = parts.host?.lowercased() else {
+            throw ProfileError("请输入有效的 Provisioning API URL")
+        }
+        guard parts.user == nil, parts.password == nil, parts.fragment == nil else {
+            throw ProfileError("Provisioning URL 不能包含账号密码或 fragment")
+        }
+        let loopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
+        guard scheme == "https" || (scheme == "http" && loopback) else {
+            throw ProfileError("Provisioning API 必须使用 HTTPS；仅 localhost 调试允许 HTTP")
+        }
+        parts.scheme = scheme
+        guard let url = parts.url else { throw ProfileError("Provisioning API URL 无效") }
+        return url
+    }
+
+    static func fetch(endpoint: String) async throws -> RelayProvisioningPayload {
+        let url = try endpointURL(endpoint)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("MPTCP-Desk/provisioning", forHTTPHeaderField: "User-Agent")
+
+        let config = URLSessionConfiguration.ephemeral
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.urlCache = nil
+        config.httpCookieStorage = nil
+        config.urlCredentialStorage = nil
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 15
+        let delegate = RelayProvisioningNoRedirectDelegate()
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw ProfileError("Provisioning API 返回的不是 HTTP 响应") }
+        guard http.statusCode == 200 else { throw ProfileError("Provisioning API HTTP \(http.statusCode)") }
+        guard !data.isEmpty, data.count <= maximumResponseBytes else { throw ProfileError("Provisioning API 响应为空或超过 64 KiB") }
+        do { return try JSONDecoder().decode(RelayProvisioningPayload.self, from: data) }
+        catch { throw ProfileError("Provisioning API JSON 无效：\(error.localizedDescription)") }
+    }
+}
+
+// The provisioning URL contains the high-entropy bearer token in its path and
+// therefore lives in Keychain just like the MPX transport key.
+enum ProvisioningURLStore {
+    private static let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: "MPTCPDesk.Provisioning",
+        kSecAttrAccount as String: "active-url"
+    ]
+    static func save(_ value: String) throws {
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty { try delete(); return }
+        _ = try RelayProvisioningClient.endpointURL(cleaned)
+        let data = Data(cleaned.utf8)
+        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var item = query
+            item[kSecValueData as String] = data
+            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            status = SecItemAdd(item as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw ProfileError("Provisioning URL 钥匙串保存失败（\(status)）") }
+    }
+    static func load() throws -> String? {
+        var item = query
+        item[kSecReturnData as String] = true
+        item[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(item as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
+            throw ProfileError("Provisioning URL 钥匙串读取失败（\(status)）")
+        }
+        return value
+    }
+    static func delete() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw ProfileError("Provisioning URL 钥匙串删除失败（\(status)）") }
+    }
+}

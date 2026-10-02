@@ -1,6 +1,6 @@
 # MPX/4 Draft 03 implementation profile
 
-MPTCP Userspace 0.9.6 implements MPX/4 Draft 03 over ordinary TCP Carriers. The normative protocol specification is maintained in https://github.com/Dsd1001/MPX-4.
+MPTCP Userspace 0.9.7 continues to implement the same MPX/4 Draft 03 wire protocol introduced in 0.9.6, over ordinary TCP Carriers. Provisioning is a control/configuration plane and does not change MPX/4 wire bytes. The normative protocol specification is maintained in https://github.com/Dsd1001/MPX-4.
 
 ## Binding
 

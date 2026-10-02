@@ -6,6 +6,8 @@ It is **not kernel MPTCP** and it is **not QUIC**. The macOS client uses ordinar
 
 Current release: **v0.9.6 / MPX/4 Draft 03**.
 
+Next candidate: **v0.9.7** adds full managed client provisioning: one secret API URL can supply the complete Mac runtime profile, backed by the included self-hosted Provisioning Server and web console.
+
 - Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.6
 - MPX/4 specification: https://github.com/Dsd1001/MPX-4
 - Chinese README: [README.zh-CN.md](README.zh-CN.md)
@@ -121,3 +123,4 @@ MPTCP_GO=/path/to/go ./scripts/build-userspace-landing.sh
 - [Deployment and rollback](docs/userspace/DEPLOYMENT.zh-CN.md)
 - [Quick start](docs/guides/QUICKSTART.zh-CN.md)
 - [Troubleshooting](docs/guides/TROUBLESHOOTING.zh-CN.md)
+- [Managed client provisioning](docs/userspace/PROVISIONING.md)

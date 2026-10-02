@@ -11,6 +11,7 @@ This directory contains the public documentation for MPTCP Userspace.
 - [Architecture](guides/ARCHITECTURE.zh-CN.md) — component and data-flow overview.
 - [Deployment / rollback](userspace/DEPLOYMENT.zh-CN.md) — managed Landing upgrades and rollback.
 - [Troubleshooting](guides/TROUBLESHOOTING.zh-CN.md) — common runtime and compatibility problems.
+- [Managed client provisioning](userspace/PROVISIONING.md) — self-hosted configuration page and secret client API URLs.
 
 ## Protocol and scheduling
 

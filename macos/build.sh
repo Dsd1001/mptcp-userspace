@@ -45,7 +45,7 @@ for name in README.zh-CN.md VALIDATION.md tcp-profile.example.json userspace-pro
     cp "$ROOT/macos/$name" "$STAGE/$name"
 done
 mkdir -p "$APP/Contents/Resources/docs/userspace" "$STAGE/docs/userspace"
-for name in DEPLOYMENT.zh-CN.md PROTOCOL.md VALIDATION.md ADAPTIVE-FLOW-CONTROL.md MPX3-CREDIT.md SCHEDULER-MODES.md REV2-SHARED-CREDIT.md; do
+for name in DEPLOYMENT.zh-CN.md PROTOCOL.md PROVISIONING.md VALIDATION.md ADAPTIVE-FLOW-CONTROL.md MPX3-CREDIT.md SCHEDULER-MODES.md REV2-SHARED-CREDIT.md; do
     cp "$ROOT/docs/userspace/$name" "$APP/Contents/Resources/docs/userspace/"
     cp "$ROOT/docs/userspace/$name" "$STAGE/docs/userspace/"
 done

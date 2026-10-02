@@ -6,6 +6,8 @@ MPTCP Userspace 是一个运行在应用层的多路径传输系统，由 macOS 
 
 当前正式版本：**v0.9.6 / MPX/4 Draft 03**。
 
+下一候选版本：**v0.9.7**，新增完整 Provisioning：Mac 只需保存一个私密 API 链接，即可获取全部运行配置；仓库同时提供自托管 Provisioning Server 与管理网页。
+
 - Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.6
 - MPX/4 规范：https://github.com/Dsd1001/MPX-4
 - English README：[README.md](README.md)
@@ -117,3 +119,5 @@ MPTCP_GO=/path/to/go ./scripts/build-userspace-landing.sh
 - [部署与回滚](docs/userspace/DEPLOYMENT.zh-CN.md)
 - [快速开始](docs/guides/QUICKSTART.zh-CN.md)
 - [故障排查](docs/guides/TROUBLESHOOTING.zh-CN.md)
+
+- [完整 Provisioning API](docs/userspace/PROVISIONING.md)

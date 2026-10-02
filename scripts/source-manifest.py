@@ -18,7 +18,7 @@ FIXED = (
     'macos/Info.plist', 'macos/build.sh', 'macos/README.zh-CN.md',
     'macos/VALIDATION.md', 'macos/tcp-profile.example.json',
     'macos/userspace-profile.example.json', 'macos/engine/go.mod',
-    'scripts/build-userspace-landing.sh', 'scripts/package-userspace.py',
+    'scripts/build-userspace-landing.sh', 'scripts/build-provisioning.sh', 'scripts/package-userspace.py',
     'scripts/source-manifest.py', 'scripts/verify-userspace.py', 'scripts/release-gates.py', 'scripts/scheduler-gates.py',
 )
 
@@ -30,8 +30,10 @@ def sha(data: bytes) -> str:
 def collect(root: pathlib.Path = ROOT) -> dict[str, bytes]:
     names = set(FIXED)
     for directory, pattern in [('macos/engine', '*.go'), ('docs/userspace', '*.md'),
-                               ('tests/userspace', '*.py'), ('tests/userspace', '*.swift'), ('tests/userspace', '*.go'), ('tests/userspace', '*.pl')]:
+                               ('tests/userspace', '*.py'), ('tests/userspace', '*.swift'), ('tests/userspace', '*.go'), ('tests/userspace', '*.pl'),
+                               ('provisioning', '*.go'), ('provisioning/web', '*.html')]:
         names.update(p.relative_to(root).as_posix() for p in (root/directory).rglob(pattern))
+    names.update({'provisioning/go.mod', 'provisioning/Dockerfile', 'provisioning/docker-compose.example.yml', 'provisioning/.dockerignore', 'provisioning/.gitignore'})
     files = {}
     for name in sorted(names):
         path = root/name
