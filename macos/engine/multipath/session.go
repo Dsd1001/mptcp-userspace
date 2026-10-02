@@ -81,6 +81,7 @@ type sendTask struct {
 }
 
 type carrier struct {
+	generation                        uint64
 	scheduler                         schedulerPathState
 	id                                byte
 	address                           string
@@ -248,7 +249,7 @@ func (s *Session) addCarrier(id byte, address string, conn *secureConn) error {
 		conn.Close()
 		return net.ErrClosed
 	}
-	c := &carrier{id: id, address: address, conn: conn, active: true, done: make(chan struct{}), queue: make(chan sendTask, carrierQueue), control: make(chan frame, 512), reliableControl: make(chan sendTask, controlCarrierQueue), rtt: 50 * time.Millisecond, goodput: 4 << 20, configuredRateBPS: conn.configuredRateBPS, sampleAt: time.Now()}
+	c := &carrier{id: id, generation: conn.generation, address: address, conn: conn, active: true, done: make(chan struct{}), queue: make(chan sendTask, carrierQueue), control: make(chan frame, 512), reliableControl: make(chan sendTask, controlCarrierQueue), rtt: 50 * time.Millisecond, goodput: 4 << 20, configuredRateBPS: conn.configuredRateBPS, sampleAt: time.Now()}
 	c.scheduler.role = RoleLearning
 	c.scheduler.lastRoleReason = "awaiting_3_delivery_samples"
 	// Fill the bounded capacity history with the explicit startup prior, not
@@ -258,6 +259,11 @@ func (s *Session) addCarrier(id byte, address string, conn *secureConn) error {
 		c.capacitySamples[i] = c.goodput
 	}
 	if old := s.paths[id]; old != nil {
+		if old.conn != nil && conn.generation <= old.generation {
+			s.mu.Unlock()
+			conn.Close()
+			return fmt.Errorf("%w: stale or conflicting carrier generation", ErrProtocol)
+		}
 		s.detachLocked(old, fmt.Errorf("carrier replaced"))
 		c.sent = old.sent
 		c.received = old.received
@@ -597,7 +603,7 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 			st.err = err
 			return nil
 		}
-		s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart))})
+		s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart) / time.Microsecond)})
 		s.wakeLocked()
 	case kindFIN:
 		return s.handleFinalLocked(c, f)

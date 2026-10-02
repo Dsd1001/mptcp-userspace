@@ -1,64 +1,60 @@
-# MPTCP Userspace 0.9.5 / MPX/3 Rev5 后台常驻版
+# MPTCP Userspace 0.9.6 / MPX/4 Draft 03
 
-## 主要变化：macOS 后台常驻与睡眠恢复
+## 核心变化
 
-0.9.5 在 0.9.4 Weighted 正式版基础上新增可选的“后台常驻”，不改变 MPX/3 Rev5 线协议、Weighted 算法、信用模型或资源上限。
+0.9.6 将 TCP Userspace 线协议从 MPX/3 Rev5 升级为 **MPX/4 Draft 03**。这次不是改协议名称，而是实际替换了 handshake、key schedule、Secure Record 和 Frame 编码层，同时继续复用 0.9.5 已经稳定的 Session / Stream / scheduler / credit / retransmission / reinjection 内核。
 
-开启“后台常驻”后，MPTCP Desk 会：
+主要新增：
 
-- 使用 macOS 13+ `SMAppService.mainApp` 注册登录项；
-- 记住用户是否希望转发保持运行；
-- 监听 macOS sleep / wake；
-- 使用 `NWPathMonitor` 等待网络重新可用；
-- 睡眠唤醒后主动放弃睡前 engine/session，重新建立本地入口和 Relay carrier；
-- engine 意外退出时按 1 / 2 / 5 / 10 / 30 秒退避自动恢复；连续 5 次仍未恢复到 listening 时停止本轮重试并提示需要处理；
-- 用户手动点击“停止”后清除运行意图，不会被后台逻辑重新拉起；
-- 用户关闭“后台常驻”时撤销登录项；当前已经运行的转发不被强制停止。
+- MPX/4 `MPX\\0 + Version 4` connection preface；
+- canonical 1/2/4/8-byte VarInt；
+- CLIENT_INIT / SERVER_INIT / CLIENT_FINISHED / SERVER_FINISHED；
+- 参数 TLV、严格排序、重复/非 canonical 拒绝；
+- HKDF-SHA256 MPX-Expand-Label key schedule；
+- HMAC-SHA256 Finished；
+- AES-256-GCM Secure Record，sequence 从 0 开始，nonce 使用 traffic IV XOR seq96；
+- 一个 Secure Record 可承载多个完整 Frame；
+- Carrier Generation 与 replacement fresh keys；
+- MPX/4 标准 Scheduler ID 与 PATH_CAPACITY；
+- TRANSMISSION_ACK Receiver Timestamp 改为规范要求的微秒单位；
+- CREATE/JOIN 在 Finished 认证完成前不会把 Carrier 挂到 live Session。
 
-用户主动退出 App 时，本次登录会话内不会被 KeepAlive 立即拉起；如果后台常驻仍开启且退出前仍希望保持转发，下次登录后会重新启动。
+## 调度与资源模型
 
-后台常驻是客户端生命周期能力，不是新的网络协议。没有 root LaunchDaemon，不修改系统代理、路由、防火墙或内核 MPTCP 设置。
+Auto / Aggregate / Protect / Weighted 的实际路径选择逻辑继续沿用并通过回归测试。Weighted 仍同时考虑配置容量与实时 RTT、delivery、queue、penalty、timeout 等状态。
 
-## 0.9.4 Weighted 完整保留
+既有资源边界保持不变：最大 8 Carrier、2048 Stream、32 KiB DATA、16 MiB 单 Stream 窗口、128 MiB Session credit、128 MiB physical receive accounting，以及有界 sender pending/control queue。
 
-Weighted 仍支持每条 Relay：
+## 重连
 
-- `download_mbps`：必填；
-- `upload_mbps`：选填，留空时 Mac→Landing 方向继续在线估速；
-- 0.1–6553.5 Mbps，最多 1 位小数。
+同一个逻辑 Carrier 的第一次连接使用 Generation 0；后续 replacement 使用更大的 Generation。低 Generation 或冲突的相同 Generation 不会替换 live Carrier。每次 replacement 都重新执行 MPX/4 JOIN，使用 fresh nonce、fresh traffic keys 和新的 Record sequence space。
 
-配置仍位于认证 hello 内；Landing→Mac 使用 download，Mac→Landing 使用 upload 或自动估速。实时 RTT、writer queue、连接状态、penalty、delivery timeout、reinject 与重传保护保持有效。
+临时 Relay 断开在 JOIN 尚未完成时不会因为一个早期 EOF 就杀死仍由其他 Carrier 支撑的 Session。
 
-## 协议兼容
+## UDP
 
-0.9.5 仍是 **MPX/3 capability revision 5**，没有新增 wire byte：
+UDP 没有被硬塞进 MPX/4 Core。0.9.6 继续保留现有 MPU/1 独立数据报平面：独立认证/加密、path health、receipt、fragment/reassembly 与 per-datagram scheduling。Weighted PATH_CAPACITY 仍只用于 MPX/4 TCP Stream 调度。
 
-- `0x41` Auto
-- `0x42` Aggregate
-- `0x43` Protect
-- `0x44` Weighted
+## 兼容性
 
-因此：
+**0.9.6 TCP Userspace 与 MPX/3 不兼容。Mac 与 Landing 必须同时升级到 0.9.6。**
 
-- **0.9.5 Mac + 0.9.4 Landing：Weighted 可用**；
-- 0.9.5 Auto/Aggregate/Protect 继续保持与 0.9.3 的 hello 兼容；
-- 0.9.3 不理解 0x44，因此 Weighted 仍至少需要 Rev5（0.9.4+）双端；
-- MPX/1、MPX/2、早期 Rev2/Rev3 候选仍不兼容。
+已有 Relay 地址、端口、scheduler 和 transport key profile 可以继续使用。
 
-帧格式、AES-GCM、32 KiB DATA、2048 streams、128 MiB session credit、128 MiB sender DATA pending、128 MiB physical receive allocator、16 MiB 单流窗口上限均不扩大。UDP 仍使用独立数据报调度，不使用 Weighted。
+## 验证
 
-## 验证边界
+0.9.6 在发布前执行：
 
-0.9.5 正式交付要求当前 Source-ID：
+- `go test ./...` 全量 engine / Landing / multipath 回归；
+- MPX/4 Draft 03 官方 VarInt 向量；
+- 官方 Frame encoding 向量；
+- 官方完整 key schedule / Finished 向量；
+- 官方连续 Secure Record / nonce / AAD 向量；
+- TCP 多 Carrier、path failure + rejoin；
+- scheduler negotiation/conflict；
+- Stream multiplexing、credit、重传/reinjection；
+- wrong-key 与 missing-session 负向测试；
+- macOS arm64/x86_64 Universal 构建；
+- Linux amd64 static Landing 构建。
 
-- 后台恢复纯逻辑测试；
-- macOS 13 ServiceManagement / Network / NSWorkspace API 编译；
-- Swift Profile/UI/Scheduler harness；
-- Go 全量 test / vet / race；
-- 四种 scheduler 真实 stdin 回归；
-- 0.9.4 Rev5/Weighted 方向容量、timeout/penalty 与高 BDP 回归；
-- Universal DMG / Linux Landing 从冻结源码反向验证。
-
-实验室回归不是公网测速承诺。本版本不会把历史容量或现场数据重新标记成 0.9.5 结果；若未重跑完整 30 秒容量矩阵与真实 App+Surge 180 秒现场，`CAPACITY.json` / `RUNTIME.json` 必须明确标记为未运行。
-
-Mac 包仍为 arm64/x86_64 Universal DMG，ad-hoc 签名，未做 Developer ID 公证。构建/发布不会自动替换已安装 App，也不会自动部署 HKT、Surge、Soga、Relay、Native 或防火墙服务。
+0.9.5 的后台常驻、登录项和 sleep/wake 恢复能力保留。macOS 包仍是 ad-hoc 签名，未做 Developer ID notarization。

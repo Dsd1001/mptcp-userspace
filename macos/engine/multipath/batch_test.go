@@ -42,8 +42,10 @@ func TestBatchedEncryptedRecordsAcrossPartialIO(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if sender.txCounter != uint64(len(frames)) || receiver.rxCounter != uint64(len(frames)) {
-		t.Fatal("batch nonce reuse or record omission")
+	// MPX/4 may coalesce multiple complete Frames into one Secure Record.
+	// This batch fits within one record, so exactly one directional nonce is consumed.
+	if sender.txCounter != 1 || receiver.rxCounter != 1 {
+		t.Fatalf("unexpected MPX/4 record count: tx=%d rx=%d", sender.txCounter, receiver.rxCounter)
 	}
 }
 

@@ -1,3 +1,9 @@
+# 0.9.6 / MPX/4 Draft 03
+
+0.9.6 发布必须通过 Go 全量回归、MPX/4 Draft 03 官方 VarInt/Frame/key-schedule/Secure-Record vectors、TCP path failure/rejoin、四种 scheduler 回归、Swift/macOS Universal 构建与 Linux Landing 构建。
+
+以下保留历史验证资料。当前精确验收以 0.9.6 source/tag 和 release artifacts 为准。
+
 # 0.9.5 / MPX/3 Rev5
 
 0.9.5 的发布重点是 macOS 后台常驻、登录自启、睡眠/唤醒后的网络感知恢复和有界退避。当前 Source-ID 必须通过生命周期纯逻辑测试、macOS 13 ServiceManagement/Network/NSWorkspace 编译、Swift UI/Profile/Scheduler harness、Go test/vet/race 和原 Rev5/Weighted 高 BDP/timeout 回归后才能进入 background-release 包。

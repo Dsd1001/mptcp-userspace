@@ -1,14 +1,8 @@
-# 0.9.5 / MPX/3 Rev5
+# 0.9.6 / MPX/4 Draft 03
 
-0.9.5 在 0.9.4 Weighted 基础上新增可选“后台常驻”：使用 macOS 登录项、监听 sleep/wake、等待网络恢复后重建 engine/session，并对意外退出使用 1/2/5/10/30 秒退避；连续 5 次仍未恢复则停止本轮自动重试并提示需要处理。手动点击“停止”会清除自动运行意图，不会被重新拉起；关闭后台常驻会撤销登录项，但不强制停止当前转发。
+0.9.6 的 TCP Userspace 已升级到 MPX/4 Draft 03；Mac 与 Landing 必须双端 0.9.6。0.9.5 的后台常驻、登录自启、sleep/wake 与有界恢复逻辑全部保留。UDP 仍为独立 MPU/1 数据报平面。
 
-线协议仍是 Rev5，与 0.9.4 完全兼容。0.9.5 Mac 可以继续连接 0.9.4 Landing 使用 Weighted；Auto/Aggregate/Protect 仍与 0.9.3 hello 兼容。Weighted 下行必填、上行选填以及 RTT/queue/penalty/timeout/reinject/重传保护全部保留。
-
-资源边界不扩大：2048 streams、128 MiB session credit、128 MiB sender DATA pending、128 MiB physical receive allocator、16 MiB 单流窗口上限保持不变。实际通过、失败和未运行项目以随包 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、CAPACITY.json、RUNTIME.json 为准。
-
-以下保留的是先前架构说明／历史资料；当前 0.9.5 Rev5 的精确边界以随包文档和验收回执为准。
-
----
+以下保留历史架构资料。当前协议边界以 `docs/userspace/PROTOCOL.md` 与 0.9.6 release notes 为准。
 
 # MPTCP Desk 0.8.0 / MPX/3
 

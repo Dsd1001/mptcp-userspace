@@ -67,7 +67,7 @@ hdiutil create -ov -volname 'MPTCP Desk' -srcfolder "$STAGE" -format UDZO "$OUT/
 hdiutil verify "$OUT/MPTCP-Desk-$VERSION-universal.dmg"
 [[ $(python3 "$ROOT/scripts/source-manifest.py" --id) == "$SOURCE_ID" ]]
 {
-    printf 'Component: MPTCP Desk\nVersion: %s\nSource-ID: %s\nProtocol: MPX/3 capability revision 5\nArchitectures: arm64 x86_64\nSigning: ad-hoc, not notarized\n' "$VERSION" "$SOURCE_ID"
+    printf 'Component: MPTCP Desk\nVersion: %s\nSource-ID: %s\nProtocol: MPX/4 Draft 03\nArchitectures: arm64 x86_64\nSigning: ad-hoc, not notarized\n' "$VERSION" "$SOURCE_ID"
     "$GO" version
     xcrun swiftc --version
 } > "$OUT/MPTCP-Desk.BUILDINFO"

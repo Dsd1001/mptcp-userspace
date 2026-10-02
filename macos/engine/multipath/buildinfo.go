@@ -4,4 +4,4 @@ package multipath
 // manifest. Unfrozen local builds are explicit, never confused with a release.
 var SourceID = "unfrozen-development-build"
 
-const WireProtocol = 3
+const WireProtocol = 4

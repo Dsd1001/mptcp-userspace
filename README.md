@@ -1,151 +1,123 @@
 # MPTCP Userspace
 
-[中文说明](README.zh-CN.md)
+MPTCP Userspace is an application-layer multipath transport for macOS and Linux. It combines multiple ordinary TCP carrier connections into one authenticated MPX Session and multiplexes application TCP streams across those carriers.
 
-MPTCP Userspace is an application-layer multipath transport for macOS and Linux. It combines multiple ordinary TCP carrier paths into one authenticated MPX/3 session and multiplexes application TCP streams across those paths.
+It is **not kernel MPTCP** and it is **not QUIC**. The macOS client uses ordinary TCP carrier sockets; the Linux Landing terminates MPX/4 and forwards opaque backend TCP bytes.
 
-It is **not kernel MPTCP** and it is **not QUIC**. The macOS client explicitly uses ordinary TCP carriers; the Linux Landing terminates MPX/3 and forwards opaque backend TCP bytes.
+Current release: **v0.9.6 / MPX/4 Draft 03**.
 
-Current release: **v0.9.5 / MPX/3 capability revision 5**.
+- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.6
+- MPX/4 specification: https://github.com/Dsd1001/MPX-4
+- Chinese README: [README.zh-CN.md](README.zh-CN.md)
 
-- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.5
-- macOS: Universal arm64/x86_64 DMG, macOS 13+
-- Landing: Linux amd64 static binary
-- Scheduler modes: Auto, Aggregate, Protect, Weighted
+## Architecture
 
-## What it does
-
-A typical deployment looks like this:
-
-~~~text
+```text
 Application / Surge
         |
         v
-127.0.0.1:1081
-(transparent TCP entry, not SOCKS5)
+127.0.0.1:1081 transparent TCP entry
         |
         v
-MPTCP Desk / Userspace engine
+MPTCP Desk / userspace engine
         |
-        +---- ordinary TCP carrier ---- Relay A ----+
-        +---- ordinary TCP carrier ---- Relay B ----+---- Linux Landing ---- backend
-        +---- ordinary TCP carrier ---- Relay C ----+
-        +---- ...
-~~~
+        +-- ordinary TCP Carrier 1 --> Relay A --+
+        +-- ordinary TCP Carrier 2 --> Relay B --+--> Linux Landing --> backend
+        '-- ordinary TCP Carrier N --> Relay N --+
+                   MPX/4 Session
+```
 
-Relays only forward ordinary TCP bytes. MPX/3 authentication, stream multiplexing, scheduling, credit control, retransmission and reinjection are handled by the macOS engine and Landing.
+Relay nodes only forward ordinary TCP bytes. MPX/4 authentication, Secure Records, Stream multiplexing, flow control, scheduling, retransmission and cross-Carrier reinjection are end-to-end between MPTCP Desk and Landing.
+
+## v0.9.6: MPX/4 Draft 03
+
+The TCP userspace data plane now implements the public MPX/4 Draft 03 specification:
+
+- canonical MPX VarInt encoding;
+- `CLIENT_INIT / SERVER_INIT / CLIENT_FINISHED / SERVER_FINISHED` handshake;
+- PSK authentication rooted in a 32-byte transport key;
+- HKDF-SHA256 key schedule and HMAC-SHA256 Finished verification;
+- AES-256-GCM Secure Records with independent directional sequence spaces;
+- typed MPX/4 Frames and record batching;
+- authenticated Session CREATE and Carrier JOIN;
+- Carrier ID plus monotonically increasing Carrier Generation on replacement;
+- reliable ordered Streams with explicit Stream and Session credit;
+- retransmission and cross-Carrier reinjection using stable Transmission IDs;
+- Auto, Aggregate, Protect and Weighted scheduler negotiation;
+- same-Carrier delivery feedback using receiver timestamps in microseconds.
+
+The implementation is checked against the Draft 03 repository test vectors for VarInt, Frame encoding, key schedule and consecutive Secure Records.
 
 ## Scheduler modes
 
-| Mode | Purpose | Capacity source |
-|---|---|---|
-| **Auto** | Default. Dynamically stays in Aggregate on healthy homogeneous paths and moves toward Protect behavior when path quality diverges or delivery fails. | Learned |
-| **Aggregate** | Throughput-oriented scheduling for paths with similar quality. | Learned |
-| **Protect** | Keeps unhealthy or strongly inferior paths from accumulating excessive DATA debt; degraded paths can become probe/backup paths. | Learned |
-| **Weighted** | For fixed path groups whose usable capacity is already known. Each Relay gets a required downstream capacity and an optional upstream capacity. | Configured capacity, with live safety signals still enforced |
+The existing scheduler implementation is retained above the new MPX/4 wire layer:
 
-Weighted is not a blind static ratio splitter. Live RTT, writer queue pressure, disconnect state, path penalties, delivery timeout, reinjection and retransmission still affect path selection.
+- **Auto** — learns path behavior and can protect against materially inferior paths.
+- **Aggregate** — concurrently schedules eligible work across carriers.
+- **Protect** — favors the active path set while keeping alternate protection paths available.
+- **Weighted** — combines configured carrier capacity with live RTT, queue, penalty, timeout and delivery signals.
 
-For Weighted:
-
-- download_mbps is required per Relay and is used by Landing → Mac.
-- upload_mbps is optional and is used by Mac → Landing.
-- If upload capacity is omitted, only Mac → Landing falls back to learned Aggregate capacity.
-- Supported configured range: 0.1–6553.5 Mbps, 0.1 Mbps precision.
-- Weighted requires **MPX/3 Rev5 on both endpoints**. v0.9.4 and v0.9.5 are wire-compatible for Weighted.
+For Weighted, `download_mbps` is required and `upload_mbps` is optional. Capacity is encoded as the MPX/4 `PATH_CAPACITY` parameter in 100,000 bit/s units.
 
 ## Compatibility
 
-| Mac | Landing | Auto / Aggregate / Protect | Weighted |
-|---|---|---:|---:|
-| 0.9.5 | 0.9.5 / 0.9.4 | Yes | Yes |
-| 0.9.5 | 0.9.3 | Yes | No |
-| 0.9.4 | 0.9.5 / 0.9.4 | Yes | Yes |
-| 0.9.3 | 0.9.5 / 0.9.4 | Yes | No |
-| MPX/2 / older candidates | MPX/3 Rev5 | No | No |
+v0.9.6 changes the TCP wire protocol from MPX/3 to MPX/4 and therefore requires **0.9.6 on both MPTCP Desk and Landing**.
 
-0.9.5 keeps the exact Rev5 wire layout introduced by 0.9.4. Auto/Aggregate/Protect retain the 0.9.3-compatible 0x41, 0x42 and 0x43 hello values; Weighted remains 0x44 with authenticated directional capacity fields.
+| MPTCP Desk | Landing | TCP userspace |
+|---|---|---|
+| 0.9.6 | 0.9.6 | Yes — MPX/4 Draft 03 |
+| 0.9.6 | 0.9.5 or older | No |
+| 0.9.5 or older | 0.9.6 | No |
 
-## Resource boundaries
+Existing profiles can keep the same Relay addresses, ports, scheduler selection and 32-byte transport key, but both protocol endpoints must be upgraded together.
 
-v0.9.5 does not increase the established resource limits:
+UDP remains an **independent MPU/1 datagram data plane** in 0.9.6. It is not represented as an MPX/4 Core Datagram extension and does not use Weighted capacity values.
 
-- up to 2048 occupied logical stream identities;
-- 128 MiB session credit;
-- 128 MiB sender DATA pending;
-- 128 MiB physical receive page accounting;
-- up to 16 MiB per-stream receive window;
-- DATA payload up to 32 KiB.
+## Resource model
 
-See [MPX/3 credit control](docs/userspace/MPX3-CREDIT.md) and [protocol](docs/userspace/PROTOCOL.md) for details.
+The mature 0.9.5 resource boundaries remain in place:
 
-## Quick start
+- up to 8 carriers per Session;
+- up to 2048 active peer-initiated Streams;
+- 32 KiB maximum STREAM_DATA payload;
+- 16 MiB maximum per-Stream receive-credit window;
+- 128 MiB Session receive-credit window;
+- bounded sender pending data and control queues;
+- bounded 128 MiB physical receive-page accounting.
 
-See:
+Carrier loss does not terminate the logical Session while another carrier remains usable. Outstanding reliable Transmissions return to the Session scheduler for retransmission/reinjection. A replacement TCP Carrier performs a complete MPX/4 JOIN handshake with a greater Carrier Generation and fresh traffic keys.
 
-- [Quick Start](docs/guides/QUICKSTART.md)
-- [Build from source](docs/guides/BUILDING.md)
-- [快速开始](docs/guides/QUICKSTART.zh-CN.md)
-- [Deployment and rollback](docs/userspace/DEPLOYMENT.zh-CN.md)
-- [Architecture](docs/guides/ARCHITECTURE.zh-CN.md)
+## macOS client
 
-For an existing managed Landing, a controlled binary upgrade can use:
+MPTCP Desk supports macOS 13+ on arm64 and x86_64. The optional background-resident behavior introduced in 0.9.5 is retained: login-item registration, sleep/wake recovery, network availability monitoring and bounded restart backoff.
 
-~~~sh
-chmod 755 ./mptcp-landing
-./mptcp-landing version
-./mptcp-landing upgrade --source ./mptcp-landing --sha256 <trusted-full-sha256>
-/usr/local/bin/mptcp-landing doctor
-/usr/local/bin/mptcp-landing status
-~~~
+The default userspace TCP entry is `127.0.0.1:1081`. It is a transparent local TCP entry, **not a SOCKS5 server**.
 
-The Landing manager retains the previous binary/config pair so mptcp-landing rollback can restore it.
+## Security
 
-## Security model
+MPX/4 Draft 03 uses a 32-byte pre-shared transport key as the authentication root. Each authenticated Carrier performs a fresh handshake and derives independent Client-to-Server and Server-to-Client application traffic keys and IVs.
 
-MPX/3 uses an authenticated PSK handshake and independent AES-GCM keys/counters per direction. Scheduler mode and Weighted capacity fields are included in the authenticated handshake transcript.
+This is not TLS PKI and v0.9.6 does not provide forward secrecy. Transport keys must not be committed to the repository or exposed in logs. The distributed macOS application is ad-hoc signed and is not Developer ID notarized.
 
-Important limits:
+## Build
 
-- this is not TLS PKI;
-- v0.9.5 does not provide forward secrecy;
-- no independent security certification is claimed;
-- transport keys must not be committed to repositories or pasted into logs/issues;
-- the macOS DMG is ad-hoc signed and **not notarized**.
+```sh
+# Go tests
+cd macos/engine
+go test ./...
 
-## Validation scope
+# macOS Universal DMG
+MPTCP_GO=/path/to/go ./macos/build.sh
 
-The v0.9.5 release passed source-matched Go/Swift correctness, background-recovery policy tests, four-mode scheduler regression, authenticated directional capacity/failure protection and the unchanged Rev5/Weighted laboratory high-BDP gate.
-
-The release does **not** claim physical lid-close/wake or login-item approval interaction, the complete 30-second capacity matrix, or a physical 180-second App+Surge/WAN acceptance run. Exact evidence and limitations are in the release assets:
-
-- ACCEPTANCE.md
-- TESTS.json
-- SCHEDULER-MODES.json
-- PROVENANCE.json
-
-Laboratory results are not a guarantee of ISP bandwidth, arbitrary WAN throughput or multi-day stability.
-
-## Release provenance
-
-The v0.9.5 tag points to the frozen source used for the published release assets:
-
-~~~text
-Source-ID: 3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
-~~~
-
-The default main branch may contain documentation-only commits after the release tag. Use the tag and Source-ID when reproducing or auditing the released binaries.
+# Linux amd64 Landing
+MPTCP_GO=/path/to/go ./scripts/build-userspace-landing.sh
+```
 
 ## Documentation
 
-Start at [docs/README.md](docs/README.md).
-
-Key documents:
-
-- [Protocol](docs/userspace/PROTOCOL.md)
+- [MPX/4 implementation profile](docs/userspace/PROTOCOL.md)
+- [v0.9.6 release notes](docs/userspace/RELEASE.zh-CN.md)
 - [Scheduler modes](docs/userspace/SCHEDULER-MODES.md)
-- [Credit control](docs/userspace/MPX3-CREDIT.md)
-- [Deployment](docs/userspace/DEPLOYMENT.zh-CN.md)
-- [Validation](docs/userspace/VALIDATION.md)
+- [Deployment and rollback](docs/userspace/DEPLOYMENT.zh-CN.md)
+- [Quick start](docs/guides/QUICKSTART.zh-CN.md)
 - [Troubleshooting](docs/guides/TROUBLESHOOTING.zh-CN.md)
-- [v0.9.5 release notes](docs/userspace/RELEASE.zh-CN.md)

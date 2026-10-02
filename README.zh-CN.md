@@ -1,195 +1,119 @@
 # MPTCP Userspace
 
-[English](README.md)
+MPTCP Userspace 是一个运行在应用层的多路径传输系统，由 macOS 客户端 **MPTCP Desk** 和 Linux **Landing** 组成。它把多条普通 TCP Carrier 组合成一个经过认证的 MPX Session，再将应用 TCP Stream 调度到这些 Carrier 上。
 
-MPTCP Userspace 是一个运行在应用层的多路径传输系统，由 macOS 客户端 **MPTCP Desk** 和 Linux **Landing** 组成。它把多条普通 TCP carrier 聚合到同一个经过认证的 MPX/3 会话中，再把应用 TCP 业务流复用到这些路径上。
+它**不是内核 MPTCP，也不是 QUIC**。macOS Userspace 模式使用普通 TCP socket；Linux Landing 终止 MPX/4 并转发透明 backend TCP 字节。
 
-它**不是内核 MPTCP，也不是 QUIC**。macOS Userspace 模式使用普通 TCP carrier；Linux Landing 负责终止 MPX/3，再将业务字节转发到 backend。
+当前正式版本：**v0.9.6 / MPX/4 Draft 03**。
 
-当前正式版本：**v0.9.5 / MPX/3 capability revision 5**。
+- Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.6
+- MPX/4 规范：https://github.com/Dsd1001/MPX-4
+- English README：[README.md](README.md)
 
-- Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.5
-- macOS：arm64/x86_64 Universal DMG，macOS 13+
-- Landing：Linux amd64 静态二进制
-- 调度模式：Auto / Aggregate / Protect / Weighted
+## 架构
 
-## 它解决什么问题
-
-典型拓扑：
-
-~~~text
+```text
 应用 / Surge
     |
     v
-127.0.0.1:1081
-透明 TCP 入口（不是 SOCKS5）
+127.0.0.1:1081 本地透明 TCP 入口
     |
     v
-MPTCP Desk / Userspace Engine
+MPTCP Desk / userspace engine
     |
-    +---- 普通 TCP carrier ---- Relay A ----+
-    +---- 普通 TCP carrier ---- Relay B ----+---- Linux Landing ---- Backend
-    +---- 普通 TCP carrier ---- Relay C ----+
-    +---- ...
-~~~
+    +-- 普通 TCP Carrier 1 --> Relay A --+
+    +-- 普通 TCP Carrier 2 --> Relay B --+--> Linux Landing --> backend
+    '-- 普通 TCP Carrier N --> Relay N --+
+                 MPX/4 Session
+```
 
-Relay 只需要转发普通 TCP 字节，不理解 MPX/3。认证、逻辑流复用、调度、信用控制、重传和跨路 reinjection 都由 Mac 与 Landing 完成。
+Relay 只负责转发普通 TCP 字节，不需要理解 MPX/4。认证、Secure Record、Stream 复用、信用控制、调度、重传和跨 Carrier reinjection 都由 Mac 与 Landing 端到端完成。
 
-这使得多条独立 Relay 链路可以作为一个逻辑传输会话使用，同时仍保留对慢路、断路、排队和交付超时的保护。
+## 0.9.6：升级到 MPX/4 Draft 03
 
-## 四种调度模式
+0.9.6 的 TCP Userspace 线协议已从 MPX/3 切换到公开的 **MPX/4 Draft 03**，包括：
 
-| 模式 | 适合场景 | 容量依据 |
+- canonical MPX VarInt；
+- `CLIENT_INIT / SERVER_INIT / CLIENT_FINISHED / SERVER_FINISHED` 握手；
+- 32 字节 transport key 作为 PSK 认证根；
+- HKDF-SHA256 key schedule 与 HMAC-SHA256 Finished；
+- AES-256-GCM Secure Record，双向独立 sequence space；
+- typed Frame 与一个 Secure Record 内多 Frame batching；
+- Session CREATE 与 Carrier JOIN；
+- Carrier ID + 单调递增 Carrier Generation；
+- 可靠有序 Stream、Stream/Session 双层显式 credit；
+- 保持 Transmission ID 的重传与跨 Carrier reinjection；
+- Auto / Aggregate / Protect / Weighted scheduler 协商；
+- 微秒级 Receiver Timestamp 的路径 delivery feedback。
+
+实现已对照 MPX/4 仓库 Draft 03 的 VarInt、Frame encoding、key schedule 和连续 Secure Record 官方 test vectors 做逐字节验证。
+
+## 调度策略
+
+原有成熟调度内核继续保留在新的 MPX/4 wire layer 之上：
+
+- **Auto**：根据实际路径表现自动学习和保护；
+- **Aggregate**：并发使用满足条件的 Carrier；
+- **Protect**：优先使用主路径集合，同时保留备用保护路径；
+- **Weighted**：将配置带宽与实时 RTT、queue、penalty、delivery timeout 等信号结合。
+
+Weighted 中每条 Relay 的 `download_mbps` 必填，`upload_mbps` 选填；容量通过 MPX/4 `PATH_CAPACITY` 参数传输，单位为 100,000 bit/s。
+
+## 兼容性
+
+0.9.6 更换了 TCP wire protocol，因此 **MPTCP Desk 与 Landing 必须同时升级到 0.9.6**。
+
+| Mac | Landing | TCP Userspace |
 |---|---|---|
-| **Auto** | 默认。线路接近时保持 Aggregate；出现稳定异构或交付故障时转向 Protect 行为，并带滞回恢复。 | 在线学习 |
-| **Aggregate** | 多条线路质量接近，希望尽可能利用总吞吐。 | 在线学习 |
-| **Protect** | 路径差异明显，希望限制异常/慢路径积压，允许路径进入 PROBE/BACKUP。 | 在线学习 |
-| **Weighted** | 已经知道每条固定 Relay 的实际带宽能力，希望避免在线估速误差长期把流量偏到少数路径。 | 用户配置 |
+| 0.9.6 | 0.9.6 | 支持，MPX/4 Draft 03 |
+| 0.9.6 | 0.9.5 或更早 | 不兼容 |
+| 0.9.5 或更早 | 0.9.6 | 不兼容 |
 
-### Weighted
+原 profile 中 Relay 地址、端口、scheduler 以及 64 位十六进制 transport key 可以继续使用，但协议两端必须一起升级。
 
-每条 Relay 可配置：
-
-- download_mbps：**必填**，代表 Landing → Mac 的可用下行能力；
-- upload_mbps：**选填**，代表 Mac → Landing 的可用上行能力；
-- 上行留空：只有 Mac → Landing 方向回退到 Aggregate 的在线估速；
-- 合法范围：0.1–6553.5 Mbps，最多 1 位小数。
-
-Weighted 不是“严格按比例无脑分流”。配置带宽主要替代正常 DATA 调度的容量先验和 flight budget；以下实时保护仍然有效：
-
-- RTT / minRTT；
-- writer queue 债务；
-- carrier 连接状态；
-- path penalty；
-- delivery timeout；
-- reinjection；
-- retransmission。
-
-因此某条路径在满载时 RTT 从例如 30 ms 上升到更高水平，或者出现队列/交付异常时，即使它配置了较大的带宽，调度器也不会完全忽略这些实时信号。
-
-## 版本兼容
-
-| Mac | Landing | Auto / Aggregate / Protect | Weighted |
-|---|---|---:|---:|
-| 0.9.5 | 0.9.5 / 0.9.4 | 支持 | 支持 |
-| 0.9.5 | 0.9.3 | 支持 | 不支持 |
-| 0.9.4 | 0.9.5 / 0.9.4 | 支持 | 支持 |
-| 0.9.3 | 0.9.5 / 0.9.4 | 支持 | 不支持 |
-| MPX/2 / 更早候选 | MPX/3 Rev5 | 不兼容 | 不兼容 |
-
-0.9.5 保持 0.9.4 引入的 Rev5 线格式不变：Auto/Aggregate/Protect 继续使用与 0.9.3 兼容的 0x41 / 0x42 / 0x43 hello，Weighted 仍使用 0x44 和认证过的方向容量字段。
-
-**Weighted 要求双端都支持 MPX/3 Rev5；0.9.5 Mac 可以直接连接 0.9.4 或 0.9.5 Landing。**
+UDP 在 0.9.6 中继续使用**独立 MPU/1 数据报平面**，目前没有作为 MPX/4 Core Datagram 扩展合并进去，也不使用 Weighted 容量值。
 
 ## 资源边界
 
-0.9.5 没有通过扩大资源上限来获得性能：
+0.9.6 不通过扩大原有资源上限获得性能：
 
-- 最多 2048 个占用中的逻辑流身份；
-- 128 MiB session credit；
-- 128 MiB sender DATA pending；
-- 128 MiB 物理接收页记账上限；
-- 单流 receive window 最大 16 MiB；
-- DATA payload 最大 32 KiB。
+- 一个 Session 最多 8 条 Carrier；
+- 最多 2048 条活跃 peer-initiated Stream；
+- STREAM_DATA 最大 32 KiB；
+- 单 Stream 最大信用窗口 16 MiB；
+- Session 信用窗口 128 MiB；
+- sender DATA/control pending 均有硬上限；
+- physical receive-page accounting 上限 128 MiB。
 
-详细机制见 [MPX/3 信用控制](docs/userspace/MPX3-CREDIT.md) 和 [协议说明](docs/userspace/PROTOCOL.md)。
+单条 Carrier 失效时，只要还有其他 Carrier 可用，逻辑 Session 与 Stream 继续存活。未确认 Transmission 会重新进入 scheduler 进行 retransmission/reinjection。重建同一逻辑 Carrier 时使用更高 Generation，并重新完成 MPX/4 JOIN 和密钥派生。
 
-## 快速开始
+## macOS 客户端
 
-建议按以下文档顺序：
+MPTCP Desk 支持 macOS 13+ arm64 / x86_64。0.9.5 引入的后台常驻能力全部保留，包括登录项、sleep/wake 恢复、网络恢复监听以及有界重启退避。
 
-1. [快速开始](docs/guides/QUICKSTART.zh-CN.md)
-2. [架构说明](docs/guides/ARCHITECTURE.zh-CN.md)
-3. [部署与回滚](docs/userspace/DEPLOYMENT.zh-CN.md)
-4. [调度策略详解](docs/userspace/SCHEDULER-MODES.md)
-5. [故障排查](docs/guides/TROUBLESHOOTING.zh-CN.md)
-
-已有托管 Landing 可使用受控升级：
-
-~~~sh
-chmod 755 ./mptcp-landing
-./mptcp-landing version
-./mptcp-landing upgrade --source ./mptcp-landing --sha256 <可信的完整SHA256>
-/usr/local/bin/mptcp-landing doctor
-/usr/local/bin/mptcp-landing status
-~~~
-
-管理器会保留上一份二进制及其配套配置，可以使用：
-
-~~~sh
-/usr/local/bin/mptcp-landing rollback
-~~~
-
-进行回滚。
-
-## macOS 入口
-
-Userspace 模式默认使用本地 127.0.0.1:1081 作为透明 TCP 入口。
-
-**它不是 SOCKS5 服务。**
-
-应继续使用原 Surge / SS / AnyTLS 等上层代理配置，将相应 TCP 连接交给这个透明入口；不要因为看到 1081 就把它当成普通 SOCKS5 端口。
-
-关闭 App 主窗口不会自动停止转发，应通过菜单栏状态确认当前运行状态。
+默认 Userspace TCP 本地入口为 `127.0.0.1:1081`。**它不是 SOCKS5 服务。**
 
 ## 安全模型
 
-MPX/3 使用 PSK 认证握手，并为两个方向派生独立 AES-GCM key/counter。scheduler mode 和 Weighted 方向容量都属于认证 transcript，链路中间设备不能静默篡改这些值。
+MPX/4 Draft 03 使用 32 字节预共享 transport key 作为认证根。每条 Carrier 都独立执行完整握手，并为 Client→Server / Server→Client 派生独立 application traffic key 与 IV。
 
-同时要明确：
+这不是 TLS PKI，0.9.6 也不提供 forward secrecy。transport key 不应提交到仓库、Issue 或日志。发布的 macOS 应用使用 ad-hoc 签名，未做 Developer ID notarization。
 
-- 这不是 TLS PKI；
-- 0.9.5 不提供 forward secrecy；
-- 没有宣称经过独立安全认证；
-- transport key 不应提交到 Git 仓库、Issue、聊天记录或公开日志；
-- macOS DMG 为 ad-hoc 签名，**未 notarize**。
+## 构建
 
-## 0.9.5 验证边界
+```sh
+cd macos/engine
+go test ./...
 
-v0.9.5 已完成与冻结 Source-ID 匹配的：
+MPTCP_GO=/path/to/go ./macos/build.sh
+MPTCP_GO=/path/to/go ./scripts/build-userspace-landing.sh
+```
 
-- Go / Swift 正确性与回归门禁；
-- 后台常驻、sleep/wake 恢复策略与有界重试逻辑；
-- Weighted 方向容量认证；
-- 配置校验；
-- 旧三模式兼容回归；
-- disconnect / penalty / delivery timeout 保护；
-- source-matched 实验室 Weighted 高 BDP 回归。
+## 文档
 
-本次 0.9.5 release **没有把物理合盖/唤醒与登录项授权交互、完整 30 秒 capacity matrix、真实 180 秒 App+Surge/WAN 现场验收声明为已完成**。
-
-准确状态以 Release 中这些文件为准：
-
-- ACCEPTANCE.md
-- TESTS.json
-- SCHEDULER-MODES.json
-- PROVENANCE.json
-
-实验室结果不代表任意公网线路速度、多日稳定性或运营商 SLA。
-
-## Release 来源与 main 分支
-
-v0.9.5 Tag 固定指向生成 Release 二进制的冻结源码：
-
-~~~text
-Source-ID: 3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
-~~~
-
-main 在正式 Tag 之后可以继续增加**文档类提交**。因此复现或审计 v0.9.5 二进制时，应以 v0.9.5 Tag 与对应 Source-ID 为准，而不是假定最新 main 的文档树仍与冻结 Source-ID 完全相同。
-
-## 文档入口
-
-完整索引见 [docs/README.zh-CN.md](docs/README.zh-CN.md)。
-
-常用文档：
-
-- [快速开始](docs/guides/QUICKSTART.zh-CN.md)
-- [从源码构建](docs/guides/BUILDING.zh-CN.md)
-- [架构](docs/guides/ARCHITECTURE.zh-CN.md)
-- [协议](docs/userspace/PROTOCOL.md)
+- [MPX/4 实现说明](docs/userspace/PROTOCOL.md)
+- [0.9.6 Release Notes](docs/userspace/RELEASE.zh-CN.md)
 - [调度模式](docs/userspace/SCHEDULER-MODES.md)
-- [信用控制](docs/userspace/MPX3-CREDIT.md)
 - [部署与回滚](docs/userspace/DEPLOYMENT.zh-CN.md)
-- [验证边界](docs/userspace/VALIDATION.md)
+- [快速开始](docs/guides/QUICKSTART.zh-CN.md)
 - [故障排查](docs/guides/TROUBLESHOOTING.zh-CN.md)
-- [0.9.5 Release Notes](docs/userspace/RELEASE.zh-CN.md)

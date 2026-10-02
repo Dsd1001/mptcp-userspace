@@ -1,65 +1,69 @@
-# MPX/3 capability revision 5 (0.9.5)
+# MPX/4 Draft 03 implementation profile
 
-MPX is a custom application transport over ordinary TCP carriers, not kernel MPTCP and not QUIC. Each carrier explicitly disables native MultipathTCP. Backend bytes remain opaque. Native fallback and UDP datagram transport remain separate.
+MPTCP Userspace 0.9.6 implements MPX/4 Draft 03 over ordinary TCP Carriers. The normative protocol specification is maintained in https://github.com/Dsd1001/MPX-4.
 
-## Authentication, scheduler and Weighted capacity
+## Binding
 
-The 48-byte authenticated hello retains MPX3 family framing and binds carrier/session identity, random challenge, scheduler policy and the fixed-size capacity fields into the existing HMAC transcript.
+One TCP connection maps to one MPX/4 Carrier. TCP segmentation and write/read call boundaries have no MPX meaning. Every new or replacement Carrier begins with the MPX/4 connection preface and performs a complete authenticated handshake.
 
-Byte 7 is:
+A replacement Carrier reuses the logical Carrier ID with a strictly greater Carrier Generation, derives fresh traffic keys and restarts both directional Secure Record sequence spaces at zero.
 
-- `0x41` Auto
-- `0x42` Aggregate
-- `0x43` Protect
-- `0x44` Weighted
+## Handshake and security
 
-For Auto/Aggregate/Protect, bytes 40..43 remain zero exactly as in 0.9.3. For Weighted, bytes 40..41 are the configured download capacity and 42..43 are the configured upload capacity, each a big-endian uint16 in 0.1 Mbps units. Download must be non-zero. Upload zero means that the client omitted the optional upload capacity and the Mac sending direction must use normal learned Aggregate capacity instead.
+The implementation supports the Draft 03 `CREATE` and `JOIN` flow using:
 
-The supported configured range is 0.1–6553.5 Mbps with 0.1 Mbps precision. The Landing sending direction uses download capacity; the Mac sending direction uses upload capacity when supplied. Capacity values are authenticated before the Landing allocates or joins the session, so a network intermediary cannot silently change weights.
+- 32-byte pre-shared transport key;
+- HKDF-SHA256 and MPX-Expand-Label;
+- HMAC-SHA256 Client/Server Finished authentication;
+- AES-256-GCM Secure Records;
+- canonical Parameter ordering and canonical VarInt encoding;
+- directional `MAX_FRAME_PAYLOAD`, `MAX_RECORD_SIZE` and `MAX_STREAMS` limits;
+- Session-wide Scheduler negotiation and Carrier-scoped `PATH_CAPACITY` for Weighted.
 
-0.9.5 keeps the exact Rev5 hello layout introduced by 0.9.4. Auto/Aggregate/Protect retain the 0.9.3 0x41/0x42/0x43 values and zero capacity bytes; Weighted remains 0x44. A 0.9.5 Mac can therefore use Weighted with a 0.9.4 Rev5 Landing. Revision-1/2/3 values 0x11..0x33 are rejected.
+Unauthenticated CREATE/JOIN attempts do not allocate or attach live Session Carrier state.
 
-Each direction uses independent AES-GCM keys/counters derived from the PSK handshake transcript. Existing random 32-byte transport keys can be reused. This update does not add TLS PKI, forward secrecy or a security certification.
+## Frames and Streams
 
-## DATA and control records
+The implementation maps its existing Stream engine onto MPX/4 Core Frames including STREAM_OPEN, STREAM_DATA, TRANSMISSION_ACK, STREAM_CREDIT, STREAM_FIN, RESET_STREAM, STOP_SENDING, STREAM_CONSUMED, SESSION_CREDIT, CREDIT_PROBE and PING/PONG.
 
-Records retain the existing 40-byte authenticated header and AEAD tag. DATA is at most 32 KiB. Control payloads are empty except RESET_STREAM, which has exactly 8 bytes of big-endian error code. Reliable controls have an independent packet id; a frame's final-size offset is not overloaded as that id.
+STREAM_DATA remains bounded to 32768 bytes. Stream byte ordering is by Stream offset, independent of Carrier order. Reliable Frames use Session-wide monotonically allocated Transmission IDs; retransmission or reinjection keeps the same logical Transmission identity.
 
-| Kind | Meaning |
-|---:|---|
-| 1 OPEN | Lightweight stream identity; no implicit DATA permission. |
-| 2 OPEN_OK | Accepts the referenced OPEN. |
-| 3 DATA | Logical stream offset, packet id, payload. |
-| 4 ACK | Reliable frame receipt. DATA receipt alone is not application consumption. |
-| 5 WINDOW | Stream consumed offset and absolute per-stream limit. |
-| 6 FIN | Own sending direction's final offset and reliable packet id. |
-| 7 | Legacy RST is not accepted. |
-| 8 / 9 PING / PONG | Per-carrier liveness and RTT. |
-| 10 SESSION_WINDOW | stream=0; consumed total and cumulative MAX_DATA limit. |
-| 11 STOP_RECEIVING | Requests peer to stop its sending direction; contains no invented peer final size. |
-| 12 RESET_STREAM | Own sending final size, reliable packet id, 8-byte error code. |
-| 13 OPEN_REJECT | Rejects a still-unaccepted OPEN by matching OPEN id. |
-| 14 CREDIT_PROBE | Regenerates consumption feedback without allocating DATA credit. |
-| 15 FINAL_CONSUMED | Reliable confirmation of consumed FIN range before graceful terminal metadata is retired. |
+## Flow control
 
-## Weighted scheduling semantics
+Application DATA requires both Stream and Session credit. Credit is absolute and monotonic. Retransmission/reinjection of already committed bytes does not consume new logical credit.
 
-Weighted changes only the normal TCP DATA capacity prior. When a configured rate exists for the local sending direction, path ETA scoring and the bounded application-layer flight budget use that configured rate instead of learned `goodput`.
+Implementation limits remain:
 
-It does **not** override live safety evidence. A disconnected path remains unavailable. A path under `penaltyUntil` is avoided while any healthy path exists. Real RTT/minRTT and writer queue debt remain in path scoring. The existing delivery timeout, reinjection and retransmission path remains unchanged.
+- per-Stream receive-credit window: 16 MiB;
+- Session receive-credit window: 128 MiB;
+- active Streams: 2048;
+- physical receive allocation: 128 MiB;
+- sender pending DATA: bounded independently from receive allocation.
 
-If upload capacity is omitted, only the Mac→Landing sending direction falls back to the original learned Aggregate capacity and flight budget; the Landing→Mac direction still uses the required download capacity.
+## Scheduling
 
-## Credit and directionality
+MPX/4 scheduler IDs map directly to the existing policies:
 
-Every direction has independent cumulative committed/consumed totals and limits. Sender peer session credit starts at zero until an explicit SESSION_WINDOW arrives. Receive-side commitment counts increases of each stream's highest observed offset, including holes and declared final size. Duplicate or retransmitted byte ranges are never charged twice.
+- 0: Auto
+- 1: Aggregate
+- 2: Protect
+- 3: Weighted
 
-Per-stream WINDOW is monotonic, initially 16 KiB and up to 16 MiB ahead of consumption. For confirmed outstanding `u_i`, actual bootstrap is `sum(min(u_i,16 KiB))` and growth is `sum(max(u_i-16 KiB,0))`; these remain bounded at 32 MiB and 96 MiB across at most 2048 occupied stream identities. Sender MAX_DATA remains an additional 128 MiB cumulative-window gate. Pending DATA has independent byte/frame bounds and bootstrap reservation.
+Scheduler selection remains an implementation decision after negotiation. Path state includes RTT, minimum RTT, measured delivery rate, outstanding/queued work, penalty state and configured capacity where applicable.
 
-FIN and RESET are independently accounted for each sending direction. Ordinary DATA ACK is delivery, not consumption. Closing identities persist until both directional obligations are settled and continue to count toward the 2048 slot bound. Terminal duplicate-suppression records remain bounded to 8192.
+TRANSMISSION_ACK Receiver Timestamp values are emitted in microseconds as defined by Draft 03.
 
-## Memory and error boundaries
+## UDP
 
-Physical receive pages remain independently charged with a 128 MiB page-accounting limit. Sparse pages can hit this limit before DATA credit is exhausted; this is a typed stream resource failure, not permission to tear down the whole session.
+UDP is intentionally outside the MPX/4 Core implementation in 0.9.6. The existing independent MPU/1 authenticated datagram plane remains available and maintains its own path measurements, receipts, fragmentation/reassembly and scheduling. MPX/4 Weighted `PATH_CAPACITY` values are not applied to MPU/1.
 
-Controls remain bounded and reliable/periodically regenerated where applicable. No socket or backend I/O holds `Session.mu`. WINDOW and SESSION_WINDOW never decrease; retransmission does not mint credit. 0.9.5 does not increase any credit, stream-count or physical receive-memory limit. Its background-resident lifecycle is entirely outside the wire protocol.
+## Interoperability verification
+
+The 0.9.6 source tree includes tests that reproduce the public Draft 03 vectors for:
+
+- canonical VarInt;
+- Frame encoding;
+- key schedule and Finished values;
+- consecutive AES-256-GCM Secure Records and nonces.
+
+End-to-end tests also cover single/multiple Carriers, Stream multiplexing, path failure/rejoin, scheduler negotiation, flow control, retransmission/reinjection and wrong-key rejection.

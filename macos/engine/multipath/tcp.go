@@ -107,6 +107,10 @@ func (s *Session) maintainCarrier(id byte, address string, key []byte) {
 		c := s.paths[id]
 		closed := s.closed
 		active := c != nil && c.active
+		generation := uint64(0)
+		if c != nil && c.conn != nil {
+			generation = c.generation + 1
+		}
 		s.mu.Unlock()
 		if closed {
 			return
@@ -131,7 +135,7 @@ func (s *Session) maintainCarrier(id byte, address string, key []byte) {
 			if s.scheduler.configured == SchedulerWeighted {
 				capacity = s.pathCapacities[id]
 			}
-			sc, err = clientHandshakePolicy(conn, key, s.id, id, false, s.scheduler.configured, capacity)
+			sc, err = clientHandshakePolicyGeneration(conn, key, s.id, id, generation, false, s.scheduler.configured, capacity)
 			stopClose()
 			if err == nil {
 				err = s.addCarrier(id, address, sc)
@@ -144,7 +148,11 @@ func (s *Session) maintainCarrier(id byte, address string, key []byte) {
 			delay = 200 * time.Millisecond
 			continue
 		}
-		if errors.Is(err, ErrSessionExpired) || errors.Is(err, ErrSchedulerMismatch) {
+		// A Draft 03 JOIN may be rejected by transport close before an authenticated
+		// error can be distinguished from a transient relay failure. Keep the
+		// logical Session alive while another Carrier remains usable; scheduler
+		// mismatch is the only locally unambiguous terminal policy error here.
+		if errors.Is(err, ErrSchedulerMismatch) {
 			s.stop(err)
 			return
 		}
@@ -298,49 +306,94 @@ func (srv *Server) attach(c net.Conn) error {
 		srv.mu.Unlock()
 		return err
 	}
+
+	// Admission lookup is read-only until CLIENT_FINISHED has authenticated the
+	// peer. MPX/4 forbids attaching unauthenticated Carrier state to a live Session.
 	srv.mu.Lock()
-	// Prune only terminated sessions, never an idle but connected session.
-	for id, s := range srv.sessions {
+	for id, existing := range srv.sessions {
 		select {
-		case <-s.Done():
+		case <-existing.Done():
 			delete(srv.sessions, id)
 		default:
 		}
 	}
-	s := srv.sessions[h.id]
+	existing := srv.sessions[h.id]
 	status := byte(0)
 	if srv.ctx.Err() != nil {
 		status = 3
 	} else if h.create {
-		if s != nil || len(srv.sessions) >= srv.maxSessions {
+		if existing != nil || len(srv.sessions) >= srv.maxSessions {
 			status = 3
-		} else {
-			s = newSession(srv.ctx, h.id, true, srv.openBackend, h.scheduler)
-			srv.sessions[h.id] = s
 		}
-	} else if s == nil {
+	} else if existing == nil {
 		status = 2
-	} else if s.scheduler.configured != h.scheduler {
+	} else if existing.scheduler.configured != h.scheduler {
 		status = 4
 	}
-	if status == 0 {
-		if h.create {
-			srv.handshakeOutcomeLocked("session_created")
-		} else {
-			srv.handshakeOutcomeLocked("session_joined")
-		}
-	} else if status == 4 {
-		srv.handshakeOutcomeLocked("scheduler_mode_conflict")
-	} else if status == 2 {
-		srv.handshakeOutcomeLocked("session_missing")
-	} else {
-		srv.handshakeOutcomeLocked("session_capacity_or_conflict")
-	}
 	srv.mu.Unlock()
+
+	// For an authenticated Session scheduler conflict, send SERVER_INIT with the
+	// Session's existing scheduler. The client can then deterministically report
+	// SCHEDULER_MISMATCH instead of guessing from a transport close. It will not
+	// send CLIENT_FINISHED, so no Carrier state is attached.
+	if status == 4 && existing != nil {
+		h.scheduler = existing.scheduler.configured
+		_, _ = h.finish(srv.key, 0)
+		srv.mu.Lock()
+		srv.handshakeOutcomeLocked("scheduler_mode_conflict")
+		srv.mu.Unlock()
+		return ErrSchedulerMismatch
+	}
+
 	sc, err := h.finish(srv.key, status)
 	if err != nil {
+		srv.mu.Lock()
+		if status == 4 {
+			srv.handshakeOutcomeLocked("scheduler_mode_conflict")
+		} else if status == 2 {
+			srv.handshakeOutcomeLocked("session_missing")
+		} else if status != 0 {
+			srv.handshakeOutcomeLocked("session_capacity_or_conflict")
+		} else if errors.Is(err, ErrAuthentication) {
+			srv.handshakeOutcomeLocked("authentication_failed")
+		} else {
+			srv.handshakeOutcomeLocked("handshake_failed")
+		}
+		srv.mu.Unlock()
 		return err
 	}
+
+	// Authentication is complete. Re-check under the registry lock to close the
+	// race between simultaneous CREATE/JOIN handshakes, then mutate Session state.
+	srv.mu.Lock()
+	s := srv.sessions[h.id]
+	if h.create {
+		if s != nil || len(srv.sessions) >= srv.maxSessions || srv.ctx.Err() != nil {
+			srv.handshakeOutcomeLocked("session_capacity_or_conflict")
+			srv.mu.Unlock()
+			sc.Close()
+			return &ResourceLimitError{Reason: "session_capacity_or_conflict"}
+		}
+		s = newSession(srv.ctx, h.id, true, srv.openBackend, h.scheduler)
+		srv.sessions[h.id] = s
+		srv.handshakeOutcomeLocked("session_created")
+	} else {
+		if s == nil {
+			srv.handshakeOutcomeLocked("session_missing")
+			srv.mu.Unlock()
+			sc.Close()
+			return ErrSessionExpired
+		}
+		if s.scheduler.configured != h.scheduler {
+			srv.handshakeOutcomeLocked("scheduler_mode_conflict")
+			srv.mu.Unlock()
+			sc.Close()
+			return ErrSchedulerMismatch
+		}
+		srv.handshakeOutcomeLocked("session_joined")
+	}
+	srv.mu.Unlock()
+
 	return s.addCarrier(h.carrier, c.RemoteAddr().String(), sc)
 }
 

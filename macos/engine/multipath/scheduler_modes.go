@@ -59,7 +59,7 @@ func schedulerFromWire(value byte) (SchedulerMode, error) {
 	}
 }
 
-var ErrSchedulerMismatch = errors.New("MPX/3 scheduler mode conflicts with the existing session")
+var ErrSchedulerMismatch = errors.New("MPX/4 scheduler mode conflicts with the existing session")
 
 type PathRole string
 

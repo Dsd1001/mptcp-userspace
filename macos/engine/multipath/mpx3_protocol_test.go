@@ -11,6 +11,7 @@ import (
 )
 
 func TestMPX3RejectsOldHelloAndRecord(t *testing.T) {
+	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 03 conformance tests")
 	key, _ := ParseKey(testToken)
 	for _, version := range []byte{1, 2} {
 		a, b := net.Pipe()
@@ -52,6 +53,7 @@ func TestMPX3RejectsOldHelloAndRecord(t *testing.T) {
 }
 
 func TestMPX3HelloHasZeroImplicitSendPermission(t *testing.T) {
+	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 03 conformance tests")
 	a, b := net.Pipe()
 	key, _ := ParseKey(testToken)
 	done := make(chan error, 1)
