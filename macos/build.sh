@@ -9,6 +9,8 @@ export GOMODCACHE=${GOMODCACHE:-/tmp/mptcp-desktop-mod}
 export GOTOOLCHAIN=local
 VERSION=$(cat "$ROOT/macos/VERSION")
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+PLIST_VERSION=$(plutil -extract CFBundleShortVersionString raw -o - "$ROOT/macos/Info.plist")
+[[ "$PLIST_VERSION" == "$VERSION" ]] || { printf 'Info.plist version %s does not match VERSION %s\n' "$PLIST_VERSION" "$VERSION" >&2; exit 1; }
 OUT="$ROOT/dist/userspace-$VERSION"
 mkdir -p "$BUILD" "$OUT"
 SOURCE_ID=$(python3 "$ROOT/scripts/source-manifest.py" --id)
