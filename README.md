@@ -4,9 +4,9 @@ MPTCP Userspace is an application-layer multipath transport for macOS and Linux.
 
 It is **not kernel MPTCP** and it is **not QUIC**. The macOS and Linux Userspace clients use ordinary TCP carrier sockets; the Linux Landing terminates MPX/4 and forwards opaque backend TCP bytes.
 
-Current suite release: **v0.10.2 / MPX/4 Draft 04**. The client UI separates local and remote configuration, remote Bundle diagnostics hide Relay endpoints, and Provisioning public URLs return an opaque encrypted envelope instead of readable configuration JSON.
+Current suite release: **v0.10.3 / MPX/4 Draft 04**. Remote Provisioning Bundles now expose the full per-Profile diagnostics surface while keeping Relay endpoints hidden; the Stream/Lifecycle and Window/Credit resource panels are collapsible and default closed.
 
-- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.2
+- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.3
 - MPX/4 specification: https://github.com/Dsd1001/MPX-4
 - Chinese README: [README.zh-CN.md](README.zh-CN.md)
 
@@ -14,7 +14,7 @@ Current suite release: **v0.10.2 / MPX/4 Draft 04**. The client UI separates loc
 
 | Component | OS / architecture | Artifact |
 |---|---|---|
-| MPTCP Desk client | macOS arm64 + x86_64 | `MPTCP-Desk-0.10.2-universal.dmg` |
+| MPTCP Desk client | macOS arm64 + x86_64 | `MPTCP-Desk-0.10.3-universal.dmg` |
 | Headless client | Linux amd64 | `mptcp-client-linux-amd64` |
 | Headless client | Linux arm64 | `mptcp-client-linux-arm64` |
 | Landing | Linux amd64 | `mptcp-landing` |
@@ -50,6 +50,15 @@ Provisioning web console
 
 Relay nodes only forward ordinary TCP bytes. MPX/4 authentication, Secure Records, Stream multiplexing, flow control, scheduling, retransmission and cross-Carrier reinjection are end-to-end between MPTCP Desk and Landing.
 
+
+
+## v0.10.3: full Bundle diagnostics with collapsible resource panels
+
+- Remote Provisioning Bundles now preserve scheduler state, reorder/pending/retransmit counters, full resource accounting and per-path telemetry independently for every selected Profile/MPX Session.
+- The path diagnostics page shows the same deep diagnostics for remote Profiles that local Userspace sessions already had. Relay IP/port and raw endpoint errors remain hidden in the customer-facing remote UI.
+- **Stream / Lifecycle resources** and **Window / Credit resources** are now disclosure panels. They default closed, show a concise summary while collapsed, and remember expansion only for the current app session. Each remote Profile has independent disclosure state.
+- Always-visible diagnostics still include scheduler state, reorder/pending counters, retransmits and per-path RTT/goodput/queue/outstanding/error counters.
+- MPX/4 Draft 04 wire format, Provisioning encrypted envelope and parallel Bundle failure isolation are unchanged.
 
 ## v0.10.2: customer UI + opaque Provisioning responses
 

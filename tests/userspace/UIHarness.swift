@@ -40,10 +40,30 @@ import Foundation
         precondition(decodedEvent.resources?.rejections.isEmpty == true)
         precondition(decodedEvent.lifecycle?.closed == false)
         model.resources = decodedEvent.resources; model.lifecycle = decodedEvent.lifecycle
+        precondition(model.localStreamResourceExpanded == false)
+        precondition(model.localWindowResourceExpanded == false)
+        precondition(model.profileStreamResourceExpanded.isEmpty)
+        precondition(model.profileWindowResourceExpanded.isEmpty)
+        let remoteDiagnosticA = """
+        {"profile_id":"a","profile_name":"HKBN","bundle_id":"synthetic-bundle","kind":"stats","configured_scheduler_mode":"weighted","effective_scheduler_mode":"weighted","mode_switches":2,"last_mode_reason":"configured weighted capacity","paths":2,"connections":7,"sent":2097152,"received":4194304,"reorder_bytes":16384,"reorder_peak":131072,"pending_bytes":32768,"retransmits":4,"path_stats":[{"id":0,"address":"203.0.113.10:8849","connected":true,"sent":100,"received":200,"rtt_ms":18.5,"goodput_bps":3145728,"outstanding_bytes":4096,"queue_bytes":2048,"errors":0}],"resources":{"active_streams":11,"stream_limit":512,"pending_frames":18,"pending_frame_limit":6144,"pending_bytes":65536,"pending_byte_limit":33685504,"receive_credit_bytes":1048576,"receive_credit_limit_bytes":33554432,"receive_allocated_bytes":2097152,"receive_allocated_limit_bytes":33554432,"admission_reserve_bytes":4194304,"waiting_opens":1,"waits":{},"rejections":{},"bootstrap_credit_bytes":1048576,"bootstrap_credit_limit_bytes":8388608,"growth_credit_bytes":1048576,"growth_credit_limit_bytes":25165824,"data_pending_frames":12,"data_pending_frame_limit":4096,"control_pending_frames":6,"control_pending_frame_limit":2048,"window_blocked_writers":2,"open_receive_credit_waits":3,"local_connections":7,"occupied_stream_slots":12,"closing_streams":1,"lifecycle_open_bidirectional":9,"lifecycle_opening":1,"lifecycle_half_closed":1,"lifecycle_wait_local_final_ack":0,"lifecycle_wait_peer_final":0,"lifecycle_both_final_wait_close":0,"lifecycle_wait_final_consumed":0,"lifecycle_closing_other":0,"data_idle_over_30s":1,"data_idle_over_1m":0,"data_idle_over_5m":0,"data_idle_over_10m":0,"oldest_data_idle_seconds":35,"idle_streams":5,"small_streams":5,"bulk_streams":1,"capability_revision":4,"session_tx_unconsumed_bytes":65536,"idle_actual_data_bytes":32768}}
+        """
+        let remoteDiagnosticB = """
+        {"profile_id":"b","profile_name":"HKT","bundle_id":"synthetic-bundle","kind":"stats","configured_scheduler_mode":"weighted","effective_scheduler_mode":"protect","mode_switches":5,"last_mode_reason":"path degraded","paths":1,"connections":3,"sent":524288,"received":1048576,"reorder_bytes":4096,"reorder_peak":65536,"pending_bytes":8192,"retransmits":9,"path_stats":[{"id":0,"address":"198.51.100.20:8848","connected":false,"sent":0,"received":0,"rtt_ms":0,"goodput_bps":0,"outstanding_bytes":0,"queue_bytes":0,"errors":1,"last_error":"dial 198.51.100.20:8848: timeout"}],"resources":{"active_streams":3,"stream_limit":512,"pending_frames":4,"pending_frame_limit":6144,"pending_bytes":8192,"pending_byte_limit":33685504,"receive_credit_bytes":262144,"receive_credit_limit_bytes":33554432,"receive_allocated_bytes":524288,"receive_allocated_limit_bytes":33554432,"admission_reserve_bytes":4194304,"waiting_opens":0,"waits":{},"rejections":{},"bootstrap_credit_bytes":524288,"bootstrap_credit_limit_bytes":8388608,"growth_credit_bytes":0,"growth_credit_limit_bytes":25165824,"data_pending_frames":3,"data_pending_frame_limit":4096,"control_pending_frames":1,"control_pending_frame_limit":2048,"window_blocked_writers":0,"open_receive_credit_waits":0,"local_connections":3,"occupied_stream_slots":3,"closing_streams":0,"lifecycle_open_bidirectional":3,"lifecycle_opening":0,"lifecycle_half_closed":0,"lifecycle_wait_local_final_ack":0,"lifecycle_wait_peer_final":0,"lifecycle_both_final_wait_close":0,"lifecycle_wait_final_consumed":0,"lifecycle_closing_other":0,"data_idle_over_30s":0,"data_idle_over_1m":0,"data_idle_over_5m":0,"data_idle_over_10m":0,"oldest_data_idle_seconds":5,"idle_streams":2,"small_streams":1,"bulk_streams":0,"capability_revision":4,"session_tx_unconsumed_bytes":8192,"idle_actual_data_bytes":4096}}
+        """
+        let remoteEventA = try JSONDecoder().decode(EngineEvent.self,from:Data(remoteDiagnosticA.utf8))
+        let remoteEventB = try JSONDecoder().decode(EngineEvent.self,from:Data(remoteDiagnosticB.utf8))
+        precondition(model.consumeBundleProfileEvent(remoteEventA))
+        precondition(model.consumeBundleProfileEvent(remoteEventB))
+        precondition(model.provisioningDiagnostics["a"]?.connections == 7)
+        precondition(model.provisioningDiagnostics["a"]?.resources?.active_streams == 11)
+        precondition(model.provisioningDiagnostics["a"]?.configuredSchedulerMode == "weighted")
+        precondition(model.provisioningDiagnostics["b"]?.connections == 3)
+        precondition(model.provisioningDiagnostics["b"]?.resources?.active_streams == 3)
+        precondition(model.provisioningDiagnostics["b"]?.effectiveSchedulerMode == "protect")
         model.append("Userspace 认证通过；实际带宽叠加取决于链路容量，不作为测速结论")
         precondition(model.logs.last?.contains("认证通过") == true)
         precondition(model.logs.last?.contains("测速") == false)
-        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("userspace-bundle","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false),("userspace-bundle-paths","userspace_multipath",2,true)] {
+        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("userspace-bundle","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false),("userspace-paths-expanded","userspace_multipath",2,false),("userspace-bundle-paths","userspace_multipath",2,true),("userspace-bundle-paths-expanded","userspace_multipath",2,true)] {
             model.mode=mode;model.tab=tab;model.problem=nil;model.running=false;model.busy=false
             model.configurationSource=api ? "remote" : "local"
             model.provisioningURL=api ? "https://config.example.test/v1/bundle/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" : ""
@@ -61,11 +81,11 @@ import Foundation
             model.provisioningSelectedProfileIDs = isBundle ? ["a","b"] : []
             model.provisioningRuntimeStatus = isBundle ? ["a":"已启动","b":"错误"] : [:]
             model.provisioningRuntimeError = isBundle ? ["b":"连接超时"] : [:]
-            model.provisioningTCPPaths = isBundle ? [
-                "a":[PathMetric(id:0,address:"203.0.113.10:8849",connected:true,sent:100,received:200,rtt_ms:18.5,goodput_bps:3145728,outstanding_bytes:4096,queue_bytes:2048,errors:0,last_error:nil)],
-                "b":[PathMetric(id:0,address:"198.51.100.20:8848",connected:false,sent:0,received:0,rtt_ms:0,goodput_bps:0,outstanding_bytes:0,queue_bytes:0,errors:1,last_error:"dial 198.51.100.20:8848: timeout")]
-            ] : [:]
             if isBundle { model.provisioningDisplayName="Synthetic Bundle"; model.provisioningRevision="r3" }
+            model.localStreamResourceExpanded = name == "userspace-paths-expanded"
+            model.localWindowResourceExpanded = name == "userspace-paths-expanded"
+            model.profileStreamResourceExpanded = name == "userspace-bundle-paths-expanded" ? ["a"] : []
+            model.profileWindowResourceExpanded = name == "userspace-bundle-paths-expanded" ? ["a"] : []
             let host=NSHostingView(rootView:DesktopView().environment(\.colorScheme,.light))
             let frame=NSRect(x:0,y:0,width:710,height:850)
             let window=NSWindow(contentRect:frame,styleMask:.borderless,backing:.buffered,defer:false)
@@ -79,6 +99,6 @@ import Foundation
             print("Rendered \(name): \(bitmap.pixelsWide)x\(bitmap.pixelsHigh), \(png.count) bytes")
             window.contentView=nil
         }
-        print("PASS: local/remote selector, concise logs, hidden-endpoint remote Bundle diagnostics, profile validation, and six offscreen SwiftUI views")
+        print("PASS: full per-Profile diagnostics isolation, hidden remote endpoints, default-collapsed/expanded resource panels, local diagnostics, and eight offscreen SwiftUI views")
     }
 }

@@ -4,6 +4,26 @@ import AppKit
 import Network
 import ServiceManagement
 
+struct ProfileDiagnosticState {
+    var configuredSchedulerMode = ""
+    var effectiveSchedulerMode = ""
+    var schedulerModeSwitches: UInt64 = 0
+    var lastSchedulerModeReason = ""
+    var paths = 0
+    var connections = 0
+    var sent: Int64 = 0
+    var received: Int64 = 0
+    var reorderBytes = 0
+    var reorderPeak = 0
+    var pendingBytes = 0
+    var retransmits: UInt64 = 0
+    var udpDropped: UInt64 = 0
+    var resources: ResourceMetric?
+    var lifecycle: LifecycleMetric?
+    var tcpPaths: [PathMetric] = []
+    var udpPaths: [PathMetric] = []
+}
+
 final class Model: ObservableObject {
     static let shared = Model()
     @Published var relays = [RelayRow(host: "", port: 21001), RelayRow(host: "", port: 21002)]
@@ -33,6 +53,7 @@ final class Model: ObservableObject {
     @Published var provisioningRuntimeError: [String:String] = [:]
     @Published var provisioningTCPPaths: [String:[PathMetric]] = [:]
     @Published var provisioningUDPPaths: [String:[PathMetric]] = [:]
+    @Published var provisioningDiagnostics: [String:ProfileDiagnosticState] = [:]
     private var lastProvisioningBundle: RelayProvisioningBundlePayload?
     private static let bundleSelectionPrefix = "provisioning-bundle-selection-v1."
     private static let configurationSourceKey = "configuration-source-v1"
@@ -50,6 +71,10 @@ final class Model: ObservableObject {
     @Published var udpDropped: UInt64 = 0
     @Published var resources: ResourceMetric?
     @Published var lifecycle: LifecycleMetric?
+    @Published var localStreamResourceExpanded = false
+    @Published var localWindowResourceExpanded = false
+    @Published var profileStreamResourceExpanded = Set<String>()
+    @Published var profileWindowResourceExpanded = Set<String>()
     private var lastTransportEvent: UInt64 = 0
     var userspace: Bool { mode == "userspace_multipath" }
     @Published var udpConnections = 0
@@ -278,6 +303,7 @@ final class Model: ObservableObject {
         provisioningRuntimeError = [:]
         provisioningTCPPaths = [:]
         provisioningUDPPaths = [:]
+        provisioningDiagnostics = [:]
         lastProvisioningBundle = nil
     }
     private func selectionKey(_ bundleID: String) -> String { Self.bundleSelectionPrefix + bundleID }
@@ -344,6 +370,7 @@ final class Model: ObservableObject {
             provisioningRuntimeError = [:]
             provisioningTCPPaths = [:]
             provisioningUDPPaths = [:]
+            provisioningDiagnostics = [:]
             let count = next.count
             provisioningStatus = bundle.mode == "parallel" ? "\(bundle.display_name) · 已选择 \(count) 个 Profile" : "\(bundle.display_name) · 已选择 1 个 Profile"
             problem = nil
@@ -451,6 +478,7 @@ final class Model: ObservableObject {
                     self.provisioningRuntimeError = [:]
                     self.provisioningTCPPaths = [:]
                     self.provisioningUDPPaths = [:]
+                    self.provisioningDiagnostics = [:]
                     try self.applyBundleSelection(bundle, ids: selection)
                     self.provisioningStatus = bundle.mode == "parallel"
                         ? "\(bundle.display_name) · 已同步 · \(selection.count) 个 Profile 启用"
@@ -582,7 +610,13 @@ final class Model: ObservableObject {
                 throw Message("Bundle 启动缺少刚同步的 Provisioning 数据")
             }
             problem = nil; busy = true; status = checking ? "检查环境中" : "连接中"
-            if action == "run-bundle" { provisioningRuntimeStatus = [:]; provisioningRuntimeError = [:] }
+            if action == "run-bundle" {
+                provisioningRuntimeStatus = [:]
+                provisioningRuntimeError = [:]
+                provisioningTCPPaths = [:]
+                provisioningUDPPaths = [:]
+                provisioningDiagnostics = [:]
+            }
             udpConnections = 0; udpSent = 0; udpReceived = 0
             paths = 0; connections = 0; sent = 0; received = 0
             tcpPaths = []; udpPaths = []; udpHealthyPaths = 0
@@ -639,6 +673,61 @@ final class Model: ObservableObject {
             process = nil;busy = false;running = false;status = "启动失败";problem = error.localizedDescription
         }
     }
+    @discardableResult
+    func consumeBundleProfileEvent(_ event: EngineEvent) -> Bool {
+        guard let profileID = event.profile_id, event.bundle_id != nil else { return false }
+        let title = event.profile_name ?? profileID
+        switch event.kind {
+        case "connecting":
+            provisioningRuntimeStatus[profileID] = "连接中"
+            provisioningRuntimeError.removeValue(forKey: profileID)
+        case "ready":
+            provisioningRuntimeStatus[profileID] = "认证通过"
+            provisioningRuntimeError.removeValue(forKey: profileID)
+        case "listening":
+            provisioningRuntimeStatus[profileID] = "已启动"
+            provisioningRuntimeError.removeValue(forKey: profileID)
+        case "error":
+            provisioningRuntimeStatus[profileID] = "错误"
+            provisioningRuntimeError[profileID] = customerFacingRemoteError(event.message)
+        case "transport_closed":
+            if provisioningRuntimeStatus[profileID] != "错误" { provisioningRuntimeStatus[profileID] = "已停止" }
+        default: break
+        }
+
+        var diagnostic = provisioningDiagnostics[profileID] ?? ProfileDiagnosticState()
+        if let value = event.configured_scheduler_mode { diagnostic.configuredSchedulerMode = value }
+        if let value = event.effective_scheduler_mode { diagnostic.effectiveSchedulerMode = value }
+        if let value = event.mode_switches { diagnostic.schedulerModeSwitches = value }
+        if let value = event.last_mode_reason { diagnostic.lastSchedulerModeReason = value }
+        if event.kind == "stats" || event.kind == "listening" {
+            diagnostic.paths = event.paths ?? diagnostic.paths
+            diagnostic.connections = event.connections ?? diagnostic.connections
+            diagnostic.sent = event.sent ?? diagnostic.sent
+            diagnostic.received = event.received ?? diagnostic.received
+            diagnostic.reorderBytes = event.reorder_bytes ?? diagnostic.reorderBytes
+            diagnostic.reorderPeak = event.reorder_peak ?? diagnostic.reorderPeak
+            diagnostic.pendingBytes = event.pending_bytes ?? diagnostic.pendingBytes
+            diagnostic.retransmits = event.retransmits ?? diagnostic.retransmits
+            if let current = event.path_stats { diagnostic.tcpPaths = current; provisioningTCPPaths[profileID] = current }
+        }
+        if event.kind == "udp_stats" {
+            diagnostic.udpDropped = event.dropped ?? diagnostic.udpDropped
+            if let current = event.path_stats { diagnostic.udpPaths = current; provisioningUDPPaths[profileID] = current }
+        }
+        if let current = event.resources { diagnostic.resources = current }
+        if let current = event.lifecycle { diagnostic.lifecycle = current }
+        provisioningDiagnostics[profileID] = diagnostic
+
+        if event.kind == "error" { append("[\(title)] \(customerFacingRemoteError(event.message))") }
+        else if ["connecting","ready","listening","transport_closed"].contains(event.kind) {
+            let label: String
+            switch event.kind { case "connecting": label = "正在连接"; case "ready": label = "认证通过"; case "listening": label = "已启动"; default: label = "已停止" }
+            append("[\(title)] \(label)")
+        }
+        return true
+    }
+
     private func consume(_ bytes: Data, process child: Process) {
         guard process === child else {return}
         pending.append(bytes)
@@ -647,35 +736,7 @@ final class Model: ObservableObject {
             let line = pending.prefix(upTo: end); pending.removeSubrange(...end)
             guard let event = try? JSONDecoder().decode(EngineEvent.self, from: line) else {continue}
 
-            if let profileID = event.profile_id, event.bundle_id != nil {
-                let title = event.profile_name ?? profileID
-                switch event.kind {
-                case "connecting":
-                    provisioningRuntimeStatus[profileID] = "连接中"
-                    provisioningRuntimeError.removeValue(forKey: profileID)
-                case "ready":
-                    provisioningRuntimeStatus[profileID] = "认证通过"
-                    provisioningRuntimeError.removeValue(forKey: profileID)
-                case "listening":
-                    provisioningRuntimeStatus[profileID] = "已启动"
-                    provisioningRuntimeError.removeValue(forKey: profileID)
-                case "error":
-                    provisioningRuntimeStatus[profileID] = "错误"
-                    provisioningRuntimeError[profileID] = customerFacingRemoteError(event.message)
-                case "transport_closed":
-                    if provisioningRuntimeStatus[profileID] != "错误" { provisioningRuntimeStatus[profileID] = "已停止" }
-                default: break
-                }
-                if event.kind == "stats" { provisioningTCPPaths[profileID] = event.path_stats ?? [] }
-                if event.kind == "udp_stats" { provisioningUDPPaths[profileID] = event.path_stats ?? [] }
-                if event.kind == "error" { append("[\(title)] \(customerFacingRemoteError(event.message))") }
-                else if ["connecting","ready","listening","transport_closed"].contains(event.kind) {
-                    let label: String
-                    switch event.kind { case "connecting": label = "正在连接"; case "ready": label = "认证通过"; case "listening": label = "已启动"; default: label = "已停止" }
-                    append("[\(title)] \(label)")
-                }
-                continue
-            }
+            if consumeBundleProfileEvent(event) { continue }
 
             receiveSchedulerEvent(event)
             switch event.kind {
@@ -790,7 +851,7 @@ struct DesktopView: View {
                     HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
                 }
                 Spacer()
-                Text("0.10.2").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("0.10.3").font(.system(size: 11)).foregroundColor(.secondary)
             }
             Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2)}.pickerStyle(.segmented)
             HStack(spacing:12) {
@@ -931,20 +992,45 @@ struct DesktopView: View {
                         ScrollView {
                             VStack(alignment:.leading,spacing:14) {
                                 ForEach(model.provisioningProfiles.filter { model.provisioningSelectedProfileIDs.contains($0.id) }) { choice in
-                                    VStack(alignment:.leading,spacing:8) {
+                                    let diagnostic = model.provisioningDiagnostics[choice.id] ?? ProfileDiagnosticState()
+                                    VStack(alignment:.leading,spacing:10) {
                                         HStack {
-                                            Text(choice.name).font(.headline)
+                                            VStack(alignment:.leading,spacing:2) {
+                                                Text(choice.name).font(.headline)
+                                                Text("127.0.0.1:\(choice.listenPort)").font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
+                                            }
                                             Spacer()
                                             let state = model.provisioningRuntimeStatus[choice.id] ?? "等待启动"
-                                            Text(state).font(.system(size:11)).foregroundColor(state == "错误" ? .red : .secondary)
+                                            Text(state).font(.system(size:11,weight:.medium)).foregroundColor(state == "错误" ? .red : .secondary)
                                         }
-                                        Text("127.0.0.1:\(choice.listenPort)").font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
                                         if let detail = model.provisioningRuntimeError[choice.id], !detail.isEmpty {
                                             Text(detail).font(.system(size:11)).foregroundColor(.red)
                                         }
-                                        pathSection("TCP 路径", model.provisioningTCPPaths[choice.id] ?? [], hideEndpoint:true)
-                                        if model.udpEnabled { pathSection("UDP 路径", model.provisioningUDPPaths[choice.id] ?? [], hideEndpoint:true) }
-                                    }.padding(10).background(Color.secondary.opacity(0.04)).cornerRadius(8)
+                                        Text("配置策略：\(Model.schedulerTitle(diagnostic.configuredSchedulerMode)) · 当前策略：\(Model.schedulerTitle(diagnostic.effectiveSchedulerMode)) · 自动切换：\(diagnostic.schedulerModeSwitches)")
+                                            .font(.system(size:12,weight:.medium))
+                                        Text("本端发送方向 · \(diagnostic.lastSchedulerModeReason.isEmpty ? "等待引擎诊断" : diagnostic.lastSchedulerModeReason)")
+                                            .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                                        HStack(spacing:16) {
+                                            metric("TCP 载路", String(diagnostic.paths))
+                                            metric("连接", String(diagnostic.connections))
+                                            metric("上传", ByteCountFormatter.string(fromByteCount:diagnostic.sent,countStyle:.binary))
+                                            metric("下载", ByteCountFormatter.string(fromByteCount:diagnostic.received,countStyle:.binary))
+                                        }
+                                        HStack(spacing:16) {
+                                            metric("当前重排",Self.bytes(diagnostic.reorderBytes))
+                                            metric("重排峰值",Self.bytes(diagnostic.reorderPeak))
+                                            metric("等待确认",Self.bytes(diagnostic.pendingBytes))
+                                        }
+                                        resourcePanels(
+                                            diagnostic.resources,
+                                            streamExpanded: profileStreamBinding(choice.id),
+                                            windowExpanded: profileWindowBinding(choice.id)
+                                        )
+                                        Text("TCP 重传：\(diagnostic.retransmits) · UDP 丢弃/超时事件：\(diagnostic.udpDropped)")
+                                            .font(.system(size:12)).foregroundColor(.secondary)
+                                        pathSection("TCP 路径", diagnostic.tcpPaths, hideEndpoint:true)
+                                        if !diagnostic.udpPaths.isEmpty { pathSection("UDP 路径", diagnostic.udpPaths, hideEndpoint:true) }
+                                    }.padding(12).background(Color.secondary.opacity(0.04)).cornerRadius(8)
                                 }
                             }.frame(maxWidth:.infinity,alignment:.leading)
                         }
@@ -958,58 +1044,17 @@ struct DesktopView: View {
                             metric("重排峰值",Self.bytes(model.reorderPeak))
                             metric("等待确认",Self.bytes(model.pendingBytes))
                         }
-                        if let resource = model.resources {
-                            Text("入口 TCP \(resource.local_connections ?? 0) · MPX 占槽 \(resource.occupied_stream_slots ?? resource.active_streams)/\(resource.stream_limit) · 活跃身份 \(resource.active_streams) · closing \(resource.closing_streams ?? 0)")
-                                .font(.system(size:11,design:.monospaced))
-                            Text("双向开放 \(resource.lifecycle_open_bidirectional ?? 0) · 建流中 \(resource.lifecycle_opening ?? 0) · 半关闭 \(resource.lifecycle_half_closed ?? 0) · 等本端终态 ACK \(resource.lifecycle_wait_local_final_ack ?? 0)")
-                                .font(.system(size:11,design:.monospaced))
-                            Text("等对端终态 \(resource.lifecycle_wait_peer_final ?? 0) · 双向终态待 Close \(resource.lifecycle_both_final_wait_close ?? 0) · 等 FINAL_CONSUMED \(resource.lifecycle_wait_final_consumed ?? 0) · 其他 closing \(resource.lifecycle_closing_other ?? 0)")
-                                .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                            Text("DATA 静默 >30s / >1m / >5m / >10m：\(resource.data_idle_over_30s ?? 0) / \(resource.data_idle_over_1m ?? 0) / \(resource.data_idle_over_5m ?? 0) / \(resource.data_idle_over_10m ?? 0) · 最老静默 \(resource.oldest_data_idle_seconds ?? 0)s")
-                                .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                            Text("待确认帧 \(resource.pending_frames)/\(resource.pending_frame_limit) · 建流中 \(resource.waiting_opens)")
-                                .font(.system(size:11,design:.monospaced))
-                            Text("接收未消费 DATA \(Self.bytes(resource.receive_credit_bytes))/\(Self.bytes(resource.receive_credit_limit_bytes)) · 实际分页 \(Self.bytes(resource.receive_allocated_bytes))/\(Self.bytes(resource.receive_allocated_limit_bytes))")
-                                .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                            Text("实际基础占用 \(Self.bytes(resource.bootstrap_credit_bytes ?? 0))/\(Self.bytes(resource.bootstrap_credit_limit_bytes ?? 0)) · 实际增长占用 \(Self.bytes(resource.growth_credit_bytes ?? 0))/\(Self.bytes(resource.growth_credit_limit_bytes ?? 0))")
-                                .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                            Text("DATA 帧 \(resource.data_pending_frames ?? 0)/\(resource.data_pending_frame_limit ?? 0) · 控制帧 \(resource.control_pending_frames ?? 0)/\(resource.control_pending_frame_limit ?? 0) · 等窗口写入 \(resource.window_blocked_writers ?? 0)")
-                                .font(.system(size:11,design:.monospaced))
-                            Text("窗口需求 idle / small / bulk：\(resource.idle_streams ?? 0) / \(resource.small_streams ?? 0) / \(resource.bulk_streams ?? 0) · OPEN 信用等待：\(resource.open_receive_credit_waits ?? 0)")
-                                .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                            if let reason = resource.last_reason {
-                                Text("最近资源事件：\(reason) · \(resource.last_limit_at ?? "")")
-                                    .font(.system(size:10)).foregroundColor(.secondary).textSelection(.enabled)
-                            }
-                        }
-                        if let resource = model.resources, let rev = resource.capability_revision, rev >= 2 {
-                            Text("Rev\(rev) · 待结算 \(resource.closing_streams ?? 0) 流 · 发送未消费 \(Self.bytes(resource.session_tx_unconsumed_bytes ?? 0)) · 空闲 DATA \(Self.bytes(resource.idle_actual_data_bytes ?? 0))")
-                                .font(.system(size:10,design:.monospaced)).foregroundColor(.secondary)
-                        }
+                        resourcePanels(
+                            model.resources,
+                            streamExpanded: Binding(get:{model.localStreamResourceExpanded},set:{model.localStreamResourceExpanded=$0}),
+                            windowExpanded: Binding(get:{model.localWindowResourceExpanded},set:{model.localWindowResourceExpanded=$0})
+                        )
                         Text("TCP 重传：\(model.retransmits) · UDP 丢弃/超时事件：\(model.udpDropped)")
                             .font(.system(size:12)).foregroundColor(.secondary)
                         ScrollView {
                             VStack(alignment:.leading,spacing:14) {
-                                if model.remoteConfigurationSelected && model.provisioningIsBundle {
-                                    ForEach(model.provisioningProfiles.filter { model.provisioningSelectedProfileIDs.contains($0.id) }) { choice in
-                                        VStack(alignment:.leading,spacing:8) {
-                                            HStack {
-                                                Text(choice.name).font(.headline)
-                                                Spacer()
-                                                let state = model.provisioningRuntimeStatus[choice.id] ?? "等待启动"
-                                                Text(state).font(.system(size:11)).foregroundColor(state == "错误" ? .red : .secondary)
-                                            }
-                                            if let detail = model.provisioningRuntimeError[choice.id], !detail.isEmpty {
-                                                Text(detail).font(.system(size:11)).foregroundColor(.red)
-                                            }
-                                            pathSection("TCP 路径", model.provisioningTCPPaths[choice.id] ?? [], hideEndpoint:true)
-                                            if model.udpEnabled { pathSection("UDP 路径", model.provisioningUDPPaths[choice.id] ?? [], hideEndpoint:true) }
-                                        }.padding(10).background(Color.secondary.opacity(0.04)).cornerRadius(8)
-                                    }
-                                } else {
-                                    pathSection("TCP 路径", model.tcpPaths, hideEndpoint:model.remoteConfigurationSelected)
-                                    if model.udpEnabled { pathSection("UDP 路径", model.udpPaths, hideEndpoint:model.remoteConfigurationSelected) }
-                                }
+                                pathSection("TCP 路径", model.tcpPaths, hideEndpoint:model.remoteConfigurationSelected)
+                                if model.udpEnabled { pathSection("UDP 路径", model.udpPaths, hideEndpoint:model.remoteConfigurationSelected) }
                             }.frame(maxWidth:.infinity,alignment:.leading)
                         }
                     } else {
@@ -1036,6 +1081,92 @@ struct DesktopView: View {
                 }
             }
         }.padding(22).frame(minWidth:650,idealWidth:710,maxWidth:900,minHeight:800,idealHeight:850)
+    }
+    private func profileStreamBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { model.profileStreamResourceExpanded.contains(id) },
+            set: { expanded in
+                var next = model.profileStreamResourceExpanded
+                if expanded { next.insert(id) } else { next.remove(id) }
+                model.profileStreamResourceExpanded = next
+            }
+        )
+    }
+    private func profileWindowBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { model.profileWindowResourceExpanded.contains(id) },
+            set: { expanded in
+                var next = model.profileWindowResourceExpanded
+                if expanded { next.insert(id) } else { next.remove(id) }
+                model.profileWindowResourceExpanded = next
+            }
+        )
+    }
+    @ViewBuilder
+    func resourcePanels(_ resource: ResourceMetric?, streamExpanded: Binding<Bool>, windowExpanded: Binding<Bool>) -> some View {
+        DisclosureGroup(isExpanded: streamExpanded) {
+            if let resource {
+                VStack(alignment:.leading,spacing:5) {
+                    Text("入口 TCP \(resource.local_connections ?? 0) · MPX 占槽 \(resource.occupied_stream_slots ?? resource.active_streams)/\(resource.stream_limit) · 活跃身份 \(resource.active_streams) · closing \(resource.closing_streams ?? 0)")
+                        .font(.system(size:11,design:.monospaced))
+                    Text("双向开放 \(resource.lifecycle_open_bidirectional ?? 0) · 建流中 \(resource.lifecycle_opening ?? 0) · 半关闭 \(resource.lifecycle_half_closed ?? 0) · 等本端终态 ACK \(resource.lifecycle_wait_local_final_ack ?? 0)")
+                        .font(.system(size:11,design:.monospaced))
+                    Text("等对端终态 \(resource.lifecycle_wait_peer_final ?? 0) · 双向终态待 Close \(resource.lifecycle_both_final_wait_close ?? 0) · 等 FINAL_CONSUMED \(resource.lifecycle_wait_final_consumed ?? 0) · 其他 closing \(resource.lifecycle_closing_other ?? 0)")
+                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
+                    Text("DATA 静默 >30s / >1m / >5m / >10m：\(resource.data_idle_over_30s ?? 0) / \(resource.data_idle_over_1m ?? 0) / \(resource.data_idle_over_5m ?? 0) / \(resource.data_idle_over_10m ?? 0) · 最老静默 \(resource.oldest_data_idle_seconds ?? 0)s")
+                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
+                    if let rev = resource.capability_revision, rev >= 2 {
+                        Text("Rev\(rev) · 待结算 \(resource.closing_streams ?? 0) 流 · 发送未消费 \(Self.bytes(resource.session_tx_unconsumed_bytes ?? 0)) · 空闲 DATA \(Self.bytes(resource.idle_actual_data_bytes ?? 0))")
+                            .font(.system(size:10,design:.monospaced)).foregroundColor(.secondary)
+                    }
+                }.padding(.top,6)
+            } else {
+                Text("暂无 Stream / 生命周期资源数据").font(.system(size:11)).foregroundColor(.secondary).padding(.top,6)
+            }
+        } label: {
+            HStack {
+                Text("Stream / 生命周期资源").font(.system(size:12,weight:.medium))
+                Spacer()
+                if let resource { Text("活跃 \(resource.active_streams) · Closing \(resource.closing_streams ?? 0)").font(.system(size:10,design:.monospaced)).foregroundColor(.secondary) }
+                else { Text("等待数据").font(.system(size:10)).foregroundColor(.secondary) }
+            }
+        }
+        .padding(9).background(Color.secondary.opacity(0.05)).cornerRadius(7)
+        .accessibilityIdentifier("stream-resource-disclosure")
+
+        DisclosureGroup(isExpanded: windowExpanded) {
+            if let resource {
+                VStack(alignment:.leading,spacing:5) {
+                    Text("待确认帧 \(resource.pending_frames)/\(resource.pending_frame_limit) · 建流中 \(resource.waiting_opens)")
+                        .font(.system(size:11,design:.monospaced))
+                    Text("接收未消费 DATA \(Self.bytes(resource.receive_credit_bytes))/\(Self.bytes(resource.receive_credit_limit_bytes)) · 实际分页 \(Self.bytes(resource.receive_allocated_bytes))/\(Self.bytes(resource.receive_allocated_limit_bytes))")
+                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
+                    Text("实际基础占用 \(Self.bytes(resource.bootstrap_credit_bytes ?? 0))/\(Self.bytes(resource.bootstrap_credit_limit_bytes ?? 0)) · 实际增长占用 \(Self.bytes(resource.growth_credit_bytes ?? 0))/\(Self.bytes(resource.growth_credit_limit_bytes ?? 0))")
+                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
+                    Text("DATA 帧 \(resource.data_pending_frames ?? 0)/\(resource.data_pending_frame_limit ?? 0) · 控制帧 \(resource.control_pending_frames ?? 0)/\(resource.control_pending_frame_limit ?? 0) · 等窗口写入 \(resource.window_blocked_writers ?? 0)")
+                        .font(.system(size:11,design:.monospaced))
+                    Text("窗口需求 idle / small / bulk：\(resource.idle_streams ?? 0) / \(resource.small_streams ?? 0) / \(resource.bulk_streams ?? 0) · OPEN 信用等待：\(resource.open_receive_credit_waits ?? 0)")
+                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
+                    if let reason = resource.last_reason {
+                        Text("最近资源事件：\(reason) · \(resource.last_limit_at ?? "")")
+                            .font(.system(size:10)).foregroundColor(.secondary).textSelection(.enabled)
+                    }
+                }.padding(.top,6)
+            } else {
+                Text("暂无 Window / Credit 资源数据").font(.system(size:11)).foregroundColor(.secondary).padding(.top,6)
+            }
+        } label: {
+            HStack {
+                Text("Window / Credit 资源").font(.system(size:12,weight:.medium))
+                Spacer()
+                if let resource {
+                    Text("分页 \(Self.bytes(resource.receive_allocated_bytes))/\(Self.bytes(resource.receive_allocated_limit_bytes)) · 待确认 \(resource.pending_frames)")
+                        .font(.system(size:10,design:.monospaced)).foregroundColor(.secondary)
+                } else { Text("等待数据").font(.system(size:10)).foregroundColor(.secondary) }
+            }
+        }
+        .padding(9).background(Color.secondary.opacity(0.05)).cornerRadius(7)
+        .accessibilityIdentifier("window-resource-disclosure")
     }
     func metric(_ label:String,_ value:String)->some View {VStack(alignment:.leading,spacing:4){Text(label).font(.system(size:11)).foregroundColor(.secondary);Text(value).font(.system(size:16,weight:.medium,design:.monospaced))}.frame(maxWidth:.infinity,alignment:.leading)}
     static func bytes(_ count:Int)->String { ByteCountFormatter.string(fromByteCount:Int64(count),countStyle:.binary) }
