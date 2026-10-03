@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,13 @@ import (
 
 //go:embed web/index.html
 var webFS embed.FS
+
+var (
+	Version  = "dev"
+	SourceID = "unbound"
+)
+
+var apiAliasPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 type relay struct {
 	Host         string   `json:"host"`
@@ -48,6 +56,7 @@ type record struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	Token     string          `json:"token"`
+	APIAlias  string          `json:"api_alias,omitempty"`
 	Revision  uint64          `json:"revision"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	Config    provisionConfig `json:"config"`
@@ -73,12 +82,21 @@ type adminRecord struct {
 	Revision  uint64          `json:"revision"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	APIURL    string          `json:"api_url"`
+	APIAlias  string          `json:"api_alias,omitempty"`
 	Config    provisionConfig `json:"config"`
 }
 
 type adminInput struct {
-	Name   string          `json:"name"`
-	Config provisionConfig `json:"config"`
+	Name     string          `json:"name"`
+	APIAlias *string         `json:"api_alias,omitempty"`
+	Config   provisionConfig `json:"config"`
+}
+
+type systemInfo struct {
+	Component string `json:"component"`
+	Version   string `json:"version"`
+	SourceID  string `json:"source_id"`
+	APISchema int    `json:"api_schema"`
 }
 
 type store struct {
@@ -110,10 +128,25 @@ func (s *store) load() error {
 	if err := json.Unmarshal(data, &rows); err != nil {
 		return fmt.Errorf("decode data file: %w", err)
 	}
+	aliases := map[string]bool{}
+	tokens := map[string]bool{}
 	for _, r := range rows {
 		if r.ID == "" || r.Token == "" {
 			return errors.New("data file contains record without id/token")
 		}
+		alias, err := normalizeAPIAlias(r.APIAlias)
+		if err != nil {
+			return fmt.Errorf("profile %s api_alias: %w", r.ID, err)
+		}
+		r.APIAlias = alias
+		if alias != "" && aliases[alias] {
+			return fmt.Errorf("duplicate api_alias %q in data file", alias)
+		}
+		if tokens[r.Token] {
+			return errors.New("duplicate token in data file")
+		}
+		aliases[alias] = alias != ""
+		tokens[r.Token] = true
 		s.records[r.ID] = r
 	}
 	return nil
@@ -153,6 +186,29 @@ func randomHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+func normalizeAPIAlias(raw string) (string, error) {
+	alias := strings.ToLower(strings.TrimSpace(raw))
+	if alias == "" {
+		return "", nil
+	}
+	if !apiAliasPattern.MatchString(alias) {
+		return "", errors.New("api_alias must be 1-64 lowercase letters, digits, hyphen or underscore and start with a letter or digit")
+	}
+	return alias, nil
+}
+
+func (s *store) aliasInUseLocked(alias, exceptID string) bool {
+	if alias == "" {
+		return false
+	}
+	for id, r := range s.records {
+		if id != exceptID && r.APIAlias == alias {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeConfig(cfg provisionConfig) provisionConfig {
 	for i := range cfg.Relays {
 		cfg.Relays[i].Host = strings.TrimSpace(cfg.Relays[i].Host)
@@ -165,8 +221,16 @@ func normalizeConfig(cfg provisionConfig) provisionConfig {
 }
 
 func (s *store) create(name string, cfg provisionConfig) (record, error) {
+	return s.createWithAlias(name, cfg, "")
+}
+
+func (s *store) createWithAlias(name string, cfg provisionConfig, rawAlias string) (record, error) {
 	cfg = normalizeConfig(cfg)
 	if err := validateInput(name, cfg); err != nil {
+		return record{}, err
+	}
+	alias, err := normalizeAPIAlias(rawAlias)
+	if err != nil {
 		return record{}, err
 	}
 	id, err := randomHex(8)
@@ -178,9 +242,12 @@ func (s *store) create(name string, cfg provisionConfig) (record, error) {
 		return record{}, err
 	}
 	now := time.Now().UTC()
-	r := record{ID: id, Name: strings.TrimSpace(name), Token: token, Revision: 1, UpdatedAt: now, Config: cfg}
+	r := record{ID: id, Name: strings.TrimSpace(name), Token: token, APIAlias: alias, Revision: 1, UpdatedAt: now, Config: cfg}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.aliasInUseLocked(alias, "") {
+		return record{}, errors.New("api_alias is already in use")
+	}
 	s.records[id] = r
 	if err := s.saveLocked(); err != nil {
 		delete(s.records, id)
@@ -190,9 +257,21 @@ func (s *store) create(name string, cfg provisionConfig) (record, error) {
 }
 
 func (s *store) update(id, name string, cfg provisionConfig) (record, error) {
+	return s.updateWithAlias(id, name, cfg, nil)
+}
+
+func (s *store) updateWithAlias(id, name string, cfg provisionConfig, rawAlias *string) (record, error) {
 	cfg = normalizeConfig(cfg)
 	if err := validateInput(name, cfg); err != nil {
 		return record{}, err
+	}
+	var requestedAlias *string
+	if rawAlias != nil {
+		alias, err := normalizeAPIAlias(*rawAlias)
+		if err != nil {
+			return record{}, err
+		}
+		requestedAlias = &alias
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -201,6 +280,23 @@ func (s *store) update(id, name string, cfg provisionConfig) (record, error) {
 		return record{}, os.ErrNotExist
 	}
 	old := r
+	targetAlias := r.APIAlias
+	if requestedAlias != nil {
+		targetAlias = *requestedAlias
+	}
+	if s.aliasInUseLocked(targetAlias, id) {
+		return record{}, errors.New("api_alias is already in use")
+	}
+	if targetAlias != r.APIAlias {
+		// Changing URL identity automatically rotates the bearer secret so no
+		// previously issued URL can become valid again after a later mode change.
+		token, err := randomHex(32)
+		if err != nil {
+			return record{}, err
+		}
+		r.Token = token
+		r.APIAlias = targetAlias
+	}
 	r.Name = strings.TrimSpace(name)
 	r.Config = cfg
 	r.Revision++
@@ -251,10 +347,13 @@ func (s *store) delete(id string) error {
 	return nil
 }
 
-func (s *store) byToken(token string) (record, bool) {
+func (s *store) byAccess(alias, token string) (record, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.records {
+		if r.APIAlias != alias {
+			continue
+		}
 		if subtle.ConstantTimeCompare([]byte(r.Token), []byte(token)) == 1 {
 			return r, true
 		}
@@ -395,7 +494,11 @@ func (a *app) baseURL(r *http.Request) string {
 }
 
 func (a *app) adminView(r *http.Request, rec record) adminRecord {
-	return adminRecord{ID: rec.ID, Name: rec.Name, Revision: rec.Revision, UpdatedAt: rec.UpdatedAt, APIURL: a.baseURL(r) + "/v1/config/" + rec.Token, Config: rec.Config}
+	path := "/v1/config/" + rec.Token
+	if rec.APIAlias != "" {
+		path = "/v1/config/" + rec.APIAlias + "/" + rec.Token
+	}
+	return adminRecord{ID: rec.ID, Name: rec.Name, Revision: rec.Revision, UpdatedAt: rec.UpdatedAt, APIURL: a.baseURL(r) + path, APIAlias: rec.APIAlias, Config: rec.Config}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -425,12 +528,23 @@ func (a *app) publicConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	token := strings.TrimPrefix(r.URL.Path, "/v1/config/")
-	if token == "" || strings.Contains(token, "/") {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/config/"), "/")
+	parts := strings.Split(rest, "/")
+	alias, token := "", ""
+	switch len(parts) {
+	case 1:
+		token = parts[0]
+	case 2:
+		alias, token = strings.ToLower(parts[0]), parts[1]
+	default:
 		http.NotFound(w, r)
 		return
 	}
-	rec, ok := a.store.byToken(token)
+	if token == "" || len(token) != 64 {
+		http.NotFound(w, r)
+		return
+	}
+	rec, ok := a.store.byAccess(alias, token)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -477,7 +591,11 @@ func (a *app) adminProfiles(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		rec, err := a.store.create(in.Name, in.Config)
+		alias := ""
+		if in.APIAlias != nil {
+			alias = *in.APIAlias
+		}
+		rec, err := a.store.createWithAlias(in.Name, in.Config, alias)
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return
@@ -524,7 +642,7 @@ func (a *app) adminProfileByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		rec, err := a.store.update(id, in.Name, in.Config)
+		rec, err := a.store.updateWithAlias(id, in.Name, in.Config, in.APIAlias)
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
@@ -548,6 +666,14 @@ func (a *app) adminProfileByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *app) adminSystem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, systemInfo{Component: "mpx-provision", Version: Version, SourceID: SourceID, APISchema: 1})
+}
+
 func (a *app) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -561,6 +687,7 @@ func (a *app) handler() http.Handler {
 	mux.HandleFunc("/v1/config/", a.publicConfig)
 	mux.HandleFunc("/admin", a.requireAdmin(a.adminPage))
 	mux.HandleFunc("/admin/", a.requireAdmin(a.adminPage))
+	mux.HandleFunc("/admin/api/system", a.requireAdmin(a.adminSystem))
 	mux.HandleFunc("/admin/api/profiles", a.requireAdmin(a.adminProfiles))
 	mux.HandleFunc("/admin/api/profiles/", a.requireAdmin(a.adminProfileByID))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -614,6 +741,6 @@ func main() {
 	}
 	a := &app{store: st, adminUser: user, adminPass: pass, publicBase: publicBase}
 	srv := &http.Server{Addr: listen, Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
-	log.Printf("MPX Provisioning listening on %s (admin /admin)", listen)
+	log.Printf("MPX Provisioning %s (%s) listening on %s (admin /admin)", Version, SourceID, listen)
 	log.Fatal(srv.ListenAndServe())
 }

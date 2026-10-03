@@ -1,39 +1,138 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MPX Provisioning</title>
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f5f7;color:#1d1d1f}main{max-width:1180px;margin:32px auto;padding:0 20px}.card{background:white;border:1px solid #ddd;border-radius:14px;padding:18px;margin-bottom:16px}h1{margin:0 0 6px}h2{margin:0 0 14px;font-size:19px}.muted{color:#666;font-size:13px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}label{font-size:13px;color:#555;display:block;margin-bottom:4px}input,select{box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #c8c8cc;border-radius:8px;font:inherit}button{padding:9px 12px;border:1px solid #bbb;border-radius:8px;background:#fff;cursor:pointer}button.primary{background:#1d1d1f;color:#fff;border-color:#1d1d1f}button.danger{color:#b42318}.profiles{display:flex;gap:8px;flex-wrap:wrap}.profiles button.active{font-weight:700;border-color:#333}.relay{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;margin:8px 0;align-items:end}.url{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.status{min-height:20px;margin-top:8px;font-size:13px}.checks{display:flex;gap:18px;align-items:center}.checks label{display:flex;gap:7px;align-items:center;margin:0}.checks input{width:auto}@media(max-width:760px){.grid,.relay{grid-template-columns:1fr}.relay button{width:100%}}
-</style></head><body><main>
-<div class="card"><h1>MPX Provisioning</h1><div class="muted">在这里维护 MPTCP Desk 的完整运行配置。每份配置生成一个随机 API URL，Mac 只需要保存这条 URL。</div></div>
-<div class="card"><div class="row"><button class="primary" id="new">新建配置</button><div id="profiles" class="profiles"></div></div></div>
-<div class="card"><h2>客户端配置</h2><div class="grid">
-<div><label>显示名称</label><input id="name" placeholder="例如 HKBN 5-Line"></div>
-<div><label>传输模式</label><select id="mode"><option value="userspace_multipath">Userspace Multipath / MPX/4</option><option value="native_mptcp">Native MPTCP</option></select></div>
-<div><label>本地监听端口</label><input id="listen" type="number" value="1081" min="1024" max="65535"></div>
-<div><label>Scheduler</label><select id="scheduler"><option value="auto">Auto</option><option value="aggregate">Aggregate</option><option value="protect">Protect</option><option value="weighted">Weighted</option></select></div>
-</div><div class="checks" style="margin-top:14px"><label><input id="tcp" type="checkbox" checked>TCP</label><label><input id="udp" type="checkbox" checked>UDP</label><label><input id="resident" type="checkbox">后台常驻</label></div>
-<div style="margin-top:14px"><label>Transport Key（64 位十六进制）</label><div class="row"><input id="key" class="url" style="flex:1" autocomplete="off"><button id="genkey">生成 Key</button></div></div>
+:root{--bg:#f5f5f7;--panel:#fff;--line:#dedee3;--text:#1d1d1f;--muted:#6e6e73;--accent:#1d1d1f;--danger:#b42318;--soft:#f7f7f9;--blue:#1769e0}*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}button,input,select{font:inherit}.app{min-height:100vh;display:grid;grid-template-columns:280px 1fr}.sidebar{background:#fbfbfc;border-right:1px solid var(--line);padding:20px 16px;display:flex;flex-direction:column;gap:14px}.brand{padding:2px 6px 10px}.brand strong{font-size:20px}.brand small{display:block;color:var(--muted);margin-top:5px}.section-title{font-size:11px;font-weight:700;color:#8b8b91;text-transform:uppercase;letter-spacing:.08em;padding:0 8px}.sidebar button{width:100%;text-align:left;border:0;background:transparent;border-radius:9px;padding:9px 10px;cursor:pointer}.sidebar button:hover{background:#f0f0f2}.sidebar button.active{background:#e9e9ed;font-weight:650}.profile-list{display:flex;flex-direction:column;gap:2px;max-height:48vh;overflow:auto}.profile-btn{display:flex!important;justify-content:space-between;gap:8px;align-items:center}.profile-btn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.profile-btn small{color:var(--muted);font-weight:400}.side-actions{display:flex;gap:8px}.side-actions button{border:1px solid var(--line);background:#fff;text-align:center}.search{width:100%;border:1px solid var(--line);background:#fff;border-radius:9px;padding:9px 10px}.system-link{margin-top:auto}.content{padding:30px 34px 100px;min-width:0}.content-inner{max-width:1080px;margin:auto}.profile-head{display:flex;align-items:flex-start;gap:20px;justify-content:space-between;margin-bottom:22px}.profile-head h1{font-size:28px;margin:0 0 5px}.meta{color:var(--muted);font-size:13px}.quick{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid #c8c8ce;background:#fff;border-radius:9px;padding:9px 12px;cursor:pointer}.btn:hover{background:#f7f7f9}.btn.primary{background:#1d1d1f;color:#fff;border-color:#1d1d1f}.btn.danger{color:var(--danger);border-color:#e6b8b4}.btn.small{padding:7px 9px;font-size:13px}.tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin-bottom:20px;overflow:auto}.tab{border:0;background:transparent;padding:10px 13px 12px;cursor:pointer;color:var(--muted);white-space:nowrap;border-bottom:2px solid transparent}.tab.active{color:var(--text);font-weight:650;border-bottom-color:var(--text)}.page{display:none}.page.active{display:block}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}.card h2{font-size:18px;margin:0 0 6px}.card p.help{font-size:13px;color:var(--muted);margin:0 0 18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field label{font-size:13px;color:#555;display:block;margin-bottom:5px}.field input,.field select{width:100%;padding:10px 11px;border:1px solid #c8c8ce;border-radius:9px;background:#fff}.field input:focus,.field select:focus{outline:2px solid rgba(23,105,224,.18);border-color:#6c9ee7}.checks{display:flex;gap:22px;flex-wrap:wrap;margin-top:15px}.checks label{display:flex;gap:8px;align-items:center;font-size:14px}.relay-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.relay-list{display:flex;flex-direction:column;gap:10px}.relay-card{border:1px solid var(--line);border-radius:12px;padding:14px;background:#fff}.relay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:11px}.relay-title{font-weight:650}.relay-actions{display:flex;gap:6px;flex-wrap:wrap}.relay-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:9px}.scheduler-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.scheduler-card{border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer;background:#fff}.scheduler-card.active{border-color:#5c5c65;box-shadow:0 0 0 1px #5c5c65}.scheduler-card strong{display:block;margin-bottom:4px}.scheduler-card span{display:block;color:var(--muted);font-size:13px;line-height:1.45}.capacity{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}.capacity-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:7px 0;font-size:13px;border-bottom:1px solid #f0f0f2}.secret-row{display:flex;gap:8px}.secret-row input{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.notice{padding:11px 12px;border-radius:9px;background:#f4f6f8;color:#555;font-size:13px;line-height:1.5}.danger-zone{border-color:#efcbc8}.danger-zone h2{color:#8f2018}.savebar{position:fixed;left:280px;right:0;bottom:0;background:rgba(250,250,252,.94);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:12px 34px;display:none;z-index:10}.savebar.show{display:block}.savebar-inner{max-width:1080px;margin:auto;display:flex;align-items:center;justify-content:space-between;gap:12px}.savebar span{font-size:13px;color:var(--muted)}.status{font-size:13px;min-height:20px;margin-top:10px}.system-panel{display:none}.system-panel.active{display:block}.system-grid{display:grid;grid-template-columns:180px 1fr;gap:9px;font-size:14px}.system-grid div:nth-child(odd){color:var(--muted)}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}.empty{padding:40px 20px;text-align:center;color:var(--muted)}
+@media(max-width:860px){.app{grid-template-columns:1fr}.sidebar{border-right:0;border-bottom:1px solid var(--line);padding:14px;display:block}.brand{display:inline-block}.side-actions{margin:10px 0}.profile-list{flex-direction:row;max-height:none;overflow:auto;margin:8px 0}.profile-list button{width:auto;min-width:150px}.section-title,.search{display:none}.system-link{margin:8px 0 0}.content{padding:20px 14px 90px}.savebar{left:0;padding:10px 14px}.grid,.relay-grid,.scheduler-cards{grid-template-columns:1fr}.profile-head{flex-direction:column}.relay-head{align-items:flex-start}.capacity-row{grid-template-columns:1fr}.system-grid{grid-template-columns:1fr}.system-grid div:nth-child(odd){font-weight:650;margin-top:7px}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="sidebar">
+  <div class="brand"><strong>MPX Provisioning</strong><small>Client configuration console</small></div>
+  <div class="section-title">配置中心</div>
+  <div class="side-actions"><button id="newProfile">＋ 新建配置</button></div>
+  <input class="search" id="profileSearch" placeholder="搜索配置">
+  <div id="profileList" class="profile-list"></div>
+  <div class="system-link"><button id="systemNav">⚙ 系统</button></div>
+</aside>
+<main class="content"><div class="content-inner">
+  <section id="profilePanel">
+    <div class="profile-head">
+      <div><h1 id="profileTitle">新建配置</h1><div id="profileMeta" class="meta">尚未保存</div></div>
+      <div class="quick"><button class="btn small" id="quickCopy">复制客户端 API</button></div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="basic">基础设置</button>
+      <button class="tab" data-tab="relays">Relay 路径</button>
+      <button class="tab" data-tab="scheduler">调度与传输</button>
+      <button class="tab" data-tab="issue">发放与安全</button>
+    </nav>
+
+    <div class="page active" data-page="basic">
+      <div class="card"><h2>基础设置</h2><p class="help">定义这份客户端 Profile 的运行方式与本地入口。</p>
+        <div class="grid">
+          <div class="field"><label>显示名称</label><input id="name" placeholder="例如 HKBN 5-Line"></div>
+          <div class="field"><label>传输模式</label><select id="mode"><option value="userspace_multipath">Userspace Multipath / MPX/4</option><option value="native_mptcp">Native MPTCP</option></select></div>
+          <div class="field"><label>本地监听端口</label><input id="listen" type="number" min="1024" max="65535"></div>
+        </div>
+        <div class="checks"><label><input id="tcp" type="checkbox"> TCP</label><label><input id="udp" type="checkbox"> UDP</label><label><input id="resident" type="checkbox"> 后台常驻</label></div>
+      </div>
+    </div>
+
+    <div class="page" data-page="relays">
+      <div class="card"><div class="relay-toolbar"><div><h2>Relay 路径</h2><p class="help" style="margin:4px 0 0">每个 Profile 独立维护 2–8 条 Relay。复制会原样复制端口与带宽，并自动选中 IPv4 最后一段。</p></div><button class="btn" id="addRelay">＋ 添加 Relay</button></div><div id="relayList" class="relay-list"></div></div>
+    </div>
+
+    <div class="page" data-page="scheduler">
+      <div class="card"><h2>Scheduler</h2><p class="help">决定 MPX/4 Session 如何使用当前 Profile 的 Relay。具体路径评分仍由运行端实时状态决定。</p>
+        <div class="scheduler-cards" id="schedulerCards">
+          <div class="scheduler-card" data-value="auto"><strong>Auto</strong><span>根据 Session 与 Carrier 状态自动选择运行策略。</span></div>
+          <div class="scheduler-card" data-value="aggregate"><strong>Aggregate</strong><span>多条 eligible Carrier 并发承担普通流量。</span></div>
+          <div class="scheduler-card" data-value="protect"><strong>Protect</strong><span>保留备用路径用于保护、恢复和重传。</span></div>
+          <div class="scheduler-card" data-value="weighted"><strong>Weighted</strong><span>将配置容量与 RTT、queue、penalty、delivery 等实时信号结合。</span></div>
+        </div>
+        <div id="capacity" class="capacity"></div>
+      </div>
+    </div>
+
+    <div class="page" data-page="issue">
+      <div class="card"><h2>Transport Key</h2><p class="help">MPX/4 Userspace 的认证根凭据。默认隐藏，避免屏幕共享或截图泄露。</p>
+        <div class="secret-row"><input id="key" type="password" autocomplete="new-password"><button class="btn small" id="showKey">显示</button><button class="btn small" id="genKey">重新生成</button></div>
+      </div>
+      <div class="card"><h2>Client API URL</h2><p class="help">随机 Secret 始终保留。自定义模式只让 URL 增加一个可读标识，不会降低 bearer credential 的随机强度。</p>
+        <div class="grid">
+          <div class="field"><label>URL 模式</label><select id="urlMode"><option value="auto">自动随机</option><option value="custom">自定义标识 + 随机 Secret</option></select></div>
+          <div class="field" id="aliasField"><label>自定义标识</label><input id="apiAlias" maxlength="64" placeholder="例如 hkbn-5line"><div class="meta" style="margin-top:5px">小写字母、数字、-、_；修改后会自动轮换 Secret。</div></div>
+        </div>
+        <div class="field" style="margin-top:14px"><label>当前 API URL</label><div class="secret-row"><input id="apiURL" type="password" readonly placeholder="保存配置后生成"><button class="btn small" id="showURL">显示</button><button class="btn small" id="copyURL">复制</button></div></div>
+        <div class="notice" style="margin-top:12px">切换 URL 模式或修改自定义标识会自动生成新的随机 Secret，旧 URL 立即失效且不会在将来重新生效。单独“轮换 Secret”不会改变自定义标识。</div>
+        <div style="margin-top:12px"><button class="btn" id="rotateURL">轮换 Secret</button></div>
+      </div>
+      <div class="card danger-zone"><h2>危险操作</h2><p class="help">删除 Profile 后，对应 Client API URL 会立即失效。</p><button class="btn danger" id="deleteProfile">删除配置</button></div>
+    </div>
+    <div id="status" class="status"></div>
+  </section>
+
+  <section id="systemPanel" class="system-panel">
+    <div class="profile-head"><div><h1>系统</h1><div class="meta">Provisioning 服务信息</div></div></div>
+    <div class="card"><h2>服务信息</h2><p class="help">当前运行的 Provisioning 组件与 API Schema。</p><div id="systemInfo" class="system-grid"><div>状态</div><div>正在读取…</div></div></div>
+    <div class="card"><h2>关于</h2><p class="help">MPX Provisioning 是配置/控制平面，不改变 MPX/4 数据平面协议。</p><div class="notice">Profile 数据文件包含 Transport Key 与 Client API Secret，应保持 0600 权限；反向代理应关闭或脱敏 <code>/v1/config/</code> 的 access log。</div></div>
+  </section>
+</div></main>
 </div>
-<div class="card"><div class="row"><h2 style="flex:1;margin:0">Relay 路径</h2><button id="addrelay">添加 Relay</button></div><div id="relays"></div></div>
-<div class="card"><h2>发放链接</h2><div class="row"><input id="apiurl" class="url" readonly style="flex:1" placeholder="保存配置后生成"><button id="copy">复制 URL</button><button id="rotate">轮换 URL</button></div><div class="muted" style="margin-top:8px">URL 中包含随机高熵 token，本身就是客户端访问凭据。轮换后旧 URL 立即失效。</div></div>
-<div class="card"><div class="row"><button class="primary" id="save">保存配置</button><button class="danger" id="delete">删除配置</button></div><div id="status" class="status"></div></div>
-</main><script>
-let items=[], current=null;
-const $=id=>document.getElementById(id); const status=s=>{$('status').textContent=s||''};
-function blank(){return {id:null,name:'',api_url:'',config:{mode:'userspace_multipath',listen_port:1081,scheduler_mode:'auto',tcp_enabled:true,udp_enabled:true,background_resident:false,transport_key:'',relays:[{host:'',port:8849,download_mbps:null,upload_mbps:null},{host:'',port:8849,download_mbps:null,upload_mbps:null}]}}}
-function renderList(){const p=$('profiles');p.innerHTML='';items.forEach(x=>{const b=document.createElement('button');b.textContent=x.name||x.id;b.className=current&&current.id===x.id?'active':'';b.onclick=()=>{current=x;fill(x);renderList()};p.appendChild(b)})}
-function relayRow(r,i){const d=document.createElement('div');d.className='relay';d.innerHTML=`<div><label>IPv4</label><input data-k="host"></div><div><label>端口</label><input data-k="port" type="number"></div><div><label>下行 Mbps</label><input data-k="download_mbps" type="number" step="0.1"></div><div><label>上行 Mbps</label><input data-k="upload_mbps" type="number" step="0.1"></div><button>删除</button>`;for(const inp of d.querySelectorAll('input')){const k=inp.dataset.k;inp.value=r[k]??'';inp.oninput=()=>{let v=inp.value;if(k==='port')v=Number(v);if(k.endsWith('_mbps'))v=v===''?null:Number(v);current.config.relays[i][k]=v}}d.querySelector('button').onclick=()=>{if(current.config.relays.length<=2)return;current.config.relays.splice(i,1);renderRelays()};return d}
-function renderRelays(){const box=$('relays');box.innerHTML='';current.config.relays.forEach((r,i)=>box.appendChild(relayRow(r,i)))}
-function fill(x){current=JSON.parse(JSON.stringify(x));$('name').value=current.name||'';$('mode').value=current.config.mode;$('listen').value=current.config.listen_port;$('scheduler').value=current.config.scheduler_mode||'auto';$('tcp').checked=current.config.tcp_enabled;$('udp').checked=current.config.udp_enabled;$('resident').checked=!!current.config.background_resident;$('key').value=current.config.transport_key||'';$('apiurl').value=current.api_url||'';renderRelays();modeState();status('')}
-function collect(){current.name=$('name').value.trim();current.config.mode=$('mode').value;current.config.listen_port=Number($('listen').value);current.config.scheduler_mode=$('scheduler').value;current.config.tcp_enabled=$('tcp').checked;current.config.udp_enabled=$('udp').checked;current.config.background_resident=$('resident').checked;current.config.transport_key=$('key').value.trim();return {name:current.name,config:current.config}}
-function modeState(){const native=$('mode').value==='native_mptcp';$('scheduler').disabled=native;$('key').disabled=native;if(native){$('tcp').checked=true;$('tcp').disabled=true}else $('tcp').disabled=false}
+<div id="savebar" class="savebar"><div class="savebar-inner"><span id="dirtyText">有未保存的更改</span><div><button class="btn" id="discard">放弃更改</button> <button class="btn primary" id="save">保存更改</button></div></div></div>
+<script>
+let items=[], current=null, savedSnapshot='', activeTab='basic';
+const $=id=>document.getElementById(id); const clone=x=>JSON.parse(JSON.stringify(x));
+const status=s=>{$('status').textContent=s||''};
+function blank(){return {id:null,name:'',revision:0,updated_at:'',api_url:'',api_alias:'',config:{mode:'userspace_multipath',listen_port:1081,scheduler_mode:'auto',tcp_enabled:true,udp_enabled:true,background_resident:false,transport_key:'',relays:[{host:'',port:8849,download_mbps:null,upload_mbps:null},{host:'',port:8849,download_mbps:null,upload_mbps:null}]}}}
+function serial(){return JSON.stringify({name:current?.name||'',api_alias:current?.api_alias||'',config:current?.config||{}})}
+function setSnapshot(){savedSnapshot=serial();updateDirty()}
+function isDirty(){return !!current&&serial()!==savedSnapshot}
+function updateDirty(){const d=isDirty();$('savebar').classList.toggle('show',d);$('dirtyText').textContent=current?.id?'有未保存的更改':'新配置尚未保存'}
+function markDirty(){updateDirty();updateHeader()}
+function slugify(s){return (s||'').toLowerCase().trim().replace(/[^a-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,64)||'profile'}
+function fmtTime(s){if(!s)return '尚未保存';const d=new Date(s);return isNaN(d)?s:d.toLocaleString()}
+function updateHeader(){$('profileTitle').textContent=current?.name||'新建配置';const c=current?.config||{};const relayCount=c.relays?.length||0;$('profileMeta').textContent=current?.id?`Revision ${current.revision} · ${relayCount} Relays · ${fmtTime(current.updated_at)}`:`尚未保存 · ${relayCount} Relays`;$('quickCopy').disabled=!current?.api_url}
+function renderProfiles(){const q=$('profileSearch').value.trim().toLowerCase();const box=$('profileList');box.innerHTML='';items.filter(x=>!q||(x.name||'').toLowerCase().includes(q)).forEach(x=>{const b=document.createElement('button');b.className='profile-btn'+(current?.id===x.id?' active':'');b.innerHTML=`<span>${escapeHTML(x.name||x.id)}</span><small>r${x.revision}</small>`;b.onclick=()=>selectProfile(x);box.appendChild(b)});if(!items.length)box.innerHTML='<div class="empty" style="padding:14px 8px">暂无配置</div>'}
+function escapeHTML(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function confirmLeave(){return !isDirty()||confirm('当前配置有未保存的更改，确定放弃吗？')}
+function selectProfile(x){if(!confirmLeave())return;showProfile();fill(x)}
+function newProfile(){if(!confirmLeave())return;showProfile();fill(blank());switchTab('basic')}
+function showProfile(){$('profilePanel').style.display='block';$('systemPanel').classList.remove('active');$('systemNav').classList.remove('active')}
+async function showSystem(){if(!confirmLeave())return;$('profilePanel').style.display='none';$('systemPanel').classList.add('active');$('systemNav').classList.add('active');renderProfiles();try{const x=await request('/admin/api/system');$('systemInfo').innerHTML=`<div>Component</div><div><code>${escapeHTML(x.component)}</code></div><div>Version</div><div>${escapeHTML(x.version)}</div><div>API Schema</div><div>${x.api_schema}</div><div>Source-ID</div><div><code>${escapeHTML(x.source_id)}</code></div>`}catch(e){$('systemInfo').innerHTML=`<div>错误</div><div>${escapeHTML(e.message)}</div>`}}
+function fill(x){current=clone(x);if(current.api_alias===undefined)current.api_alias='';$('name').value=current.name||'';$('mode').value=current.config.mode;$('listen').value=current.config.listen_port;$('tcp').checked=!!current.config.tcp_enabled;$('udp').checked=!!current.config.udp_enabled;$('resident').checked=!!current.config.background_resident;$('key').value=current.config.transport_key||'';$('urlMode').value=current.api_alias?'custom':'auto';$('apiAlias').value=current.api_alias||'';$('apiURL').value=current.api_url||'';$('key').type='password';$('apiURL').type='password';$('showKey').textContent='显示';$('showURL').textContent='显示';renderRelays();renderScheduler();modeState();urlState();updateHeader();renderProfiles();status('');setSnapshot()}
+function switchTab(name){activeTab=name;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.dataset.page===name))}
+function bind(id,fn,event='input'){$(id).addEventListener(event,()=>{fn();markDirty()})}
+function modeState(){const native=current.config.mode==='native_mptcp';$('tcp').disabled=native;if(native){current.config.tcp_enabled=true;$('tcp').checked=true}renderScheduler();$('key').disabled=native;$('genKey').disabled=native}
+function urlState(){const custom=$('urlMode').value==='custom';$('aliasField').style.display=custom?'block':'none'}
+function relayRow(r,i){const d=document.createElement('div');d.className='relay-card';d.innerHTML=`<div class="relay-head"><div class="relay-title">Relay ${i+1}</div><div class="relay-actions"><button class="btn small" data-a="copy">复制</button><button class="btn small" data-a="up">↑</button><button class="btn small" data-a="down">↓</button><button class="btn small danger" data-a="delete">删除</button></div></div><div class="relay-grid"><div class="field"><label>IPv4</label><input data-k="host"></div><div class="field"><label>端口</label><input data-k="port" type="number"></div><div class="field"><label>下行 Mbps</label><input data-k="download_mbps" type="number" step="0.1"></div><div class="field"><label>上行 Mbps</label><input data-k="upload_mbps" type="number" step="0.1"></div></div>`;for(const inp of d.querySelectorAll('input')){const k=inp.dataset.k;inp.value=r[k]??'';inp.oninput=()=>{let v=inp.value;if(k==='port')v=Number(v);if(k.endsWith('_mbps'))v=v===''?null:Number(v);current.config.relays[i][k]=v;markDirty();renderScheduler()}}d.querySelector('[data-a="copy"]').onclick=()=>duplicateRelay(i);d.querySelector('[data-a="delete"]').onclick=()=>{if(current.config.relays.length<=2){status('至少保留 2 条 Relay');return}current.config.relays.splice(i,1);renderRelays();renderScheduler();markDirty()};d.querySelector('[data-a="up"]').onclick=()=>moveRelay(i,-1);d.querySelector('[data-a="down"]').onclick=()=>moveRelay(i,1);return d}
+function renderRelays(){const box=$('relayList');box.innerHTML='';current.config.relays.forEach((r,i)=>box.appendChild(relayRow(r,i)))}
+function duplicateRelay(i){if(current.config.relays.length>=8){status('最多 8 条 Relay');return}const copy=clone(current.config.relays[i]);current.config.relays.splice(i+1,0,copy);renderRelays();renderScheduler();markDirty();setTimeout(()=>{const rows=$('relayList').querySelectorAll('.relay-card');const inp=rows[i+1]?.querySelector('input[data-k="host"]');if(!inp)return;inp.focus();const pos=inp.value.lastIndexOf('.');if(pos>=0)inp.setSelectionRange(pos+1,inp.value.length);else inp.select()},0)}
+function moveRelay(i,delta){const j=i+delta;if(j<0||j>=current.config.relays.length)return;[current.config.relays[i],current.config.relays[j]]=[current.config.relays[j],current.config.relays[i]];renderRelays();renderScheduler();markDirty()}
+function renderScheduler(){const native=current.config.mode==='native_mptcp';document.querySelectorAll('.scheduler-card').forEach(c=>{c.classList.toggle('active',c.dataset.value===(current.config.scheduler_mode||'auto'));c.style.opacity=native?'.45':'1';c.style.pointerEvents=native?'none':'auto'});const cap=$('capacity');if(native){cap.innerHTML='<div class="notice">Native MPTCP 不使用 MPX/4 Scheduler 或 Transport Key。</div>';return}if(current.config.scheduler_mode!=='weighted'){cap.innerHTML='';return}cap.innerHTML='<strong style="font-size:14px">Weighted Capacity</strong>'+current.config.relays.map((r,i)=>`<div class="capacity-row"><div>Relay ${i+1} · ${escapeHTML(r.host||'未配置')}</div><div>↓ ${r.download_mbps??'—'} Mbps</div><div>↑ ${r.upload_mbps??'—'} Mbps</div></div>`).join('')}
 async function request(url,opt={}){const r=await fetch(url,{cache:'no-store',...opt});if(!r.ok)throw new Error((await r.text()).trim()||`HTTP ${r.status}`);if(r.status===204)return null;return r.json()}
-async function load(){try{items=await request('/admin/api/profiles');renderList();if(items.length){fill(items[0])}else fill(blank())}catch(e){status(e.message)}}
-$('new').onclick=()=>{fill(blank());renderList()};$('mode').onchange=modeState;$('addrelay').onclick=()=>{if(current.config.relays.length<8){current.config.relays.push({host:'',port:8849,download_mbps:null,upload_mbps:null});renderRelays()}};
-$('genkey').onclick=()=>{const b=new Uint8Array(32);crypto.getRandomValues(b);$('key').value=[...b].map(x=>x.toString(16).padStart(2,'0')).join('')};
-$('copy').onclick=async()=>{if($('apiurl').value){await navigator.clipboard.writeText($('apiurl').value);status('API URL 已复制')}};
-$('save').onclick=async()=>{try{const body=JSON.stringify(collect());let saved;if(current.id)saved=await request('/admin/api/profiles/'+current.id,{method:'PUT',headers:{'Content-Type':'application/json'},body});else saved=await request('/admin/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body});const idx=items.findIndex(x=>x.id===saved.id);if(idx>=0)items[idx]=saved;else items.push(saved);fill(saved);renderList();status('已保存，Revision '+saved.revision)}catch(e){status('保存失败：'+e.message)}};
-$('rotate').onclick=async()=>{if(!current.id)return; if(!confirm('轮换后旧 API URL 会立即失效，继续？'))return;try{const saved=await request('/admin/api/profiles/'+current.id+'/rotate',{method:'POST'});items[items.findIndex(x=>x.id===saved.id)]=saved;fill(saved);renderList();status('API URL 已轮换')}catch(e){status(e.message)}};
-$('delete').onclick=async()=>{if(!current.id)return;if(!confirm('确定删除这份配置？对应 API URL 会立即失效。'))return;try{await request('/admin/api/profiles/'+current.id,{method:'DELETE'});items=items.filter(x=>x.id!==current.id);renderList();items.length?fill(items[0]):fill(blank());status('已删除')}catch(e){status(e.message)}};
+async function load(){try{items=await request('/admin/api/profiles');renderProfiles();showProfile();fill(items.length?items[0]:blank())}catch(e){status(e.message)}}
+async function save(){try{current.name=$('name').value.trim();current.config.listen_port=Number($('listen').value);current.config.mode=$('mode').value;current.config.tcp_enabled=$('tcp').checked;current.config.udp_enabled=$('udp').checked;current.config.background_resident=$('resident').checked;current.config.transport_key=$('key').value.trim();if($('urlMode').value==='custom'){current.api_alias=$('apiAlias').value.trim().toLowerCase();if(!current.api_alias)current.api_alias=slugify(current.name)}else current.api_alias='';const body=JSON.stringify({name:current.name,api_alias:current.api_alias,config:current.config});let saved;if(current.id)saved=await request('/admin/api/profiles/'+current.id,{method:'PUT',headers:{'Content-Type':'application/json'},body});else saved=await request('/admin/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body});const idx=items.findIndex(x=>x.id===saved.id);if(idx>=0)items[idx]=saved;else items.push(saved);fill(saved);switchTab(activeTab);status('已保存 · Revision '+saved.revision)}catch(e){status('保存失败：'+e.message)}}
+async function rotate(){if(!current.id){status('请先保存配置');return}if(isDirty()){status('请先保存当前更改，再轮换 Secret');return}if(!confirm('轮换后旧 API URL 会立即失效，继续？'))return;try{const saved=await request('/admin/api/profiles/'+current.id+'/rotate',{method:'POST'});items[items.findIndex(x=>x.id===saved.id)]=saved;fill(saved);switchTab('issue');status('Secret 已轮换，旧 API URL 已失效')}catch(e){status(e.message)}}
+async function removeProfile(){if(!current.id)return;if(!confirm('确定删除这份配置？对应 API URL 会立即失效。'))return;try{await request('/admin/api/profiles/'+current.id,{method:'DELETE'});items=items.filter(x=>x.id!==current.id);renderProfiles();fill(items.length?items[0]:blank());status('已删除')}catch(e){status(e.message)}}
+async function copyAPI(){if(!current?.api_url){status('保存配置后才会生成 API URL');return}try{await navigator.clipboard.writeText(current.api_url);status('API URL 已复制')}catch{status('浏览器未允许剪贴板访问')}}
+
+document.querySelectorAll('.tab').forEach(x=>x.onclick=()=>switchTab(x.dataset.tab));
+document.querySelectorAll('.scheduler-card').forEach(x=>x.onclick=()=>{current.config.scheduler_mode=x.dataset.value;renderScheduler();markDirty()});
+$('newProfile').onclick=newProfile;$('profileSearch').oninput=renderProfiles;$('systemNav').onclick=showSystem;$('save').onclick=save;$('discard').onclick=()=>fill(current.id?(items.find(x=>x.id===current.id)||blank()):blank());
+$('addRelay').onclick=()=>{if(current.config.relays.length>=8){status('最多 8 条 Relay');return}current.config.relays.push({host:'',port:8849,download_mbps:null,upload_mbps:null});renderRelays();renderScheduler();markDirty()};
+$('name').oninput=()=>{current.name=$('name').value;markDirty()};bind('listen',()=>current.config.listen_port=Number($('listen').value));bind('tcp',()=>current.config.tcp_enabled=$('tcp').checked,'change');bind('udp',()=>current.config.udp_enabled=$('udp').checked,'change');bind('resident',()=>current.config.background_resident=$('resident').checked,'change');bind('key',()=>current.config.transport_key=$('key').value);
+$('mode').onchange=()=>{current.config.mode=$('mode').value;modeState();markDirty()};
+$('urlMode').onchange=()=>{if($('urlMode').value==='custom'){if(!current.api_alias)current.api_alias=slugify(current.name);$('apiAlias').value=current.api_alias}else current.api_alias='';urlState();markDirty()};
+$('apiAlias').oninput=()=>{current.api_alias=$('apiAlias').value.toLowerCase();$('apiAlias').value=current.api_alias;markDirty()};
+$('genKey').onclick=()=>{const b=new Uint8Array(32);crypto.getRandomValues(b);$('key').value=[...b].map(x=>x.toString(16).padStart(2,'0')).join('');current.config.transport_key=$('key').value;markDirty()};
+$('showKey').onclick=()=>{const hidden=$('key').type==='password';$('key').type=hidden?'text':'password';$('showKey').textContent=hidden?'隐藏':'显示'};$('showURL').onclick=()=>{const hidden=$('apiURL').type==='password';$('apiURL').type=hidden?'text':'password';$('showURL').textContent=hidden?'隐藏':'显示'};
+$('copyURL').onclick=copyAPI;$('quickCopy').onclick=copyAPI;$('rotateURL').onclick=rotate;$('deleteProfile').onclick=removeProfile;
+window.addEventListener('beforeunload',e=>{if(isDirty()){e.preventDefault();e.returnValue=''}});
 load();
-</script></body></html>
+</script>
+</body></html>

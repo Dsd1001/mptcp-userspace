@@ -4,7 +4,7 @@ MPTCP Userspace is an application-layer multipath transport for macOS and Linux.
 
 It is **not kernel MPTCP** and it is **not QUIC**. The macOS and Linux Userspace clients use ordinary TCP carrier sockets; the Linux Landing terminates MPX/4 and forwards opaque backend TCP bytes.
 
-Current release: **v0.9.8 / MPX/4 Draft 04 + Provisioning**.
+Current transport release: **v0.9.8 / MPX/4 Draft 04**. Current standalone Provisioning release: **v0.9.9**.
 
 - Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.8
 - MPX/4 specification: https://github.com/Dsd1001/MPX-4

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -167,5 +169,184 @@ func TestExistingStorePermissionsAreTightened(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("mode=%#o", got)
+	}
+}
+
+func adminJSON(t *testing.T, client *http.Client, method, rawURL string, body any) *http.Response {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequest(method, rawURL, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.SetBasicAuth("admin", "secret")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func TestCustomAliasHTTPFlow(t *testing.T) {
+	st, err := newStore(filepath.Join(t.TempDir(), "profiles.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{store: st, adminUser: "admin", adminPass: "secret", publicBase: "https://cfg.example.test"}
+	srv := httptest.NewServer(a.handler())
+	defer srv.Close()
+	client := srv.Client()
+	alias := "HKBN-Main"
+	create := adminInput{Name: "HKBN Main", APIAlias: &alias, Config: validConfig()}
+	resp := adminJSON(t, client, http.MethodPost, srv.URL+"/admin/api/profiles", create)
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create status=%d body=%s", resp.StatusCode, data)
+	}
+	var row adminRecord
+	if err := json.NewDecoder(resp.Body).Decode(&row); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if row.APIAlias != "hkbn-main" || !strings.Contains(row.APIURL, "/v1/config/hkbn-main/") {
+		t.Fatalf("bad custom URL: %+v", row)
+	}
+	secret := row.APIURL[strings.LastIndex(row.APIURL, "/")+1:]
+	if len(secret) != 64 {
+		t.Fatalf("secret len=%d", len(secret))
+	}
+	good, _ := http.Get(srv.URL + "/v1/config/hkbn-main/" + secret)
+	if good.StatusCode != http.StatusOK {
+		t.Fatalf("custom URL status=%d", good.StatusCode)
+	}
+	_ = good.Body.Close()
+	legacyShape, _ := http.Get(srv.URL + "/v1/config/" + secret)
+	if legacyShape.StatusCode != http.StatusNotFound {
+		t.Fatalf("token-only form remained valid for custom alias: %d", legacyShape.StatusCode)
+	}
+	_ = legacyShape.Body.Close()
+
+	// Aliases are unique after normalization.
+	dupAlias := "hkbn-main"
+	dup := adminInput{Name: "Duplicate", APIAlias: &dupAlias, Config: validConfig()}
+	dupResp := adminJSON(t, client, http.MethodPost, srv.URL+"/admin/api/profiles", dup)
+	if dupResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("duplicate alias status=%d", dupResp.StatusCode)
+	}
+	_ = dupResp.Body.Close()
+
+	// Renaming the alias rotates the bearer secret, invalidating the whole old URL.
+	newAlias := "hkbn-5line"
+	update := adminInput{Name: "HKBN Main", APIAlias: &newAlias, Config: validConfig()}
+	up := adminJSON(t, client, http.MethodPut, srv.URL+"/admin/api/profiles/"+row.ID, update)
+	if up.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(up.Body)
+		t.Fatalf("update status=%d body=%s", up.StatusCode, data)
+	}
+	var renamed adminRecord
+	if err := json.NewDecoder(up.Body).Decode(&renamed); err != nil {
+		t.Fatal(err)
+	}
+	_ = up.Body.Close()
+	if renamed.APIAlias != "hkbn-5line" || renamed.APIURL == row.APIURL {
+		t.Fatalf("alias change did not replace URL: old=%s new=%s", row.APIURL, renamed.APIURL)
+	}
+	old, _ := http.Get(srv.URL + "/v1/config/hkbn-main/" + secret)
+	if old.StatusCode != http.StatusNotFound {
+		t.Fatalf("old custom URL status=%d", old.StatusCode)
+	}
+	_ = old.Body.Close()
+
+	// Switching back to automatic mode rotates again, so the original token cannot revive.
+	auto := ""
+	update.APIAlias = &auto
+	up2 := adminJSON(t, client, http.MethodPut, srv.URL+"/admin/api/profiles/"+row.ID, update)
+	if up2.StatusCode != http.StatusOK {
+		t.Fatalf("auto update status=%d", up2.StatusCode)
+	}
+	var automatic adminRecord
+	if err := json.NewDecoder(up2.Body).Decode(&automatic); err != nil {
+		t.Fatal(err)
+	}
+	_ = up2.Body.Close()
+	if automatic.APIAlias != "" || strings.Count(strings.TrimPrefix(automatic.APIURL, "https://cfg.example.test/v1/config/"), "/") != 0 {
+		t.Fatalf("bad automatic URL: %+v", automatic)
+	}
+	newSecret := automatic.APIURL[strings.LastIndex(automatic.APIURL, "/")+1:]
+	if newSecret == secret {
+		t.Fatal("URL identity change reused an old bearer secret")
+	}
+	autoPublic, _ := http.Get(srv.URL + "/v1/config/" + newSecret)
+	if autoPublic.StatusCode != http.StatusOK {
+		t.Fatalf("automatic URL status=%d", autoPublic.StatusCode)
+	}
+	_ = autoPublic.Body.Close()
+}
+
+func TestLegacyStoreWithoutAliasRemainsValid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profiles.json")
+	token := strings.Repeat("b", 64)
+	legacy := []map[string]any{{
+		"id": "0011223344556677", "name": "Legacy", "token": token, "revision": 3,
+		"updated_at": "2026-10-01T00:00:00Z", "config": validConfig(),
+	}}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := newStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, ok := st.byAccess("", token); !ok || rec.Name != "Legacy" || rec.APIAlias != "" {
+		t.Fatalf("legacy record not accessible: %+v ok=%v", rec, ok)
+	}
+}
+
+func TestAdminSystemInfo(t *testing.T) {
+	st, err := newStore(filepath.Join(t.TempDir(), "profiles.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{store: st, adminUser: "admin", adminPass: "secret"}
+	srv := httptest.NewServer(a.handler())
+	defer srv.Close()
+	resp := adminJSON(t, srv.Client(), http.MethodGet, srv.URL+"/admin/api/system", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("system status=%d", resp.StatusCode)
+	}
+	var info systemInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Component != "mpx-provision" || info.Version == "" || info.APISchema != 1 {
+		t.Fatalf("bad system info: %+v", info)
+	}
+}
+
+func TestAdminUIContainsSecondLevelNavigationAndRelayCopy(t *testing.T) {
+	data, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{"基础设置", "Relay 路径", "调度与传输", "发放与安全", "duplicateRelay", "自定义标识 + 随机 Secret", "轮换 Secret", "系统"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin UI missing %q", want)
+		}
 	}
 }

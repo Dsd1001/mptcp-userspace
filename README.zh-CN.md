@@ -4,7 +4,7 @@ MPTCP Userspace 是一个运行在应用层的多路径传输系统，由 macOS 
 
 它**不是内核 MPTCP，也不是 QUIC**。macOS 与 Linux Userspace Client 都使用普通 TCP socket；Linux Landing 终止 MPX/4 并转发透明 backend TCP 字节。
 
-当前正式版本：**v0.9.8 / MPX/4 Draft 04 + Provisioning**。
+当前传输端正式版本：**v0.9.8 / MPX/4 Draft 04**；独立 Provisioning 当前版本：**v0.9.9**。
 
 - Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.8
 - MPX/4 规范：https://github.com/Dsd1001/MPX-4

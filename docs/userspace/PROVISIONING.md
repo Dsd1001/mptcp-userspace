@@ -1,4 +1,4 @@
-# MPTCP Desk 0.9.8 Provisioning
+# MPX Provisioning 0.9.9
 
 MPTCP Desk supports a managed mode in which the Mac stores only one secret Provisioning API URL. Every time forwarding starts (including background recovery), the client fetches and validates the complete current configuration before starting the transport engine.
 
@@ -53,15 +53,15 @@ The browser will ask for HTTP Basic authentication. The default username is `adm
 
 ## Administration page
 
-The web page can maintain multiple independent client profiles. For each profile it can edit all managed fields, add/remove Relay rows, generate a random 32-byte MPX transport key, save updates, delete the profile or rotate its API URL.
+The 0.9.9 administration UI uses a profile sidebar with second-level pages for Basic settings, Relay paths, Scheduling/transport, and Issuance/security. Each profile owns its own Relay list. Relay rows can be added, copied, reordered or removed; Copy duplicates address/port/capacity and focuses the IPv4 last octet for fast same-/24 editing.
 
-A newly created profile receives a 32-byte random URL token. The generated URL looks like:
+A newly created profile receives a 32-byte random URL secret. Automatic URLs keep the existing form:
 
 ```text
 https://config.example.com/v1/config/4c...64-hex-characters...
 ```
 
-The token is the client credential. Rotating it immediately invalidates the previous URL.
+The secret is the client credential. 0.9.9 also supports an optional unique custom alias while retaining the random secret, for example `https://config.example.com/v1/config/hkbn-5line/<64-hex-secret>`. Changing URL mode or alias automatically rotates the secret so an old URL cannot become valid again later. Manual secret rotation preserves the alias but immediately invalidates the previous URL. Existing 0.9.8 token-only records remain valid after upgrade until explicitly changed.
 
 ## Client API response
 
