@@ -40,22 +40,32 @@ import Foundation
         precondition(decodedEvent.resources?.rejections.isEmpty == true)
         precondition(decodedEvent.lifecycle?.closed == false)
         model.resources = decodedEvent.resources; model.lifecycle = decodedEvent.lifecycle
-        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("userspace-bundle","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false)] {
+        model.append("Userspace 认证通过；实际带宽叠加取决于链路容量，不作为测速结论")
+        precondition(model.logs.last?.contains("认证通过") == true)
+        precondition(model.logs.last?.contains("测速") == false)
+        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("userspace-bundle","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false),("userspace-bundle-paths","userspace_multipath",2,true)] {
             model.mode=mode;model.tab=tab;model.problem=nil;model.running=false;model.busy=false
-            model.provisioningURL=api ? "https://config.example.test/v1/profile/synthetic-secret-token" : ""
+            model.configurationSource=api ? "remote" : "local"
+            model.provisioningURL=api ? "https://config.example.test/v1/bundle/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" : ""
             model.provisioningStatus=api ? "Synthetic Profile · 已同步 · 1" : "手动配置"
             model.provisioningRevision=api ? "1" : ""
             model.provisioningDisplayName=api ? "Synthetic Profile" : ""
-            model.provisioningIsBundle = name == "userspace-bundle"
-            model.provisioningBundleMode = name == "userspace-bundle" ? "parallel" : ""
-            model.provisioningBundleID = name == "userspace-bundle" ? "synthetic-bundle" : ""
-            model.provisioningProfiles = name == "userspace-bundle" ? [
+            let isBundle = name == "userspace-bundle" || name == "userspace-bundle-paths"
+            model.provisioningIsBundle = isBundle
+            model.provisioningBundleMode = isBundle ? "parallel" : ""
+            model.provisioningBundleID = isBundle ? "synthetic-bundle" : ""
+            model.provisioningProfiles = isBundle ? [
                 ProvisioningProfileChoice(id:"a",name:"HKBN",listenPort:1081,relayCount:5,mode:"userspace_multipath",backgroundResident:true),
                 ProvisioningProfileChoice(id:"b",name:"HKT",listenPort:1082,relayCount:8,mode:"userspace_multipath",backgroundResident:true)
             ] : []
-            model.provisioningSelectedProfileIDs = name == "userspace-bundle" ? ["a","b"] : []
-            model.provisioningRuntimeStatus = name == "userspace-bundle" ? ["a":"已启动","b":"已启动"] : [:]
-            if name == "userspace-bundle" { model.provisioningDisplayName="Synthetic Bundle"; model.provisioningRevision="r3" }
+            model.provisioningSelectedProfileIDs = isBundle ? ["a","b"] : []
+            model.provisioningRuntimeStatus = isBundle ? ["a":"已启动","b":"错误"] : [:]
+            model.provisioningRuntimeError = isBundle ? ["b":"连接超时"] : [:]
+            model.provisioningTCPPaths = isBundle ? [
+                "a":[PathMetric(id:0,address:"203.0.113.10:8849",connected:true,sent:100,received:200,rtt_ms:18.5,goodput_bps:3145728,outstanding_bytes:4096,queue_bytes:2048,errors:0,last_error:nil)],
+                "b":[PathMetric(id:0,address:"198.51.100.20:8848",connected:false,sent:0,received:0,rtt_ms:0,goodput_bps:0,outstanding_bytes:0,queue_bytes:0,errors:1,last_error:"dial 198.51.100.20:8848: timeout")]
+            ] : [:]
+            if isBundle { model.provisioningDisplayName="Synthetic Bundle"; model.provisioningRevision="r3" }
             let host=NSHostingView(rootView:DesktopView().environment(\.colorScheme,.light))
             let frame=NSRect(x:0,y:0,width:710,height:850)
             let window=NSWindow(contentRect:frame,styleMask:.borderless,backing:.buffered,defer:false)
@@ -69,6 +79,6 @@ import Foundation
             print("Rendered \(name): \(bitmap.pixelsWide)x\(bitmap.pixelsHigh), \(png.count) bytes")
             window.contentView=nil
         }
-        print("PASS: legacy profile stays Native; schema 3 validation; weak-key and both-disabled rejection; five offscreen SwiftUI views including single-Profile and multi-Profile managed Provisioning modes")
+        print("PASS: local/remote selector, concise logs, hidden-endpoint remote Bundle diagnostics, profile validation, and six offscreen SwiftUI views")
     }
 }

@@ -3,6 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -374,6 +381,73 @@ func TestManagedProvisioningFetchProfileAndBundle(t *testing.T) {
 	}
 	if _, err := fetchManaged(ctx, srv.URL+"/redirect"); err == nil {
 		t.Fatal("redirect was followed")
+	}
+}
+
+func encryptedManagedWire(t *testing.T, token string, payload any) []byte {
+	t.Helper()
+	plain, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := hex.DecodeString(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac := hmac.New(sha256.New, raw)
+	_, _ = mac.Write([]byte("mpx-provision-config-envelope-v1"))
+	key := mac.Sum(nil)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := bytes.Repeat([]byte{0x5a}, gcm.NonceSize())
+	sealed := gcm.Seal(nil, nonce, plain, []byte("mpx-provision-envelope-v1"))
+	wire, err := json.Marshal(managedEncryptedEnvelope{Version: 1, Nonce: base64.RawURLEncoding.EncodeToString(nonce), Data: base64.RawURLEncoding.EncodeToString(sealed)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
+}
+
+func TestManagedProvisioningFetchEncryptedBundleAndPlaintextCompatibility(t *testing.T) {
+	token := strings.Repeat("ab", 32)
+	bundle := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "enc", Revision: "r1", DisplayName: "Encrypted", Mode: "parallel", Profiles: []BundleProfile{bundleProfile("a", "A", 1081), bundleProfile("b", "B", 1082)}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/bundle/"+token, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(encryptedManagedWire(t, token, bundle)) })
+	mux.HandleFunc("/legacy", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(bundle) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	doc, err := fetchManaged(ctx, srv.URL+"/v1/bundle/"+token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.bundle == nil || doc.bundle.DisplayName != "Encrypted" {
+		t.Fatalf("bad encrypted doc: %+v", doc)
+	}
+	doc, err = fetchManaged(ctx, srv.URL+"/legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.bundle == nil || len(doc.bundle.Profiles) != 2 {
+		t.Fatalf("legacy plaintext broke: %+v", doc)
+	}
+}
+
+func TestManagedEncryptedEnvelopeRejectsWrongURLSecret(t *testing.T) {
+	good := strings.Repeat("ab", 32)
+	bad := strings.Repeat("cd", 32)
+	payload := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "enc", Revision: "r1", DisplayName: "Encrypted", Mode: "single_select", Profiles: []BundleProfile{bundleProfile("a", "A", 1081)}}
+	wire := encryptedManagedWire(t, good, payload)
+	u, _ := url.Parse("https://cfg.example.test/v1/bundle/" + bad)
+	if _, err := decryptManagedEnvelope(wire, u); err == nil || !strings.Contains(err.Error(), "解密失败") {
+		t.Fatalf("wrong secret err=%v", err)
 	}
 }
 

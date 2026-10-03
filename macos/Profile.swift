@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Security
 
 struct ProfileError: LocalizedError {
@@ -366,9 +367,60 @@ private final class RelayProvisioningNoRedirectDelegate: NSObject, URLSessionTas
     ) { completionHandler(nil) }
 }
 
+private struct RelayProvisioningEncryptedEnvelope: Decodable {
+    var v: Int
+    var n: String
+    var d: String
+}
+
+private extension Data {
+    init?(hexString: String) {
+        guard hexString.count % 2 == 0 else { return nil }
+        var bytes = [UInt8](); bytes.reserveCapacity(hexString.count / 2)
+        var i = hexString.startIndex
+        while i < hexString.endIndex {
+            let j = hexString.index(i, offsetBy: 2)
+            guard let byte = UInt8(hexString[i..<j], radix: 16) else { return nil }
+            bytes.append(byte); i = j
+        }
+        self.init(bytes)
+    }
+}
+
 enum RelayProvisioningClient {
     static let maximumProfileResponseBytes = 64 * 1024
     static let maximumResponseBytes = 512 * 1024
+
+
+    private static func base64URLData(_ value: String) -> Data? {
+        var s = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        let rem = s.count % 4
+        if rem != 0 { s += String(repeating: "=", count: 4 - rem) }
+        return Data(base64Encoded: s)
+    }
+
+    private static func decryptEnvelope(_ data: Data, url: URL) throws -> Data {
+        guard let envelope = try? JSONDecoder().decode(RelayProvisioningEncryptedEnvelope.self, from: data) else { return data }
+        guard envelope.v == 1 else { throw ProfileError("Provisioning 加密封装版本不受支持") }
+        guard let token = url.pathComponents.last, token.count == 64, let tokenData = Data(hexString: token), tokenData.count == 32 else {
+            throw ProfileError("Provisioning 加密响应需要有效的 API Secret")
+        }
+        guard let nonceData = base64URLData(envelope.n), let sealed = base64URLData(envelope.d), nonceData.count == 12, sealed.count >= 16 else {
+            throw ProfileError("Provisioning 加密响应格式无效")
+        }
+        let macKey = SymmetricKey(data: tokenData)
+        let derived = HMAC<SHA256>.authenticationCode(for: Data("mpx-provision-config-envelope-v1".utf8), using: macKey)
+        let key = SymmetricKey(data: Data(derived))
+        let ciphertext = sealed.dropLast(16)
+        let tag = sealed.suffix(16)
+        do {
+            let nonce = try AES.GCM.Nonce(data: nonceData)
+            let box = try AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag)
+            return try AES.GCM.open(box, using: key, authenticating: Data("mpx-provision-envelope-v1".utf8))
+        } catch {
+            throw ProfileError("Provisioning 配置解密失败")
+        }
+    }
 
     static func endpointURL(_ raw: String) throws -> URL {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -408,15 +460,17 @@ enum RelayProvisioningClient {
         guard let http = response as? HTTPURLResponse else { throw ProfileError("Provisioning API 返回的不是 HTTP 响应") }
         guard http.statusCode == 200 else { throw ProfileError("Provisioning API HTTP \(http.statusCode)") }
         guard !data.isEmpty, data.count <= maximumResponseBytes else { throw ProfileError("Provisioning API 响应为空或超过 512 KiB") }
+        let payloadData = try decryptEnvelope(data, url: url)
+        guard !payloadData.isEmpty, payloadData.count <= maximumResponseBytes else { throw ProfileError("Provisioning 解密配置为空或超过 512 KiB") }
         struct Header: Decodable { var schema_version: Int; var kind: String? }
         do {
-            let header = try JSONDecoder().decode(Header.self, from: data)
+            let header = try JSONDecoder().decode(Header.self, from: payloadData)
             if header.schema_version == 1 {
-                guard data.count <= maximumProfileResponseBytes else { throw ProfileError("单 Profile Provisioning 响应超过 64 KiB") }
-                return .profile(try JSONDecoder().decode(RelayProvisioningPayload.self, from: data))
+                guard payloadData.count <= maximumProfileResponseBytes else { throw ProfileError("单 Profile Provisioning 响应超过 64 KiB") }
+                return .profile(try JSONDecoder().decode(RelayProvisioningPayload.self, from: payloadData))
             }
             if header.schema_version == 2, header.kind == "bundle" {
-                let bundle = try JSONDecoder().decode(RelayProvisioningBundlePayload.self, from: data)
+                let bundle = try JSONDecoder().decode(RelayProvisioningBundlePayload.self, from: payloadData)
                 try bundle.validate()
                 return .bundle(bundle)
             }

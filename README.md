@@ -4,9 +4,9 @@ MPTCP Userspace is an application-layer multipath transport for macOS and Linux.
 
 It is **not kernel MPTCP** and it is **not QUIC**. The macOS and Linux Userspace clients use ordinary TCP carrier sockets; the Linux Landing terminates MPX/4 and forwards opaque backend TCP bytes.
 
-Current client/Landing release: **v0.10.1 / MPX/4 Draft 04 + resilient parallel Bundles**. Provisioning remains **v0.10.0** and is API-compatible with the 0.10.1 clients.
+Current suite release: **v0.10.2 / MPX/4 Draft 04**. The client UI separates local and remote configuration, remote Bundle diagnostics hide Relay endpoints, and Provisioning public URLs return an opaque encrypted envelope instead of readable configuration JSON.
 
-- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.1
+- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.2
 - MPX/4 specification: https://github.com/Dsd1001/MPX-4
 - Chinese README: [README.zh-CN.md](README.zh-CN.md)
 
@@ -14,7 +14,7 @@ Current client/Landing release: **v0.10.1 / MPX/4 Draft 04 + resilient parallel 
 
 | Component | OS / architecture | Artifact |
 |---|---|---|
-| MPTCP Desk client | macOS arm64 + x86_64 | `MPTCP-Desk-0.10.1-universal.dmg` |
+| MPTCP Desk client | macOS arm64 + x86_64 | `MPTCP-Desk-0.10.2-universal.dmg` |
 | Headless client | Linux amd64 | `mptcp-client-linux-amd64` |
 | Headless client | Linux arm64 | `mptcp-client-linux-arm64` |
 | Landing | Linux amd64 | `mptcp-landing` |
@@ -49,6 +49,16 @@ Provisioning web console
 ```
 
 Relay nodes only forward ordinary TCP bytes. MPX/4 authentication, Secure Records, Stream multiplexing, flow control, scheduling, retransmission and cross-Carrier reinjection are end-to-end between MPTCP Desk and Landing.
+
+
+## v0.10.2: customer UI + opaque Provisioning responses
+
+- The macOS home page has an explicit **Local configuration / Remote configuration** selector; only the selected configuration form is shown.
+- Remote API input and customer-facing help/log text are simplified. The title bar shows only the semantic version.
+- Remote Bundle path diagnostics now show per-Profile status, RTT, goodput, queue/outstanding bytes and errors while hiding Relay IP/port from the customer UI.
+- `/v1/config/...` and `/v1/bundle/...` keep their existing secret URLs and internal schema 1/2 payloads, but the wire response is wrapped in an AES-256-GCM envelope. The key is deterministically derived from the existing 256-bit URL secret using HMAC-SHA256; each response uses a fresh random nonce. No device registration or secondary key is introduced.
+- 0.10.2 clients accept both the new encrypted envelope and legacy plaintext schema 1/2 responses.
+- MPX/4 Draft 04 data-plane encoding and scheduling semantics are unchanged.
 
 ## v0.10.0: Provisioning Bundles and multi-profile client
 

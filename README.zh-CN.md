@@ -4,9 +4,9 @@ MPTCP Userspace 是一个运行在应用层的多路径传输系统，由 macOS 
 
 它**不是内核 MPTCP，也不是 QUIC**。macOS 与 Linux Userspace Client 都使用普通 TCP socket；Linux Landing 终止 MPX/4 并转发透明 backend TCP 字节。
 
-当前 Client / Landing 正式版本：**v0.10.1 / MPX/4 Draft 04 + 并行 Bundle 故障隔离**；Provisioning 继续为 **v0.10.0**，与 0.10.1 Client API 兼容。
+当前整套正式版本：**v0.10.2 / MPX/4 Draft 04**。Client 首页区分本地/远端配置，远端 Bundle 路径诊断隐藏 Relay 地址，Provisioning 公网 URL 默认返回不可直接阅读的加密封装。
 
-- Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.1
+- Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.2
 - MPX/4 规范：https://github.com/Dsd1001/MPX-4
 - English README：[README.md](README.md)
 
@@ -14,7 +14,7 @@ MPTCP Userspace 是一个运行在应用层的多路径传输系统，由 macOS 
 
 | 组件 | 系统 / 架构 | Release 产物 |
 |---|---|---|
-| MPTCP Desk Client | macOS arm64 + x86_64 | `MPTCP-Desk-0.10.1-universal.dmg` |
+| MPTCP Desk Client | macOS arm64 + x86_64 | `MPTCP-Desk-0.10.2-universal.dmg` |
 | Headless Client | Linux amd64 | `mptcp-client-linux-amd64` |
 | Headless Client | Linux arm64 | `mptcp-client-linux-arm64` |
 | Landing | Linux amd64 | `mptcp-landing` |
@@ -46,6 +46,16 @@ Provisioning 管理网页
 ```
 
 Relay 只负责转发普通 TCP 字节，不需要理解 MPX/4。认证、Secure Record、Stream 复用、信用控制、调度、重传和跨 Carrier reinjection 都由 Mac 与 Landing 端到端完成。
+
+
+## 0.10.2：客户界面整理与 Provisioning 不透明响应
+
+- macOS 首页增加明确的 **本地配置 / 远端配置** 切换，只展示当前选择的配置内容。
+- 远端 API 输入、客户可见提示与日志收敛为必要的操作/状态/错误信息，标题栏只显示版本号。
+- 远端 Bundle 补齐逐 Profile 路径诊断，显示状态、RTT、Goodput、队列/在途和错误计数，但不在客户 UI 展示 Relay IP/端口。
+- `/v1/config/...` 与 `/v1/bundle/...` 的 URL 和内部 schema 1/2 保持不变，公网响应外层改为 AES-256-GCM 加密封装；密钥由现有 256-bit URL Secret 通过 HMAC-SHA256 派生，每次响应使用新的随机 nonce。不增加设备授权、额外密码或第二套密钥。
+- 0.10.2 Client 同时兼容新加密封装与旧明文 schema 1/2 响应。
+- MPX/4 Draft 04 数据面与 Scheduler 语义不变。
 
 ## 0.10.0：Provisioning Bundle 与多 Profile Client
 

@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +16,45 @@ import (
 )
 
 func f64(v float64) *float64 { return &v }
+
+func decodeEncryptedForTest(t *testing.T, token string, r io.Reader, out any) encryptedEnvelope {
+	t.Helper()
+	var envelope encryptedEnvelope
+	if err := json.NewDecoder(r).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Version != 1 || envelope.Nonce == "" || envelope.Data == "" {
+		t.Fatalf("bad envelope: %+v", envelope)
+	}
+	key, err := envelopeKey(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, err := base64.RawURLEncoding.DecodeString(envelope.Nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := base64.RawURLEncoding.DecodeString(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := gcm.Open(nil, nonce, sealed, []byte("mpx-provision-envelope-v1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(plain, out); err != nil {
+		t.Fatal(err)
+	}
+	return envelope
+}
 
 func validConfig() provisionConfig {
 	return provisionConfig{
@@ -81,10 +123,11 @@ func TestProvisioningHTTPFlow(t *testing.T) {
 		t.Fatalf("cache control=%q", resp.Header.Get("Cache-Control"))
 	}
 	var payload publicPayload
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		t.Fatal(err)
-	}
+	envelope := decodeEncryptedForTest(t, rec.Token, resp.Body, &payload)
 	_ = resp.Body.Close()
+	if envelope.Data == "" {
+		t.Fatal("public config was not encrypted")
+	}
 	if payload.SchemaVersion != 1 || payload.DisplayName != "Synthetic" || payload.Mode != "userspace_multipath" || len(payload.Relays) != 2 || payload.TransportKey != strings.Repeat("a", 64) {
 		t.Fatalf("bad payload: %+v", payload)
 	}
@@ -534,10 +577,11 @@ func TestBundleParallelHTTPFlow(t *testing.T) {
 		t.Fatalf("public bundle status=%d", pub.StatusCode)
 	}
 	var payload bundlePublicPayload
-	if err := json.NewDecoder(pub.Body).Decode(&payload); err != nil {
-		t.Fatal(err)
-	}
+	envelope := decodeEncryptedForTest(t, secret, pub.Body, &payload)
 	_ = pub.Body.Close()
+	if envelope.Data == "" {
+		t.Fatal("public bundle was not encrypted")
+	}
 	if payload.SchemaVersion != 2 || payload.Kind != "bundle" || payload.Mode != "parallel" || payload.BundleID != b.ID || len(payload.Profiles) != 2 {
 		t.Fatalf("bad public bundle: %+v", payload)
 	}
@@ -635,5 +679,47 @@ func TestBundleStorePermissions(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("bundle mode=%#o", info.Mode().Perm())
+	}
+}
+
+func TestEncryptedEnvelopeHidesSensitiveFieldsAndRejectsWrongSecret(t *testing.T) {
+	payload := publicPayload{SchemaVersion: 1, DisplayName: "Hidden", Mode: "userspace_multipath", ListenPort: 1081, TCPEnabled: true, TransportKey: strings.Repeat("c", 64), Relays: []relay{{Host: "203.0.113.7", Port: 8849}, {Host: "203.0.113.8", Port: 8849}}}
+	token := strings.Repeat("ab", 32)
+	envelope, err := encryptEnvelope(token, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"203.0.113.7", "8849", strings.Repeat("c", 64), "transport_key", "relays"} {
+		if bytes.Contains(wire, []byte(secret)) {
+			t.Fatalf("encrypted wire exposed %q: %s", secret, wire)
+		}
+	}
+	key, _ := envelopeKey(strings.Repeat("cd", 32))
+	block, _ := aes.NewCipher(key)
+	gcm, _ := cipher.NewGCM(block)
+	nonce, _ := base64.RawURLEncoding.DecodeString(envelope.Nonce)
+	sealed, _ := base64.RawURLEncoding.DecodeString(envelope.Data)
+	if _, err := gcm.Open(nil, nonce, sealed, []byte("mpx-provision-envelope-v1")); err == nil {
+		t.Fatal("wrong secret decrypted envelope")
+	}
+}
+
+func TestEncryptedEnvelopeUsesFreshNonce(t *testing.T) {
+	token := strings.Repeat("ef", 32)
+	payload := map[string]any{"schema_version": 1, "value": "same"}
+	a, err := encryptEnvelope(token, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := encryptEnvelope(token, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Nonce == b.Nonce || a.Data == b.Data {
+		t.Fatal("encryption reused nonce/ciphertext")
 	}
 }

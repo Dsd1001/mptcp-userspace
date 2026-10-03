@@ -1,105 +1,25 @@
-# MPTCP Userspace 0.10.0 / MPX/4 Draft 04 + Multi-Profile Provisioning
+# MPTCP Userspace 0.10.2 / MPX/4 Draft 04
 
-0.10.0 是整套发布版本：MPTCP Desk、Linux Client、Landing 与 Provisioning 统一升级到 0.10.0。MPX/4 Draft 04 数据面 wire format、Generation/Error Scope 语义、Scheduler ID 与 key schedule 不变；本次主要新增 Provisioning/Client 多 Profile 编排能力。
+0.10.2 是整套发布版本：MPTCP Desk、Linux Client、Landing 与 Provisioning 统一为 0.10.2。MPX/4 Draft 04 数据面 wire format、Generation/Error Scope、Scheduler 与 key schedule 不变。
 
-## 发布平台
+## Client UI
 
-- macOS Client：arm64 + x86_64 Universal DMG；
-- Linux Client：amd64 + arm64 静态 ELF；
-- Linux Landing：amd64 + arm64 静态 ELF；
-- Linux Provisioning：amd64 + arm64 静态 ELF。
+- 首页在“视图”下增加“本地配置 / 远端配置”选择；未选择远端时不再常驻显示 API URL。
+- 远端 URL 使用简洁浅灰提示“请输入 Provisioning API 地址”。
+- 首页删除工程解释型小字，只保留必要操作和业务错误提示。
+- 右上角只显示 `0.10.2`。
+- 日志页过滤测速免责声明、协议实现解释等说明性文字，只保留同步、连接、认证、启动、故障、恢复和运行状态。
+- 远端 Bundle 路径诊断按 Profile 展示路径状态、RTT、Goodput、队列/在途与错误；Relay IP/端口和原始 endpoint 错误不会显示在客户路径诊断 UI。
+- 0.10.1 的 Parallel Bundle 故障隔离行为保留：单个 Profile 失败时其他健康 Profile 继续运行。
 
-## Provisioning Bundle
+## Provisioning API opacity
 
-Provisioning 现在有两个独立对象：
+- Profile/Bundle URL、Alias、Secret 轮换和内部 schema 1/2 均保持不变。
+- `/v1/config/...` 与 `/v1/bundle/...` 的公网响应外层改成紧凑 `{v,n,d}` 加密封装，不再直接显示 Relay IP、端口、Transport Key 或 Profile JSON。
+- URL 中现有 256-bit随机 Secret 作为密钥材料：HMAC-SHA256 固定上下文派生 256-bit key，AES-256-GCM 加密，96-bit nonce 每次响应随机生成，并使用固定 AAD 做完整性认证。
+- 不增加设备注册、Public Key、授权列表或第二个密码。拥有完整 API URL 的人仍然拥有解密材料；此功能目标是避免配置直接可读，不替代 HTTPS 或 bearer URL 保密。
+- 0.10.2 Mac/Linux Client 能读取新加密封装，也继续接受旧的明文 schema 1/2 API 以便迁移。
 
-- **Profile**：完整运行配置，拥有自己的 `listen_port`、Relay、Scheduler、Transport Key、TCP/UDP 等；
-- **Bundle**：选择多份 Profile，通过一条独立的高熵 secret API URL 下发。
+## Validation
 
-Bundle 支持：
-
-- `single_select`：Client 手工选择且只能启用一个 Profile；不同 Profile 可以复用同一个 listen port；
-- `parallel`：Client 可以同时启用一个或多个 Profile；Bundle 内所有 Profile 的 listen port 必须唯一。
-
-多 Profile 并行不是把 Relay 合并成一套。每份 Profile 都运行独立 MPX Session、Carrier 集合、Scheduler 和 Transport Key。
-
-## Listen Port 规则
-
-`listen_port` 继续由 Provisioning Profile 权威下发，不转为 Client 本地随机/自动配置。
-
-Provisioning 在以下位置检查冲突：
-
-1. 保存 parallel Bundle 时；
-2. 修改被 parallel Bundle 引用的 Profile 时；
-3. 删除被 Bundle 引用的 Profile 时会拒绝，必须先从 Bundle 移除。
-
-Client 启动时再次检查选择结果，并在启动任何子 Profile 前预探测所有需要的 loopback TCP/UDP socket。任意端口不可用时整组启动失败，不保留半启动状态。
-
-## Mac Client
-
-Mac 仍只需要保存一条 secret Provisioning URL。0.10.0 自动识别：
-
-- schema 1 单 Profile；
-- schema 2 Bundle。
-
-Bundle UI 会列出 Profile 名称、`127.0.0.1:<listen_port>`、Relay 数量和运行状态。single_select 使用单选；parallel 可以多选但至少保留一份。选择按非秘密 `bundle_id` 保存在本机，Provisioning URL 继续保存在 Keychain。
-
-Bundle 的 Transport Key 不写入普通 UserDefaults；完整 Bundle 每次启动重新从权威 API 获取并仅在内存/engine stdin 中使用。API 获取失败不会用旧缓存偷偷启动。
-
-并行启动由一个父 engine 编排多个独立子 runtime。父进程提供 `bundle_listening`、`bundle_stats`、`bundle_udp_stats` 聚合事件，同时保留每个 Profile 的状态标签。
-
-## Linux Client
-
-新增：
-
-```text
-validate-bundle [profile-id ...]
-run-bundle [profile-id ...]
-validate-managed
-run-managed
-```
-
-`validate-bundle` / `run-bundle` 直接读取 Bundle JSON。`validate-managed` / `run-managed` 从 stdin 读取包含 secret URL 和可选 Profile IDs 的小型控制 JSON，再从 Provisioning 获取 schema 1/2 配置。这样 secret URL 不需要放进命令行参数或 `ps` 输出。
-
-远程 URL 必须 HTTPS，loopback 开发允许 HTTP；不跟随 redirect。单 Profile 响应上限 64 KiB，Bundle 响应上限 512 KiB。
-
-## Provisioning 管理后台
-
-0.9.9 的 Profile 二级菜单、Relay Copy、自定义 API alias、管理员网页改密码全部保留。
-
-0.10.0 另加 **Client Bundles**：
-
-- 新建/编辑 Bundle；
-- 选择包含哪些 Profile；
-- single_select / parallel 模式；
-- 实时显示 Profile 的 Listen Port 与冲突诊断；
-- Bundle 自己的自动/自定义 alias API URL；
-- 独立 Secret 轮换；
-- Bundle 删除不删除 Profile。
-
-Profile `/v1/config/...` URL 完全保留；Bundle 使用新的 `/v1/bundle/...` 路径。
-
-## 兼容与迁移
-
-0.10.0 Provisioning 可直接读取旧 0.9.8/0.9.9 `profiles.json`，无需迁移。原 Profile token/custom alias URL 继续有效。旧管理员 `admin-password` 文件继续优先于 bootstrap 环境变量。Bundle 数据第一次保存后写入独立 `bundles.json`。
-
-MPX/4 Draft 04 数据面语义与 0.9.8 保持一致；正式发布/验证组合按 **0.10.0 Client + 0.10.0 Landing + 0.10.0 Provisioning**。0.9.5 及更早仍是 MPX/3，不兼容。
-
-## 安全边界
-
-- Profile URL 和 Bundle URL 都是 bearer credential；
-- nginx/Caddy access log 应同时隐藏 `/v1/config/` 与 `/v1/bundle/`；
-- Bundle alias 只是可读标识，高熵 Secret 始终保留；
-- 修改 alias/mode 会自动轮换 Secret；手工轮换立即吊销旧 URL；
-- Profile/Bundle 数据文件 `0600`，数据目录 `0700`；
-- 管理员密码文件 `0600`，服务无需 root；
-- Mac secret URL 在 Keychain；Bundle 选择只保存非秘密 Profile ID；
-- Linux `run-managed` 的 URL 通过 stdin 输入而非 argv。
-
-## 发布验证边界
-
-0.10.0 是多 Profile 编排 feature release。发布必须有当前 Source-ID 的 Go test/vet/race、Provisioning test/vet、Swift 双架构 typecheck、Bundle API/engine tests、Linux amd64 原生运行验证以及冻结源码逐字节重建/DMG 验证。
-
-由于本次不改变 MPX/4 Scheduler/传输语义，不把历史性能证据重新贴到新的 Source-ID 上，也不宣称新的容量/吞吐/WAN performance promotion。arm64 Linux 若没有物理机器，仅能声明交叉构建与冻结源码可复现，不能宣称物理 ARM runtime。
-
-macOS DMG 仍为 ad-hoc 签名、未 Developer ID notarize；Intel 执行验证如在 Apple Silicon 上完成，则属于 Rosetta 而非物理 Intel。
+发布门槛包括 Go test/vet/race、Provisioning 加密/错误 Secret/随机 nonce 测试、managed plaintext compatibility、Swift arm64/x86_64 typecheck、真实 Provisioning→Swift/Go 解密、UI 离屏渲染、Parallel Bundle 故障隔离回归，以及冻结源码的 Linux amd64/arm64 可复现构建与 Mac Universal DMG 验证。

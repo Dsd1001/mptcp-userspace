@@ -182,3 +182,9 @@ A 0.9.9 admin password file, if already created, remains authoritative after the
 - Administrator password persistence uses an atomic `0600` file and is never returned by APIs or written to normal application logs.
 - Bundle selection stored locally by the Mac contains only non-secret Profile IDs; the secret Provisioning URL remains in Keychain.
 - Transport keys in a fetched Bundle are used in memory/engine stdin and are not written to ordinary preferences.
+
+## Opaque public response envelope (0.10.2)
+
+The secret Profile and Bundle URLs are unchanged. Public `/v1/config/...` and `/v1/bundle/...` responses now contain only a compact `{v,n,d}` envelope. The existing URL token is decoded as 256 bits and used as the HMAC-SHA256 key over the fixed context `mpx-provision-config-envelope-v1`; that 256-bit result is the AES-256-GCM key. Every response uses a fresh 96-bit random nonce and authenticates the fixed AAD `mpx-provision-envelope-v1`. The encrypted plaintext remains the existing schema 1 Profile or schema 2 Bundle JSON, so the internal control-plane model does not change.
+
+This is intentionally a lightweight opacity layer using the already-secret API URL: it prevents Relay endpoints and transport keys from being immediately readable when the URL is opened, without adding device enrollment or another credential. Anyone who possesses the complete API URL still possesses the decryption secret. HTTPS remains mandatory for non-loopback deployments. 0.10.2 clients also accept legacy plaintext schema 1/2 responses for migration compatibility.

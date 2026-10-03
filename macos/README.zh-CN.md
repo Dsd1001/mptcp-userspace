@@ -1,4 +1,4 @@
-# 0.10.1 / MPX/4 Draft 04 + Resilient Multi-Profile
+# 0.10.2 / MPX/4 Draft 04
 
 0.10.0 保持 MPX/4 Draft 04 数据面不变，并把 Provisioning 从“一个 secret URL 对应一个 Profile”扩展为“Profile + Bundle”。
 

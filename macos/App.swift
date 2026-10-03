@@ -18,6 +18,7 @@ final class Model: ObservableObject {
     var schedulerExplanation: String { SchedulerPolicy(rawValue:schedulerMode)?.explanation ?? "调度策略无效" }
     static func schedulerTitle(_ value: String) -> String { SchedulerPolicy(rawValue:value)?.title ?? "等待引擎回报" }
     @Published var transportKey = ""
+    @Published var configurationSource = "local"
     @Published var provisioningURL = ""
     @Published var provisioningSyncing = false
     @Published var provisioningStatus = "手动配置"
@@ -30,9 +31,13 @@ final class Model: ObservableObject {
     @Published var provisioningSelectedProfileIDs = Set<String>()
     @Published var provisioningRuntimeStatus: [String:String] = [:]
     @Published var provisioningRuntimeError: [String:String] = [:]
+    @Published var provisioningTCPPaths: [String:[PathMetric]] = [:]
+    @Published var provisioningUDPPaths: [String:[PathMetric]] = [:]
     private var lastProvisioningBundle: RelayProvisioningBundlePayload?
     private static let bundleSelectionPrefix = "provisioning-bundle-selection-v1."
-    var provisioningManaged: Bool { !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private static let configurationSourceKey = "configuration-source-v1"
+    var remoteConfigurationSelected: Bool { configurationSource == "remote" }
+    var provisioningManaged: Bool { remoteConfigurationSelected && !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     @Published var tcpEnabled = true
     @Published var udpEnabled = true
     @Published var tcpPaths: [PathMetric] = []
@@ -221,7 +226,12 @@ final class Model: ObservableObject {
         if ProcessInfo.processInfo.environment["MPTCP_DESK_SMOKE_TEST"] == "1" { return }
         do { provisioningURL = try ProvisioningURLStore.load() ?? "" }
         catch { problem = error.localizedDescription }
-        provisioningStatus = provisioningManaged ? "API 托管 · 启动时同步" : "手动配置"
+        if let saved = UserDefaults.standard.string(forKey: Self.configurationSourceKey), ["local","remote"].contains(saved) {
+            configurationSource = saved
+        } else {
+            configurationSource = provisioningURL.isEmpty ? "local" : "remote"
+        }
+        provisioningStatus = provisioningManaged ? "远端配置 · 启动时同步" : (remoteConfigurationSelected ? "请填写 API 地址" : "本地配置")
         if let data = UserDefaults.standard.data(forKey: "multipath-profile-v2"),
            var profile = try? JSONDecoder().decode(Profile.self, from: data) {
             apply(profile)
@@ -266,6 +276,8 @@ final class Model: ObservableObject {
         provisioningSelectedProfileIDs = []
         provisioningRuntimeStatus = [:]
         provisioningRuntimeError = [:]
+        provisioningTCPPaths = [:]
+        provisioningUDPPaths = [:]
         lastProvisioningBundle = nil
     }
     private func selectionKey(_ bundleID: String) -> String { Self.bundleSelectionPrefix + bundleID }
@@ -330,10 +342,20 @@ final class Model: ObservableObject {
             try applyBundleSelection(bundle, ids: next)
             provisioningRuntimeStatus = [:]
             provisioningRuntimeError = [:]
+            provisioningTCPPaths = [:]
+            provisioningUDPPaths = [:]
             let count = next.count
             provisioningStatus = bundle.mode == "parallel" ? "\(bundle.display_name) · 已选择 \(count) 个 Profile" : "\(bundle.display_name) · 已选择 1 个 Profile"
             problem = nil
         } catch { problem = error.localizedDescription }
+    }
+
+    func setConfigurationSource(_ source: String) {
+        guard !configurationLocked, ["local", "remote"].contains(source) else { return }
+        configurationSource = source
+        UserDefaults.standard.set(source, forKey: Self.configurationSourceKey)
+        problem = nil
+        provisioningStatus = source == "local" ? "本地配置" : (provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "请填写 API 地址" : "远端配置 · 启动时同步")
     }
 
     func saveProvisioningURL() {
@@ -342,19 +364,21 @@ final class Model: ObservableObject {
             let cleaned = provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines)
             if cleaned.isEmpty {
                 try ProvisioningURLStore.delete()
-                provisioningStatus = "手动配置"
+                provisioningStatus = "请填写 API 地址"
                 provisioningRevision = ""
                 provisioningDisplayName = ""
                 resetProvisioningBundleState()
-                append("Provisioning API 已清除；恢复手动配置")
+                append("远端配置 API 已清除")
                 return
             }
             _ = try RelayProvisioningClient.endpointURL(cleaned)
             try ProvisioningURLStore.save(cleaned)
             provisioningURL = cleaned
+            configurationSource = "remote"
+            UserDefaults.standard.set("remote", forKey: Self.configurationSourceKey)
             resetProvisioningBundleState()
-            provisioningStatus = "API 链接已保存 · 启动时同步"
-            append("Provisioning API 链接已保存到钥匙串")
+            provisioningStatus = "远端配置 · 启动时同步"
+            append("远端配置 API 已保存")
             problem = nil
         } catch { problem = error.localizedDescription }
     }
@@ -364,19 +388,19 @@ final class Model: ObservableObject {
         do {
             try ProvisioningURLStore.delete()
             provisioningURL = ""
-            provisioningStatus = "手动配置"
+            provisioningStatus = "请填写 API 地址"
             provisioningRevision = ""
             provisioningDisplayName = ""
             resetProvisioningBundleState()
             problem = nil
-            append("Provisioning API 已清除；恢复手动配置")
+            append("远端配置 API 已清除")
         } catch { problem = error.localizedDescription }
     }
 
     func syncProvisioning(startAfterSync: Bool = false, automatic: Bool = false) {
         guard !busy && !running && !provisioningSyncing else { return }
         let endpoint = provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !endpoint.isEmpty else { problem = "请先填写 Provisioning API 链接"; return }
+        guard !endpoint.isEmpty else { problem = "请先填写 Provisioning API 地址"; return }
         do {
             _ = try RelayProvisioningClient.endpointURL(endpoint)
             try ProvisioningURLStore.save(endpoint)
@@ -425,6 +449,8 @@ final class Model: ObservableObject {
                     self.provisioningDisplayName = bundle.display_name
                     self.provisioningRuntimeStatus = [:]
                     self.provisioningRuntimeError = [:]
+                    self.provisioningTCPPaths = [:]
+                    self.provisioningUDPPaths = [:]
                     try self.applyBundleSelection(bundle, ids: selection)
                     self.provisioningStatus = bundle.mode == "parallel"
                         ? "\(bundle.display_name) · 已同步 · \(selection.count) 个 Profile 启用"
@@ -454,8 +480,12 @@ final class Model: ObservableObject {
 
     func startForwarding(automatic: Bool = false) {
         guard !busy && !running && !provisioningSyncing else { return }
-        if provisioningManaged { syncProvisioning(startAfterSync: true, automatic: automatic) }
-        else { launch("run", automatic: automatic) }
+        if remoteConfigurationSelected {
+            guard !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { problem = "请先填写远端配置 API 地址"; return }
+            syncProvisioning(startAfterSync: true, automatic: automatic)
+        } else {
+            launch("run", automatic: automatic)
+        }
     }
 
     func profile() throws -> Profile {
@@ -502,9 +532,27 @@ final class Model: ObservableObject {
             } catch {problem = "无法导入配置：\(error.localizedDescription)"}
         }
     }
+    private func customerFacingRemoteError(_ message: String?) -> String {
+        let value = (message ?? "").lowercased()
+        if value.contains("认证") || value.contains("auth") || value.contains("key") { return "认证失败" }
+        if value.contains("timeout") || value.contains("超时") || value.contains("deadline") { return "连接超时" }
+        if value.contains("refused") || value.contains("拒绝") { return "连接被拒绝" }
+        return "连接失败"
+    }
+    private func customerLogLine(_ line: String) -> String? {
+        if line.contains("实际带宽叠加") || line.contains("不作为测速结论") || line.contains("不是测速结果") {
+            if line.contains("认证通过") { return "认证通过" }
+            return nil
+        }
+        if line.contains("正在建立 Userspace 会话") { return "正在连接" }
+        if line.contains("不使用内核 MPTCP") { return nil }
+        if line.contains("MPX/4 Draft") && !line.contains("错误") { return nil }
+        return line
+    }
     func append(_ line: String) {
+        guard let visible = customerLogLine(line), !visible.isEmpty else { return }
         let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-        logs.append("\(stamp)  \(line)")
+        logs.append("\(stamp)  \(visible)")
         if logs.count > 150 {logs.removeFirst(logs.count - 150)}
     }
     private func keepDiagnostic(_ line: Data) {
@@ -613,13 +661,18 @@ final class Model: ObservableObject {
                     provisioningRuntimeError.removeValue(forKey: profileID)
                 case "error":
                     provisioningRuntimeStatus[profileID] = "错误"
-                    provisioningRuntimeError[profileID] = event.message ?? "Profile 不可用"
+                    provisioningRuntimeError[profileID] = customerFacingRemoteError(event.message)
                 case "transport_closed":
                     if provisioningRuntimeStatus[profileID] != "错误" { provisioningRuntimeStatus[profileID] = "已停止" }
                 default: break
                 }
-                if event.kind != "stats" && event.kind != "udp_stats", let text = event.message, !text.isEmpty {
-                    append("[\(title)] \(text)")
+                if event.kind == "stats" { provisioningTCPPaths[profileID] = event.path_stats ?? [] }
+                if event.kind == "udp_stats" { provisioningUDPPaths[profileID] = event.path_stats ?? [] }
+                if event.kind == "error" { append("[\(title)] \(customerFacingRemoteError(event.message))") }
+                else if ["connecting","ready","listening","transport_closed"].contains(event.kind) {
+                    let label: String
+                    switch event.kind { case "connecting": label = "正在连接"; case "ready": label = "认证通过"; case "listening": label = "已启动"; default: label = "已停止" }
+                    append("[\(title)] \(label)")
                 }
                 continue
             }
@@ -652,7 +705,7 @@ final class Model: ObservableObject {
                 running = true; busy = false
                 recoveryAttempt = 0; needsRecovery = false; problem = nil
                 status = userspace ? (tcpEnabled ? "Userspace 入口已启动" : "Userspace UDP 入口已启动") : "Native 入口已启动"
-            case "error": problem = event.message;status = "连接失败"
+            case "error": problem = remoteConfigurationSelected ? customerFacingRemoteError(event.message) : event.message; status = "连接失败"
             case "connecting": status = event.message ?? "连接中"
             case "ready": status = event.message ?? "环境可用"
             default: break
@@ -737,32 +790,41 @@ struct DesktopView: View {
                     HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
                 }
                 Spacer()
-                Text("Multipath 0.10.1 · MPX/4 Draft 04 + Resilient Multi-Profile").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("0.10.2").font(.system(size: 11)).foregroundColor(.secondary)
             }
             Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2)}.pickerStyle(.segmented)
+            HStack(spacing:12) {
+                Text("配置").font(.system(size:12,weight:.medium))
+                Picker("配置", selection: Binding(get:{model.configurationSource}, set:{model.setConfigurationSource($0)})) {
+                    Text("本地配置").tag("local")
+                    Text("远端配置").tag("remote")
+                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth:320).disabled(locked)
+                Spacer()
+            }
             if model.tab == 0 {
                 VStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment:.leading,spacing:6) {
-                        Text("配置来源").font(.system(size:12,weight:.medium))
-                        HStack(spacing:8) {
-                            SecureField("Provisioning API URL · https://config.example.com/v1/config/<token>", text:$model.provisioningURL)
-                                .textFieldStyle(.roundedBorder)
-                            Button("保存链接") { model.saveProvisioningURL() }.disabled(model.provisioningSyncing)
-                            Button { model.syncProvisioning() } label: {
-                                if model.provisioningSyncing { ProgressView().controlSize(.small) } else { Label("同步",systemImage:"arrow.clockwise") }
-                            }.disabled(model.provisioningSyncing || model.provisioningURL.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
-                            if model.provisioningManaged { Button("清除") { model.clearProvisioningURL() }.disabled(model.provisioningSyncing) }
-                        }
-                        Text(model.provisioningStatus + "。保存 API 链接后，只需点击启动；客户端会先获取网页端配置再启动。API URL 存入本机钥匙串；单 Profile transport key 存钥匙串，Bundle 内各 Profile 的 transport key 每次启动重新从 Provisioning 获取，不落普通偏好设置。")
-                            .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
-                    }
-                    if model.provisioningManaged {
+                    if model.remoteConfigurationSelected {
                         VStack(alignment:.leading,spacing:8) {
-                            Text(model.provisioningIsBundle ? "Provisioning Bundle 已接管配置" : "远程配置已接管首页参数").font(.headline)
+                            SecureField("请输入 Provisioning API 地址", text:$model.provisioningURL)
+                                .textFieldStyle(.roundedBorder)
+                            HStack(spacing:8) {
+                                Button("保存") { model.saveProvisioningURL() }.disabled(model.provisioningSyncing)
+                                Button { model.syncProvisioning() } label: {
+                                    if model.provisioningSyncing { ProgressView().controlSize(.small) } else { Label("同步配置",systemImage:"arrow.clockwise") }
+                                }.disabled(model.provisioningSyncing || model.provisioningURL.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                                if !model.provisioningURL.isEmpty { Button("清除") { model.clearProvisioningURL() }.disabled(model.provisioningSyncing) }
+                                Spacer()
+                                Text(model.provisioningStatus).font(.system(size:11)).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    if model.remoteConfigurationSelected && model.provisioningManaged {
+                        VStack(alignment:.leading,spacing:8) {
+                            Text(model.provisioningIsBundle ? "远端配置组" : "远端配置").font(.headline)
                             if !model.provisioningDisplayName.isEmpty { Text(model.provisioningDisplayName).font(.system(size:12,weight:.medium)) }
                             if !model.provisioningRevision.isEmpty { Text("Revision：\(model.provisioningRevision)").font(.system(size:11,design:.monospaced)).foregroundColor(.secondary) }
                             if model.provisioningIsBundle {
-                                Text(model.provisioningBundleMode == "parallel" ? "多配置并行 · 可同时启用多个独立 MPX Session" : "单配置选择 · 每次启用一个 Profile")
+                                Text(model.provisioningBundleMode == "parallel" ? "多配置并行" : "单配置选择")
                                     .font(.system(size:11,weight:.medium)).foregroundColor(.secondary)
                                 ForEach(model.provisioningProfiles) { choice in
                                     let selected = model.provisioningSelectedProfileIDs.contains(choice.id)
@@ -783,16 +845,16 @@ struct DesktopView: View {
                                         }.contentShape(Rectangle())
                                     }.buttonStyle(.plain).disabled(model.running || model.busy || model.provisioningSyncing)
                                 }
-                                Text(model.provisioningBundleMode == "parallel" ? "Listen Port 由 Provisioning Profile 下发；并行模式启动前仍会原子检查端口唯一性。各 Profile 独立建立 Session：某一组线路不可用时会单独标红报错，其他可用 Profile 继续运行。" : "Listen Port 仍由 Provisioning Profile 下发；单配置选择允许不同 Profile 共用同一端口，因为每次只启动一个。")
-                                    .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                                if model.provisioningBundleMode == "parallel" {
+                                    Text("端口冲突时无法启动；单个配置连接失败不会影响其他可用配置。")
+                                        .font(.system(size:10)).foregroundColor(.secondary)
+                                }
                             } else {
                                 Text("\(model.userspace ? "Userspace Multipath" : "Native MPTCP") · 127.0.0.1:\(model.listenPort) · \(model.userspace ? Model.schedulerTitle(model.schedulerMode) : "Native") · TCP \(model.tcpEnabled ? "开" : "关") · UDP \(model.udpEnabled ? "开" : "关") · \(model.relays.count) 条 Relay")
                                     .font(.system(size:11)).foregroundColor(.secondary)
-                                Text("传输模式、监听端口、TCP/UDP、Scheduler、Relay、Weighted 带宽、transport key 与后台常驻都由 Provisioning API 下发；本机不需要再手填。")
-                                    .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
                             }
                         }.padding(10).background(Color.secondary.opacity(0.06)).cornerRadius(8)
-                    } else {
+                    } else if !model.remoteConfigurationSelected {
                         Picker("传输模式", selection: $model.mode) {
                             Text("Userspace Multipath").tag("userspace_multipath")
                             Text("Native MPTCP（兼容）").tag("native_mptcp")
@@ -804,12 +866,8 @@ struct DesktopView: View {
                                 Picker("调度策略", selection:$model.schedulerMode) {
                                     ForEach(SchedulerPolicy.allCases) { policy in Text(policy.title).tag(policy.rawValue) }
                                 }.pickerStyle(.segmented).accessibilityIdentifier("scheduler-policy")
-                                Text(model.schedulerExplanation + "  这是 Userspace 策略，不是 macOS 系统聚合开关。")
-                                    .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
                             }
-                            SecureField("Landing 传输密钥（64 位十六进制，不是 SS 密码）", text: $model.transportKey)
-                            Text("本版 TCP Userspace 协议为 MPX/4 Draft 04。也可以只保存上面的 Provisioning API 链接，将全部参数改由网页托管。")
-                                .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                            SecureField("Transport Key", text: $model.transportKey)
                         }
                         HStack {Text("本地转发入口").frame(width: 120, alignment: .leading);Text("127.0.0.1").foregroundColor(.secondary);TextField("端口", text: $model.listenPort).frame(width: 85);Spacer();Button {let p = NSPasteboard.general;p.clearContents();p.setString("127.0.0.1:\(model.listenPort)",forType:.string)} label:{Image(systemName:"doc.on.doc")}.help("复制本地 TCP 入口")}
                         HStack {
@@ -820,8 +878,8 @@ struct DesktopView: View {
                         Divider()
                         HStack {Text("Relay 路径").font(.headline);Spacer();Button{model.relays.append(RelayRow(host:"",port:21001))}label:{Image(systemName:"plus")}.help("添加 Relay").disabled(locked || model.relays.count >= 8)}
                         if model.userspace && model.schedulerMode == SchedulerPolicy.weighted.rawValue {
-                            Text("Weighted：每条下行 Mbps 必填；上行 Mbps 可留空，留空时该方向继续自动估算。实时 RTT、故障与超时保护仍生效；UDP 不使用此权重。")
-                                .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                            Text("Weighted 模式需填写每条 Relay 的下行带宽。")
+                                .font(.system(size:10)).foregroundColor(.secondary)
                         }
                         ScrollView {
                             VStack(spacing: 8) {
@@ -842,14 +900,10 @@ struct DesktopView: View {
                     }
                     Divider()
                 }.disabled(locked)
-                VStack(alignment:.leading,spacing:4) {
-                    HStack {
-                        Toggle("后台常驻", isOn: Binding(get:{model.backgroundResident}, set:{model.setBackgroundResident($0)})).toggleStyle(.switch).disabled(model.provisioningManaged)
-                        Spacer()
-                        Text(model.backgroundResidentStatus).font(.system(size:11)).foregroundColor(.secondary)
-                    }
-                    Text(model.provisioningManaged ? "该选项由 Provisioning API 下发；网页修改后下次同步生效。" : "开启后注册 macOS 登录项；曾处于运行状态时，登录、睡眠唤醒、网络恢复或引擎意外退出后会自动重建转发。手动点击“停止”后不会自动拉起。")
-                        .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                HStack {
+                    Toggle("后台常驻", isOn: Binding(get:{model.backgroundResident}, set:{model.setBackgroundResident($0)})).toggleStyle(.switch).disabled(model.remoteConfigurationSelected)
+                    Spacer()
+                    Text(model.backgroundResidentStatus).font(.system(size:11)).foregroundColor(.secondary)
                 }
                 HStack(spacing:20) {
                     metric(model.userspace ? "TCP 载路" : "Native 子流",model.paths < 0 ? "未知" : String(model.paths));metric("连接",String(model.connections))
@@ -868,7 +922,33 @@ struct DesktopView: View {
                     .frame(maxWidth:.infinity,maxHeight:.infinity)
             } else {
                 VStack(alignment:.leading,spacing:12) {
-                    if model.userspace {
+                    if model.remoteConfigurationSelected && model.provisioningIsBundle {
+                        HStack(spacing:16) {
+                            metric("配置", String(model.provisioningSelectedProfileIDs.count))
+                            metric("TCP 路径", String(model.paths))
+                            metric("连接", String(model.connections))
+                        }
+                        ScrollView {
+                            VStack(alignment:.leading,spacing:14) {
+                                ForEach(model.provisioningProfiles.filter { model.provisioningSelectedProfileIDs.contains($0.id) }) { choice in
+                                    VStack(alignment:.leading,spacing:8) {
+                                        HStack {
+                                            Text(choice.name).font(.headline)
+                                            Spacer()
+                                            let state = model.provisioningRuntimeStatus[choice.id] ?? "等待启动"
+                                            Text(state).font(.system(size:11)).foregroundColor(state == "错误" ? .red : .secondary)
+                                        }
+                                        Text("127.0.0.1:\(choice.listenPort)").font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
+                                        if let detail = model.provisioningRuntimeError[choice.id], !detail.isEmpty {
+                                            Text(detail).font(.system(size:11)).foregroundColor(.red)
+                                        }
+                                        pathSection("TCP 路径", model.provisioningTCPPaths[choice.id] ?? [], hideEndpoint:true)
+                                        if model.udpEnabled { pathSection("UDP 路径", model.provisioningUDPPaths[choice.id] ?? [], hideEndpoint:true) }
+                                    }.padding(10).background(Color.secondary.opacity(0.04)).cornerRadius(8)
+                                }
+                            }.frame(maxWidth:.infinity,alignment:.leading)
+                        }
+                    } else if model.userspace {
                         Text("配置策略：\(Model.schedulerTitle(model.configuredSchedulerMode)) · 当前策略：\(Model.schedulerTitle(model.effectiveSchedulerMode)) · 自动切换：\(model.schedulerModeSwitches)")
                             .font(.system(size:12,weight:.medium)).accessibilityIdentifier("scheduler-status")
                         Text("本端发送方向 · \(model.lastSchedulerModeReason.isEmpty ? "等待引擎诊断" : model.lastSchedulerModeReason)")
@@ -908,17 +988,33 @@ struct DesktopView: View {
                         }
                         Text("TCP 重传：\(model.retransmits) · UDP 丢弃/超时事件：\(model.udpDropped)")
                             .font(.system(size:12)).foregroundColor(.secondary)
-                        Text("Goodput 为确认数据估计值，包含启动估计，不是测速结果；UDP 不重传丢失报文。")
-                            .font(.system(size:11)).foregroundColor(.secondary)
                         ScrollView {
                             VStack(alignment:.leading,spacing:14) {
-                                pathSection("TCP 长期载路",model.tcpPaths)
-                                if model.udpEnabled { pathSection("UDP 独立数据报路径",model.udpPaths) }
+                                if model.remoteConfigurationSelected && model.provisioningIsBundle {
+                                    ForEach(model.provisioningProfiles.filter { model.provisioningSelectedProfileIDs.contains($0.id) }) { choice in
+                                        VStack(alignment:.leading,spacing:8) {
+                                            HStack {
+                                                Text(choice.name).font(.headline)
+                                                Spacer()
+                                                let state = model.provisioningRuntimeStatus[choice.id] ?? "等待启动"
+                                                Text(state).font(.system(size:11)).foregroundColor(state == "错误" ? .red : .secondary)
+                                            }
+                                            if let detail = model.provisioningRuntimeError[choice.id], !detail.isEmpty {
+                                                Text(detail).font(.system(size:11)).foregroundColor(.red)
+                                            }
+                                            pathSection("TCP 路径", model.provisioningTCPPaths[choice.id] ?? [], hideEndpoint:true)
+                                            if model.udpEnabled { pathSection("UDP 路径", model.provisioningUDPPaths[choice.id] ?? [], hideEndpoint:true) }
+                                        }.padding(10).background(Color.secondary.opacity(0.04)).cornerRadius(8)
+                                    }
+                                } else {
+                                    pathSection("TCP 路径", model.tcpPaths, hideEndpoint:model.remoteConfigurationSelected)
+                                    if model.udpEnabled { pathSection("UDP 路径", model.udpPaths, hideEndpoint:model.remoteConfigurationSelected) }
+                                }
                             }.frame(maxWidth:.infinity,alignment:.leading)
                         }
                     } else {
-                        Text("Native 模式沿用 0.5.1 的内核子流统计；MPX 的 RTT、Goodput 和重排统计仅用于 Userspace 模式。")
-                            .font(.system(size:13)).foregroundColor(.secondary)
+                        Text("Native MPTCP 路径统计由系统提供。")
+                            .font(.system(size:12)).foregroundColor(.secondary)
                     }
                 }.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
             }
@@ -928,8 +1024,8 @@ struct DesktopView: View {
             Spacer(minLength:0)
             Divider()
             HStack {
-                Button{model.importProfile()}label:{Image(systemName:"square.and.arrow.down")}.help("导入配置").disabled(locked || model.provisioningManaged)
-                Button{model.save()}label:{Image(systemName:"square.and.arrow.down.on.square")}.help("保存配置").disabled(locked || model.provisioningManaged)
+                Button{model.importProfile()}label:{Image(systemName:"square.and.arrow.down")}.help("导入配置").disabled(locked || model.remoteConfigurationSelected)
+                Button{model.save()}label:{Image(systemName:"square.and.arrow.down.on.square")}.help("保存配置").disabled(locked || model.remoteConfigurationSelected)
                 Menu {Button("开启系统聚合…"){model.changeAggregation(enabled:true)};Button("关闭系统聚合…"){model.changeAggregation(enabled:false)}} label:{Image(systemName:"gearshape")}.frame(width:42).help("仅 Native 模式需要系统聚合设置").disabled(locked || model.userspace)
                 Spacer()
                 Button("检查环境"){model.launch("doctor")}.disabled(locked)
@@ -943,7 +1039,7 @@ struct DesktopView: View {
     }
     func metric(_ label:String,_ value:String)->some View {VStack(alignment:.leading,spacing:4){Text(label).font(.system(size:11)).foregroundColor(.secondary);Text(value).font(.system(size:16,weight:.medium,design:.monospaced))}.frame(maxWidth:.infinity,alignment:.leading)}
     static func bytes(_ count:Int)->String { ByteCountFormatter.string(fromByteCount:Int64(count),countStyle:.binary) }
-    func pathSection(_ title:String,_ paths:[PathMetric])->some View {
+    func pathSection(_ title:String,_ paths:[PathMetric],hideEndpoint:Bool=false)->some View {
         VStack(alignment:.leading,spacing:8) {
             Text(title).font(.headline)
             if paths.isEmpty { Text("尚无路径数据；启动后自动更新").font(.system(size:12)).foregroundColor(.secondary) }
@@ -951,13 +1047,14 @@ struct DesktopView: View {
                 VStack(alignment:.leading,spacing:4) {
                     HStack {
                         Circle().fill(path.connected ? Color.green : Color.secondary).frame(width:7,height:7)
-                        Text("\(path.id) · \(path.address)" + (path.role.map { " · " + $0.uppercased() } ?? "")).font(.system(size:12,design:.monospaced))
+                        Text((hideEndpoint ? "路径 \(path.id + 1)" : "\(path.id) · \(path.address)") + (path.role.map { " · " + $0.uppercased() } ?? "")).font(.system(size:12,design:.monospaced))
                         Spacer();Text(path.connected ? "在线" : "离线/重连中").font(.system(size:11)).foregroundColor(.secondary)
                     }
                     Text(String(format:"RTT %.1f ms · Goodput %.2f MiB/s%@ · 队列 %@ · 在途 %@ · 错误 %llu",path.rtt_ms,path.goodput_bps/1048576,(path.configured_rate_bps ?? 0) > 0 ? String(format:" · Weighted %.1f Mbps",(path.configured_rate_bps ?? 0)*8/1000000) : "",Self.bytes(path.queue_bytes),Self.bytes(path.outstanding_bytes),path.errors))
                         .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
                     if let error = path.last_error, !error.isEmpty {
-                        Text(error).font(.system(size:10)).foregroundColor(.secondary).lineLimit(2).help(error)
+                        if hideEndpoint { Text("路径连接异常").font(.system(size:10)).foregroundColor(.secondary) }
+                        else { Text(error).font(.system(size:10)).foregroundColor(.secondary).lineLimit(2).help(error) }
                     }
                 }.padding(8).background(Color.secondary.opacity(0.06)).cornerRadius(6)
             }

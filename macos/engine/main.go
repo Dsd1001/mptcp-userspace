@@ -4,6 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -296,6 +302,55 @@ func readManagedInput(reader io.Reader) (ManagedInput, error) {
 	return in, nil
 }
 
+type managedEncryptedEnvelope struct {
+	Version int    `json:"v"`
+	Nonce   string `json:"n"`
+	Data    string `json:"d"`
+}
+
+func decryptManagedEnvelope(data []byte, u *url.URL) ([]byte, error) {
+	var envelope managedEncryptedEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Version == 0 || envelope.Nonce == "" || envelope.Data == "" {
+		return data, nil
+	}
+	if envelope.Version != 1 {
+		return nil, errors.New("Provisioning 加密封装版本不受支持")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) == 0 {
+		return nil, errors.New("Provisioning 加密响应缺少 API Secret")
+	}
+	token := parts[len(parts)-1]
+	raw, err := hex.DecodeString(token)
+	if err != nil || len(raw) != 32 {
+		return nil, errors.New("Provisioning 加密响应需要有效的 API Secret")
+	}
+	mac := hmac.New(sha256.New, raw)
+	_, _ = mac.Write([]byte("mpx-provision-config-envelope-v1"))
+	key := mac.Sum(nil)
+	nonce, err := base64.RawURLEncoding.DecodeString(envelope.Nonce)
+	if err != nil {
+		return nil, errors.New("Provisioning 加密 nonce 无效")
+	}
+	sealed, err := base64.RawURLEncoding.DecodeString(envelope.Data)
+	if err != nil {
+		return nil, errors.New("Provisioning 加密 data 无效")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := gcm.Open(nil, nonce, sealed, []byte("mpx-provision-envelope-v1"))
+	if err != nil {
+		return nil, errors.New("Provisioning 配置解密失败")
+	}
+	return plain, nil
+}
+
 func fetchManaged(ctx context.Context, rawURL string) (managedDocument, error) {
 	u, err := validateProvisioningURL(rawURL)
 	if err != nil {
@@ -324,6 +379,13 @@ func fetchManaged(ctx context.Context, rawURL string) (managedDocument, error) {
 	}
 	if len(data) == 0 || len(data) > 524288 {
 		return managedDocument{}, errors.New("Provisioning API 响应为空或超过 512 KiB")
+	}
+	data, err = decryptManagedEnvelope(data, u)
+	if err != nil {
+		return managedDocument{}, err
+	}
+	if len(data) == 0 || len(data) > 524288 {
+		return managedDocument{}, errors.New("Provisioning 解密配置为空或超过 512 KiB")
 	}
 	var header struct {
 		SchemaVersion int    `json:"schema_version"`

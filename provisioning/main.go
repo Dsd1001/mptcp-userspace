@@ -1,9 +1,14 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -60,6 +65,12 @@ type record struct {
 	Revision  uint64          `json:"revision"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	Config    provisionConfig `json:"config"`
+}
+
+type encryptedEnvelope struct {
+	Version int    `json:"v"`
+	Nonce   string `json:"n"`
+	Data    string `json:"d"`
 }
 
 type publicPayload struct {
@@ -992,7 +1003,53 @@ func (a *app) publicBundle(w http.ResponseWriter, r *http.Request) {
 	payload := bundlePublicPayload{SchemaVersion: 2, Kind: "bundle", BundleID: rec.ID, Revision: fmt.Sprintf("r%d-%s", rec.Revision, rec.UpdatedAt.Format("20060102T150405Z")), DisplayName: rec.Name, Mode: rec.Mode, Profiles: profiles}
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	writeJSON(w, http.StatusOK, payload)
+	if err := writeEncryptedJSON(w, http.StatusOK, token, payload); err != nil {
+		http.Error(w, "encrypt configuration", http.StatusInternalServerError)
+	}
+}
+
+func envelopeKey(token string) ([]byte, error) {
+	raw, err := hex.DecodeString(token)
+	if err != nil || len(raw) != 32 {
+		return nil, errors.New("invalid provisioning token")
+	}
+	mac := hmac.New(sha256.New, raw)
+	_, _ = mac.Write([]byte("mpx-provision-config-envelope-v1"))
+	return mac.Sum(nil), nil
+}
+
+func encryptEnvelope(token string, v any) (encryptedEnvelope, error) {
+	plain, err := json.Marshal(v)
+	if err != nil {
+		return encryptedEnvelope{}, err
+	}
+	key, err := envelopeKey(token)
+	if err != nil {
+		return encryptedEnvelope{}, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return encryptedEnvelope{}, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return encryptedEnvelope{}, err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return encryptedEnvelope{}, err
+	}
+	sealed := gcm.Seal(nil, nonce, plain, []byte("mpx-provision-envelope-v1"))
+	return encryptedEnvelope{Version: 1, Nonce: base64.RawURLEncoding.EncodeToString(nonce), Data: base64.RawURLEncoding.EncodeToString(sealed)}, nil
+}
+
+func writeEncryptedJSON(w http.ResponseWriter, status int, token string, v any) error {
+	envelope, err := encryptEnvelope(token, v)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, status, envelope)
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -1051,7 +1108,9 @@ func (a *app) publicConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	writeJSON(w, http.StatusOK, p)
+	if err := writeEncryptedJSON(w, http.StatusOK, token, p); err != nil {
+		http.Error(w, "encrypt configuration", http.StatusInternalServerError)
+	}
 }
 
 func (a *app) adminPage(w http.ResponseWriter, r *http.Request) {

@@ -37,7 +37,7 @@ def acceptance_text(identity: str, capacity: dict, runtime: dict, complete: bool
     stage='multi-profile-feature-release' if feature_release else ('background-resident-feature-release' if background_release else ('preview-with-known-limitations' if preview else ('untested-by-request release' if untested else ('short-capacity-and-physical-validated' if complete else 'candidate; required acceptance pending'))))
     text+=f'Source-ID: `{identity}`. Stage: **{stage}**.\n\n'
     if feature_release:
-        text+='0.10.0 is a multi-profile orchestration feature release above the unchanged MPX/4 Draft 04 transport. Current-source correctness/build evidence is recorded in TESTS.json and PROVENANCE.json. Scheduler/capacity/WAN performance promotion is intentionally not claimed for this Source-ID because the transport wire and multipath scheduler semantics are not changed by the Bundle feature.\n\n'
+        text+='This 0.10.x feature/patch release changes control-plane/client behavior above the unchanged MPX/4 Draft 04 transport. Current-source correctness/build evidence is recorded in TESTS.json and PROVENANCE.json. Scheduler/capacity/WAN performance promotion is intentionally not claimed for this Source-ID because the transport wire and multipath scheduler semantics are not changed by the Bundle feature.\n\n'
     if background_release:
         text+='Formal 0.9.8 release candidate. Current-source correctness includes login-item API compilation, sleep/wake recovery policy, bounded restart backoff, Swift UI/Profile checks, the unchanged Rev5/Weighted protocol regression and source-matched Weighted laboratory throughput. Full 30-second capacity matrices and physical App+Surge/WAN acceptance are not claimed unless separately verified.\n\n'
     if preview:
@@ -110,12 +110,12 @@ def main() -> None:
     parser.add_argument('--untested-release',action='store_true',help='Direct release explicitly marked untested-by-request; bypasses test evidence gates, not source/archive integrity checks')
     parser.add_argument('--preview-release',action='store_true',help='User-requested preview with current correctness/build proof and explicit known limitations; not performance promotion')
     parser.add_argument('--background-release',action='store_true',help='Formal 0.9.8 lifecycle/correctness release evidence mode')
-    parser.add_argument('--feature-release',action='store_true',help='0.10.0 multi-profile feature release with current-source correctness/build proof; does not claim scheduler/capacity promotion')
+    parser.add_argument('--feature-release',action='store_true',help='0.10.x feature/patch release with current-source correctness/build proof; does not claim scheduler/capacity promotion')
     args=parser.parse_args()
     gates.require(sum(bool(x) for x in [args.engineering,args.require_live,args.untested_release,args.preview_release,args.background_release,args.feature_release]) <= 1,'Select at most one packaging mode')
     version=(ROOT/'macos/VERSION').read_text().strip()
-    gates.require(version in {'0.9.8','0.10.0'},'Unsupported release version for this packaging script')
-    if args.feature_release: gates.require(version=='0.10.0','--feature-release is defined for 0.10.0')
+    gates.require(version in {'0.9.8','0.10.0','0.10.1','0.10.2'},'Unsupported release version for this packaging script')
+    if args.feature_release: gates.require(version.startswith('0.10.'),'--feature-release is defined for 0.10.x')
     out=ROOT/'dist'/('userspace-'+version)
     files=source.collect();sums=source.manifest(files);identity=source.sha(sums)
     gates.require((out/'SOURCE_ID').read_text().strip()==identity and (out/'SOURCE_SHA256SUMS').read_bytes()==sums,'Source freeze missing or stale')
@@ -136,7 +136,7 @@ def main() -> None:
         gates.require(source.sha((out/name).read_bytes())==digest,'Recorded artifact changed: '+name)
     scheduler_path=out/'SCHEDULER-MODES.json'
     if args.feature_release and not scheduler_path.exists():
-        scheduler_path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'scheduler_capability_revision':5,'verified':False,'status':'not-rerun-for-multi-profile-feature-release','reason':'0.10.0 changes Provisioning/client orchestration; MPX/4 Draft 04 scheduler semantics are unchanged and no performance-promotion claim is made'},indent=2)+'\n')
+        scheduler_path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'scheduler_capability_revision':5,'verified':False,'status':'not-rerun-for-multi-profile-feature-release','reason':version+' changes Provisioning/client control-plane or UI behavior; MPX/4 Draft 04 scheduler semantics are unchanged and no performance-promotion claim is made'},indent=2)+'\n')
     scheduler=json.loads(scheduler_path.read_text())
     if args.feature_release:
         gates.require(scheduler.get('source_id')==identity and scheduler.get('version')==version and scheduler.get('wire_protocol')==4 and scheduler.get('verified') is False and scheduler.get('status')=='not-rerun-for-multi-profile-feature-release','Feature release scheduler record must explicitly avoid a performance-promotion claim')
@@ -162,7 +162,7 @@ def main() -> None:
     capacity,runtime=records
     if args.feature_release:
         for path,label in [(out/'CAPACITY.json','capacity'),(out/'RUNTIME.json','runtime')]:
-            path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'verified':False,'status':'not-rerun-for-multi-profile-feature-release','reason':'0.10.0 is an orchestration feature release; no new transport performance/WAN promotion is claimed'},indent=2)+'\n')
+            path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'verified':False,'status':'not-rerun-for-multi-profile-feature-release','reason':version+' changes control-plane/client behavior only; no new transport performance/WAN promotion is claimed'},indent=2)+'\n')
         capacity=json.loads((out/'CAPACITY.json').read_text());runtime=json.loads((out/'RUNTIME.json').read_text())
         complete=False
     elif args.preview_release:
