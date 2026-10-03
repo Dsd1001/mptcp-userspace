@@ -59,6 +59,6 @@ func notifyReady() error {
 	if err = conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
 		return err
 	}
-	_, err = conn.Write([]byte("READY=1\nSTATUS=MPX/3 revision 2 aggregation listeners ready\n"))
+	_, err = conn.Write([]byte("READY=1\nSTATUS=MPX/4 Draft 04 aggregation listeners ready\n"))
 	return err
 }

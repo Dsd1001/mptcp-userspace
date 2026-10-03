@@ -128,7 +128,7 @@ func execute(ctx context.Context, command string, o options, t *terminal) error 
 	}
 	switch command {
 	case "version":
-		fmt.Fprintf(t.out, "mptcp-landing %s %s/%s MPX/3 experimental source=%s\n", multipath.Version, runtime.GOOS, runtime.GOARCH, multipath.SourceID)
+		fmt.Fprintf(t.out, "mptcp-landing %s %s/%s MPX/4 Draft 04 source=%s\n", multipath.Version, runtime.GOOS, runtime.GOARCH, multipath.SourceID)
 		return nil
 	case "help":
 		help(t.out)
@@ -273,7 +273,7 @@ func doctor(ctx context.Context, m *manager, c Config, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "版本 %s；主机 %s/%s；配置有效；传输密钥已隐藏。\n", multipath.Version, runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintln(out, "运行协议为应用层 MPX/3；客户端需支持 MPX/3；建议两端使用相同版本。无需启用内核 MPTCP，不修改防火墙、路由或 SS 配置。")
+	fmt.Fprintln(out, "运行协议为应用层 MPX/4 Draft 04；客户端需支持 MPX/4 Draft 04；建议两端使用相同版本。无需启用内核 MPTCP，不修改防火墙、路由或 SS 配置。")
 	var failures []error
 	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
 	backend, err := multipath.PlainDial(probe, c.BackendTCP)

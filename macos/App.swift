@@ -721,7 +721,7 @@ struct DesktopView: View {
                             }.disabled(model.provisioningSyncing || model.provisioningURL.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                             if model.provisioningManaged { Button("清除") { model.clearProvisioningURL() }.disabled(model.provisioningSyncing) }
                         }
-                        Text(model.provisioningStatus + "。保存 API 链接后，只需点击启动；客户端会先获取网页端配置再启动。API URL 与 transport key 均存入本机钥匙串。")
+                        Text(model.provisioningStatus + "。保存 API 链接后，只需点击启动；客户端会先获取网页端配置再启动。API URL 存入本机钥匙串；单 Profile transport key 存钥匙串，Bundle 内各 Profile 的 transport key 每次启动重新从 Provisioning 获取，不落普通偏好设置。")
                             .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
                     }
                     if model.provisioningManaged {
