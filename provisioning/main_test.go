@@ -382,8 +382,8 @@ func TestAdminPasswordChangePersistsAndInvalidatesOldCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldPass := "old-admin-password-0123456789"
-	newPass := "new-admin-password-9876543210"
+	oldPass := "oldpass8"
+	newPass := "newpass8"
 	passwordFile := filepath.Join(dir, "admin-password")
 	a := &app{store: st, adminUser: "admin", adminPass: oldPass, passwordFile: passwordFile}
 	srv := httptest.NewServer(a.handler())
@@ -395,7 +395,7 @@ func TestAdminPasswordChangePersistsAndInvalidatesOldCredentials(t *testing.T) {
 	}
 	_ = wrong.Body.Close()
 
-	short := adminRequestWithPassword(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/password", oldPass, passwordInput{CurrentPassword: oldPass, NewPassword: "too-short"})
+	short := adminRequestWithPassword(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/password", oldPass, passwordInput{CurrentPassword: oldPass, NewPassword: "short7!"})
 	if short.StatusCode != http.StatusBadRequest {
 		t.Fatalf("short-password status=%d", short.StatusCode)
 	}
@@ -446,11 +446,11 @@ func TestAdminPasswordChangePersistsAndInvalidatesOldCredentials(t *testing.T) {
 
 func TestAdminPasswordFilePermissionsAreTightened(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "admin-password")
-	password := "persisted-admin-password-123456"
+	password := "persist8"
 	if err := os.WriteFile(path, []byte(password+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := loadAdminPassword(path, "bootstrap-admin-password-123456")
+	got, err := loadAdminPassword(path, "bootstrp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,12 +467,12 @@ func TestAdminPasswordFilePermissionsAreTightened(t *testing.T) {
 }
 
 func TestAdminPasswordValidation(t *testing.T) {
-	for _, bad := range []string{"", "short", strings.Repeat("x", 23), strings.Repeat("x", 513), strings.Repeat("x", 24) + "\n"} {
+	for _, bad := range []string{"", "short", strings.Repeat("x", 7), strings.Repeat("x", 513), strings.Repeat("x", 24) + "\n"} {
 		if err := validAdminPassword(bad); err == nil {
 			t.Fatalf("accepted invalid password len=%d", len(bad))
 		}
 	}
-	if err := validAdminPassword("valid-admin-password-123456"); err != nil {
+	if err := validAdminPassword("valid123"); err != nil {
 		t.Fatal(err)
 	}
 }

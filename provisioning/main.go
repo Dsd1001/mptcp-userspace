@@ -470,8 +470,8 @@ type app struct {
 }
 
 func validAdminPassword(pass string) error {
-	if len(pass) < 24 {
-		return errors.New("password must be at least 24 characters")
+	if len(pass) < 8 {
+		return errors.New("password must be at least 8 characters")
 	}
 	if len(pass) > 512 {
 		return errors.New("password must be at most 512 characters")

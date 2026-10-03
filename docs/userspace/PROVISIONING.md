@@ -57,7 +57,7 @@ The browser will ask for HTTP Basic authentication. The default username is `adm
 
 The 0.9.9 administration UI uses a profile sidebar with second-level pages for Basic settings, Relay paths, Scheduling/transport, and Issuance/security. Each profile owns its own Relay list. Relay rows can be added, copied, reordered or removed; Copy duplicates address/port/capacity and focuses the IPv4 last octet for fast same-/24 editing.
 
-The **System** page can change the administrator Basic Auth password. The user must enter the current password plus a new password of at least 24 characters. A successful change immediately invalidates the old password and atomically writes the new password to `MPX_PROVISION_ADMIN_PASSWORD_FILE` with mode `0600`. The service does not need root privileges for this: by default the password file is stored next to `MPX_PROVISION_DATA`, which should already be a private service-writable `0700` directory. The persisted password takes precedence over the bootstrap environment password after restart.
+The **System** page can change the administrator Basic Auth password. The user must enter the current password plus a new password of at least 8 characters. A successful change immediately invalidates the old password and atomically writes the new password to `MPX_PROVISION_ADMIN_PASSWORD_FILE` with mode `0600`. The service does not need root privileges for this: by default the password file is stored next to `MPX_PROVISION_DATA`, which should already be a private service-writable `0700` directory. The persisted password takes precedence over the bootstrap environment password after restart.
 
 A newly created profile receives a 32-byte random URL secret. Automatic URLs keep the existing form:
 
