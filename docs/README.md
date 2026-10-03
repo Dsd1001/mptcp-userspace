@@ -25,8 +25,8 @@ This directory contains the public documentation for MPTCP Userspace.
 ## Validation and release
 
 - [Validation](userspace/VALIDATION.md)
-- [v0.9.8 release notes](userspace/RELEASE.zh-CN.md)
+- [v0.10.0 release notes](userspace/RELEASE.zh-CN.md)
 
 Published release evidence such as ACCEPTANCE.md, TESTS.json, SCHEDULER-MODES.json and PROVENANCE.json is attached to the GitHub Release rather than duplicated into the default branch.
 
-The v0.9.8 tag identifies the current release source.
+The v0.10.0 tag identifies the current release source.

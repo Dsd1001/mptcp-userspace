@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package frozen 0.9.8 / MPX/4 Draft 04 artifacts, including Provisioning."""
+"""Package frozen MPTCP Userspace / MPX/4 Draft 04 artifacts, including Provisioning."""
 from __future__ import annotations
 import argparse, importlib.util, json, os, pathlib, shutil, subprocess, tarfile
 ROOT=pathlib.Path(__file__).resolve().parents[1]
@@ -32,10 +32,12 @@ def local_test_secrets() -> list[bytes]:
     return secrets
 
 
-def acceptance_text(identity: str, capacity: dict, runtime: dict, complete: bool, scheduler: dict, *, version: str, untested: bool=False, preview: bool=False, background_release: bool=False) -> str:
+def acceptance_text(identity: str, capacity: dict, runtime: dict, complete: bool, scheduler: dict, *, version: str, untested: bool=False, preview: bool=False, background_release: bool=False, feature_release: bool=False) -> str:
     text=f'# {version} / MPX/4 Draft 04 acceptance\n\n'
-    stage='background-resident-feature-release' if background_release else ('preview-with-known-limitations' if preview else ('untested-by-request release' if untested else ('short-capacity-and-physical-validated' if complete else 'candidate; required acceptance pending')))
+    stage='multi-profile-feature-release' if feature_release else ('background-resident-feature-release' if background_release else ('preview-with-known-limitations' if preview else ('untested-by-request release' if untested else ('short-capacity-and-physical-validated' if complete else 'candidate; required acceptance pending'))))
     text+=f'Source-ID: `{identity}`. Stage: **{stage}**.\n\n'
+    if feature_release:
+        text+='0.10.0 is a multi-profile orchestration feature release above the unchanged MPX/4 Draft 04 transport. Current-source correctness/build evidence is recorded in TESTS.json and PROVENANCE.json. Scheduler/capacity/WAN performance promotion is intentionally not claimed for this Source-ID because the transport wire and multipath scheduler semantics are not changed by the Bundle feature.\n\n'
     if background_release:
         text+='Formal 0.9.8 release candidate. Current-source correctness includes login-item API compilation, sleep/wake recovery policy, bounded restart backoff, Swift UI/Profile checks, the unchanged Rev5/Weighted protocol regression and source-matched Weighted laboratory throughput. Full 30-second capacity matrices and physical App+Surge/WAN acceptance are not claimed unless separately verified.\n\n'
     if preview:
@@ -53,7 +55,7 @@ def acceptance_text(identity: str, capacity: dict, runtime: dict, complete: bool
     if runtime.get('verified'):
         text+=f"Physical mixed run: {runtime['observed_seconds']:.3f} seconds; {runtime['short_attempts']} short requests with zero failures; {len(runtime['bulk_segments'])} separately completed bulk segments; {runtime['idle_keepalive_connections']} idle/keepalive connections. Six carriers preserved and payloads independently crosschecked at the origin.\n\n"
     else:text+='Real 180-second App/Surge mixed acceptance: pending. Do not interpret a candidate or laboratory run as a completed physical release.\n\n'
-    text+='MPX/4 Draft 04 is incompatible with the MPX/3 transport used by 0.9.5 and older. 0.9.8 formally supports a 0.9.8 Desk/Landing pair. Existing key/Relay/backend models remain unchanged. Background resident uses macOS 13+ ServiceManagement/Network/NSWorkspace APIs. No multi-day stability, physical Intel, notarization, forward-secrecy or independent security-audit claim.\n'
+    text+=f'MPX/4 Draft 04 is incompatible with the MPX/3 transport used by 0.9.5 and older. {version} is released as a matched Desk/Linux Client/Landing/Provisioning suite. Existing MPX/4 key schedule and wire registry remain unchanged. No multi-day stability, physical Intel, notarization, forward-secrecy or independent security-audit claim.\n'
     return text
 
 
@@ -89,6 +91,18 @@ def check_background_release(tests: dict, scheduler: dict, identity: str, versio
         gates.require(checks.get(key) is True,'Missing background release check: '+key)
 
 
+FEATURE_REQUIRED={'go-test','go-vet','go-race','provisioning-test','provisioning-vet','swift-typecheck-arm64','swift-typecheck-x86_64','bundle-api-tests','bundle-engine-tests','linux-amd64-runtime'}
+
+def check_feature_release(tests: dict, identity: str, version: str, *, root: pathlib.Path=ROOT) -> None:
+    gates.require(tests.get('source_id')==identity and tests.get('version')==version and tests.get('verified') is True and tests.get('status')=='correctness-passed','Feature release requires current-source correctness evidence')
+    commands=tests.get('commands',[]); names=[r.get('name') for r in commands]
+    gates.require(FEATURE_REQUIRED.issubset(set(names)) and len(names)==len(set(names)),'Feature release test inventory missing or duplicated')
+    for record in commands:
+        name=record.get('log',''); path=pathlib.PurePosixPath(name)
+        gates.require(name and not path.is_absolute() and '..' not in path.parts,'Unsafe feature-release evidence path')
+        local=root/path
+        gates.require(record.get('exit_code')==0 and local.is_file() and not local.is_symlink() and local.resolve().is_relative_to(root.resolve()) and source.sha(local.read_bytes())==record.get('sha256'),'Missing, failed or changed feature-release evidence: '+name)
+
 def main() -> None:
     parser=argparse.ArgumentParser()
     parser.add_argument('--require-live',action='store_true',help='Require 128/256/512/1024/2048 x 30s x 2 AND the source-matched 180s App/Surge mixed run')
@@ -96,10 +110,12 @@ def main() -> None:
     parser.add_argument('--untested-release',action='store_true',help='Direct release explicitly marked untested-by-request; bypasses test evidence gates, not source/archive integrity checks')
     parser.add_argument('--preview-release',action='store_true',help='User-requested preview with current correctness/build proof and explicit known limitations; not performance promotion')
     parser.add_argument('--background-release',action='store_true',help='Formal 0.9.8 lifecycle/correctness release evidence mode')
+    parser.add_argument('--feature-release',action='store_true',help='0.10.0 multi-profile feature release with current-source correctness/build proof; does not claim scheduler/capacity promotion')
     args=parser.parse_args()
-    gates.require(sum(bool(x) for x in [args.engineering,args.require_live,args.untested_release,args.preview_release,args.background_release]) <= 1,'Select at most one packaging mode')
+    gates.require(sum(bool(x) for x in [args.engineering,args.require_live,args.untested_release,args.preview_release,args.background_release,args.feature_release]) <= 1,'Select at most one packaging mode')
     version=(ROOT/'macos/VERSION').read_text().strip()
-    gates.require(version=='0.9.8','This release gate is defined for 0.9.8 / MPX/4 Draft 04')
+    gates.require(version in {'0.9.8','0.10.0'},'Unsupported release version for this packaging script')
+    if args.feature_release: gates.require(version=='0.10.0','--feature-release is defined for 0.10.0')
     out=ROOT/'dist'/('userspace-'+version)
     files=source.collect();sums=source.manifest(files);identity=source.sha(sums)
     gates.require((out/'SOURCE_ID').read_text().strip()==identity and (out/'SOURCE_SHA256SUMS').read_bytes()==sums,'Source freeze missing or stale')
@@ -118,8 +134,14 @@ def main() -> None:
         gates.require(provenance.get('verified') is True,'Build verification does not bind this source')
     for name,digest in provenance['artifact_sha256'].items():
         gates.require(source.sha((out/name).read_bytes())==digest,'Recorded artifact changed: '+name)
-    scheduler=json.loads((out/'SCHEDULER-MODES.json').read_text())
-    if args.untested_release:
+    scheduler_path=out/'SCHEDULER-MODES.json'
+    if args.feature_release and not scheduler_path.exists():
+        scheduler_path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'scheduler_capability_revision':5,'verified':False,'status':'not-rerun-for-multi-profile-feature-release','reason':'0.10.0 changes Provisioning/client orchestration; MPX/4 Draft 04 scheduler semantics are unchanged and no performance-promotion claim is made'},indent=2)+'\n')
+    scheduler=json.loads(scheduler_path.read_text())
+    if args.feature_release:
+        gates.require(scheduler.get('source_id')==identity and scheduler.get('version')==version and scheduler.get('wire_protocol')==4 and scheduler.get('verified') is False and scheduler.get('status')=='not-rerun-for-multi-profile-feature-release','Feature release scheduler record must explicitly avoid a performance-promotion claim')
+        tests=json.loads((out/'TESTS.json').read_text()); check_feature_release(tests,identity,version)
+    elif args.untested_release:
         gates.require(scheduler.get('source_id')==identity and scheduler.get('version')==version and scheduler.get('verified') is False and scheduler.get('status')=='untested-by-request','Untested scheduler record must be explicit')
     elif args.preview_release:
         tests=json.loads((out/'TESTS.json').read_text())
@@ -138,7 +160,12 @@ def main() -> None:
             path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'verified':False,'status':'pending','reason':'Required short acceptance has not been recorded'},indent=2)+'\n')
         records.append(json.loads(path.read_text()))
     capacity,runtime=records
-    if args.preview_release:
+    if args.feature_release:
+        for path,label in [(out/'CAPACITY.json','capacity'),(out/'RUNTIME.json','runtime')]:
+            path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'verified':False,'status':'not-rerun-for-multi-profile-feature-release','reason':'0.10.0 is an orchestration feature release; no new transport performance/WAN promotion is claimed'},indent=2)+'\n')
+        capacity=json.loads((out/'CAPACITY.json').read_text());runtime=json.loads((out/'RUNTIME.json').read_text())
+        complete=False
+    elif args.preview_release:
         gates.require(all(r.get('source_id')==identity and r.get('version')==version and r.get('wire_protocol')==4 and r.get('verified') is False and r.get('status')=='not-run-for-preview' for r in [capacity,runtime]),'Preview must not claim capacity/runtime promotion')
         complete=False
     elif args.background_release:
@@ -151,7 +178,7 @@ def main() -> None:
         gates.require(capacity.get("verified") is True,"New candidate requires source-matched formal capacity")
         complete=gates.check(capacity,runtime,identity,required=args.require_live)
         if args.engineering: complete=False
-    (out/'ACCEPTANCE.md').write_text(acceptance_text(identity,capacity,runtime,complete,scheduler,version=version,untested=args.untested_release,preview=args.preview_release,background_release=args.background_release))
+    (out/'ACCEPTANCE.md').write_text(acceptance_text(identity,capacity,runtime,complete,scheduler,version=version,untested=args.untested_release,preview=args.preview_release,background_release=args.background_release,feature_release=args.feature_release))
     names=[f'MPTCP-Desk-{version}-universal.dmg',
            'mptcp-client-linux-amd64','mptcp-client-linux-amd64.sha256','mptcp-client-linux-amd64.BUILDINFO',
            'mptcp-client-linux-arm64','mptcp-client-linux-arm64.sha256','mptcp-client-linux-arm64.BUILDINFO',
@@ -159,8 +186,10 @@ def main() -> None:
            'mptcp-landing-linux-arm64','mptcp-landing-linux-arm64.sha256','mptcp-landing-linux-arm64.BUILDINFO',
            'mpx-provision','mpx-provision.sha256','mpx-provision.BUILDINFO',
            'mpx-provision-linux-arm64','mpx-provision-linux-arm64.sha256','mpx-provision-linux-arm64.BUILDINFO',
-           'MPTCP-Desk.BUILDINFO',source_name,'SOURCE_ID','SOURCE_SHA256SUMS','PROVENANCE.json','CAPACITY.json','RUNTIME.json','SCHEDULER-MODES.json','REV2-AB.json','ACCEPTANCE.md']
-    if args.preview_release or args.background_release:
+           'MPTCP-Desk.BUILDINFO',source_name,'SOURCE_ID','SOURCE_SHA256SUMS','PROVENANCE.json','CAPACITY.json','RUNTIME.json','SCHEDULER-MODES.json','ACCEPTANCE.md']
+    if not args.feature_release:
+        names.append('REV2-AB.json')
+    if args.preview_release or args.background_release or args.feature_release:
         names.append('TESTS.json')
     release={name:(out/name).read_bytes() for name in names}
     for title,name in [('README.zh-CN.md','RELEASE.zh-CN.md'),('PROVISIONING.md','PROVISIONING.md'),('DEPLOYMENT.zh-CN.md','DEPLOYMENT.zh-CN.md'),
@@ -181,7 +210,7 @@ def main() -> None:
     external={name:(out/name).read_bytes() for name in names+[bundle.name]}
     (out/f'MPTCP-Userspace-{version}-SHA256SUMS').write_bytes(source.manifest(external))
     print(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,
-        'release_stage':'background-resident-feature-release' if args.background_release else ('preview-with-known-limitations' if args.preview_release else 'untested-by-request' if args.untested_release else ('engineering-not-release-gated' if args.engineering else ('short-capacity-and-physical-validated' if complete else 'candidate-pending-required-acceptance'))),
+        'release_stage':'multi-profile-feature-release' if args.feature_release else ('background-resident-feature-release' if args.background_release else ('preview-with-known-limitations' if args.preview_release else 'untested-by-request' if args.untested_release else ('engineering-not-release-gated' if args.engineering else ('short-capacity-and-physical-validated' if complete else 'candidate-pending-required-acceptance')))),
         'scheduler_verified':scheduler.get('verified') is True,'capacity_verified':capacity.get('verified') is True,'runtime_verified':runtime.get('verified') is True,
         'source_files':len(files),'release_files':len(release),'archive':bundle.name,
         'archive_bytes':bundle.stat().st_size,'archive_sha256':source.sha(bundle.read_bytes()),

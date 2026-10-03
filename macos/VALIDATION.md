@@ -1,22 +1,24 @@
-# 0.9.8 / MPX/4 Draft 04 + Provisioning
+# 0.10.0 / MPX/4 Draft 04 + Multi-Profile Provisioning
 
-0.9.8 发布候选至少必须通过：
+0.10.0 发布候选至少必须通过：
 
-- engine / Landing 全量 `go test ./...` 与 `go vet ./...`；
-- MPX/4 VarInt / Frame / key-schedule / Secure-Record 字节级向量；
-- Draft 04 `carrier-generation.json` 与 `error-scope.json` 官方语义向量；
-- Carrier Generation：first=0、stale/equal reject、failed candidate no-commit、higher commit、SUPERSEDED、simultaneous equal、maximum no-wrap；
-- Error Scope：STREAM_OPEN_REJECT、Carrier-scoped FRAME_ENCODING/AUTH、Session-scoped FLOW_CONTROL/FINAL_SIZE/TRANSMISSION_ID/STREAM_STATE；
-- CARRIER_CLOSE / SESSION_CLOSE body 与 UTF-8/256-byte reason 限制；
-- Transmission ACK future/stale/Stream-ID mismatch；
-- 多 Carrier、loss/rejoin、retransmission/reinjection、scheduler negotiation；
-- Provisioning 服务 `go test` / `go vet`；
-- Provisioning URL HTTPS/localhost policy、redirect rejection、64 KiB response bound、完整 Profile 校验与 key-free preferences；
-- arm64 / x86_64 Swift 编译与 managed-mode UI harness；
-- Universal DMG；
+- engine / Landing 全量 `go test ./...`、`go vet ./...` 与 race suite；
+- MPX/4 VarInt / Frame / key-schedule / Secure-Record、Draft 04 Carrier Generation / Error Scope 既有回归；
+- Provisioning `go test` / `go vet`；
+- Bundle CRUD、secret rotate、schema-2 public API、旧 schema-1 Profile URL 兼容；
+- `single_select` 同端口允许；`parallel` 重复端口拒绝；
+- Profile 后续修改不能破坏已存在的 parallel Bundle；被 Bundle 引用的 Profile 不能直接删除；
+- Client Bundle strict JSON、Profile selection、duplicate/unknown ID、端口冲突与端口预探测；
+- Linux `validate-managed` 的 HTTPS/loopback、redirect rejection、response size 和 Profile/Bundle schema 检查；
+- arm64 / x86_64 Swift typecheck 与 Universal DMG 构建；
+- Mac Bundle UI 可显示并选择多 Profile；
 - Linux Client amd64/arm64 静态 ELF；
 - Linux Landing amd64/arm64 静态 ELF；
-- Linux `mpx-provision` amd64/arm64 静态 ELF；
-- 所有发布组件使用同一个 Source-ID。
+- Linux Provisioning amd64/arm64 静态 ELF；
+- Linux amd64 原生执行 `version`、Bundle validate/managed fetch，以及多 Profile runtime/端口冲突验证；
+- 冻结源码重新构建 Linux Client/Landing/Provisioning 与 Mac engine/UI 后匹配发布产物；
+- 所有整套发布组件绑定同一个 Source-ID。
 
-macOS DMG 为 ad-hoc 签名、未 notarize。
+0.10.0 不以新的 Source-ID 宣称重新完成 Scheduler/capacity/WAN performance promotion；本次的发布门槛是当前源码的功能正确性、运行验证和构建可复现性。
+
+macOS DMG 为 ad-hoc 签名、未 notarize。若无物理 Linux arm64/Intel Mac，则必须明确保留对应验证限制。

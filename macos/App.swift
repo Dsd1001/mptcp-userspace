@@ -23,6 +23,14 @@ final class Model: ObservableObject {
     @Published var provisioningStatus = "手动配置"
     @Published var provisioningRevision = ""
     @Published var provisioningDisplayName = ""
+    @Published var provisioningIsBundle = false
+    @Published var provisioningBundleMode = ""
+    @Published var provisioningBundleID = ""
+    @Published var provisioningProfiles: [ProvisioningProfileChoice] = []
+    @Published var provisioningSelectedProfileIDs = Set<String>()
+    @Published var provisioningRuntimeStatus: [String:String] = [:]
+    private var lastProvisioningBundle: RelayProvisioningBundlePayload?
+    private static let bundleSelectionPrefix = "provisioning-bundle-selection-v1."
     var provisioningManaged: Bool { !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     @Published var tcpEnabled = true
     @Published var udpEnabled = true
@@ -249,6 +257,82 @@ final class Model: ObservableObject {
         schedulerMode = p.userspace ? p.schedulerMode : "auto"
         transportKey = p.transport_key ?? ""
     }
+    private func resetProvisioningBundleState() {
+        provisioningIsBundle = false
+        provisioningBundleMode = ""
+        provisioningBundleID = ""
+        provisioningProfiles = []
+        provisioningSelectedProfileIDs = []
+        provisioningRuntimeStatus = [:]
+        lastProvisioningBundle = nil
+    }
+    private func selectionKey(_ bundleID: String) -> String { Self.bundleSelectionPrefix + bundleID }
+    private func savedBundleSelection(_ bundleID: String) -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: selectionKey(bundleID)) ?? [])
+    }
+    private func saveBundleSelection(_ bundleID: String, ids: Set<String>) {
+        UserDefaults.standard.set(Array(ids).sorted(), forKey: selectionKey(bundleID))
+    }
+    private func resolvedSelection(_ bundle: RelayProvisioningBundlePayload) throws -> Set<String> {
+        let available = Set(bundle.profiles.compactMap(\.profile_id))
+        var selected = savedBundleSelection(bundle.bundle_id).intersection(available)
+        if bundle.mode == "single_select" {
+            if selected.count != 1 { selected = bundle.profiles.first?.profile_id.map { [$0] } ?? [] }
+        } else if selected.isEmpty {
+            selected = available
+        }
+        _ = try bundle.selectedProfiles(ids: selected)
+        saveBundleSelection(bundle.bundle_id, ids: selected)
+        return selected
+    }
+    private func orderedSelectedPayloads(_ bundle: RelayProvisioningBundlePayload, ids: Set<String>) throws -> [RelayProvisioningPayload] {
+        let validated = try bundle.selectedProfiles(ids: ids)
+        let selected = Set(validated.compactMap(\.profile_id))
+        return bundle.profiles.filter { $0.profile_id.map(selected.contains) ?? false }
+    }
+    private func applyProvisionedSummary(_ payload: RelayProvisioningPayload) throws {
+        let provisioned = try payload.validatedProfile()
+        relays = provisioned.relays
+        listenPort = String(provisioned.listen_port)
+        udpEnabled = provisioned.udp_enabled ?? false
+        tcpEnabled = provisioned.tcp_enabled ?? true
+        mode = provisioned.userspace ? "userspace_multipath" : "native_mptcp"
+        schedulerMode = provisioned.userspace ? provisioned.schedulerMode : "auto"
+        transportKey = provisioned.transport_key ?? ""
+    }
+    private func applyBundleSelection(_ bundle: RelayProvisioningBundlePayload, ids: Set<String>, updateResident: Bool = true) throws {
+        let selected = try orderedSelectedPayloads(bundle, ids: ids)
+        guard let first = selected.first else { throw Message("至少选择 1 个 Profile") }
+        try applyProvisionedSummary(first)
+        provisioningSelectedProfileIDs = ids
+        provisioningProfiles = bundle.profiles.compactMap { payload in
+            guard let id = payload.profile_id else { return nil }
+            return ProvisioningProfileChoice(id: id, name: payload.display_name ?? id, listenPort: payload.listen_port, relayCount: payload.relays.count, mode: payload.mode, backgroundResident: payload.background_resident ?? false)
+        }
+        let resident = selected.contains { $0.background_resident ?? false }
+        if updateResident && resident != backgroundResident { setBackgroundResident(resident) }
+    }
+    func setProvisioningProfileSelected(_ id: String, selected: Bool) {
+        guard !configurationLocked, let bundle = lastProvisioningBundle else { return }
+        do {
+            var next = provisioningSelectedProfileIDs
+            if bundle.mode == "single_select" {
+                guard selected else { return }
+                next = [id]
+            } else {
+                if selected { next.insert(id) } else { next.remove(id) }
+                guard !next.isEmpty else { throw Message("多配置并行至少保留 1 个启用 Profile") }
+            }
+            _ = try bundle.selectedProfiles(ids: next)
+            saveBundleSelection(bundle.bundle_id, ids: next)
+            try applyBundleSelection(bundle, ids: next)
+            provisioningRuntimeStatus = [:]
+            let count = next.count
+            provisioningStatus = bundle.mode == "parallel" ? "\(bundle.display_name) · 已选择 \(count) 个 Profile" : "\(bundle.display_name) · 已选择 1 个 Profile"
+            problem = nil
+        } catch { problem = error.localizedDescription }
+    }
+
     func saveProvisioningURL() {
         guard !configurationLocked else { return }
         do {
@@ -258,12 +342,14 @@ final class Model: ObservableObject {
                 provisioningStatus = "手动配置"
                 provisioningRevision = ""
                 provisioningDisplayName = ""
+                resetProvisioningBundleState()
                 append("Provisioning API 已清除；恢复手动配置")
                 return
             }
             _ = try RelayProvisioningClient.endpointURL(cleaned)
             try ProvisioningURLStore.save(cleaned)
             provisioningURL = cleaned
+            resetProvisioningBundleState()
             provisioningStatus = "API 链接已保存 · 启动时同步"
             append("Provisioning API 链接已保存到钥匙串")
             problem = nil
@@ -278,6 +364,7 @@ final class Model: ObservableObject {
             provisioningStatus = "手动配置"
             provisioningRevision = ""
             provisioningDisplayName = ""
+            resetProvisioningBundleState()
             problem = nil
             append("Provisioning API 已清除；恢复手动配置")
         } catch { problem = error.localizedDescription }
@@ -298,33 +385,58 @@ final class Model: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let payload = try await RelayProvisioningClient.fetch(endpoint: endpoint)
-                let provisioned = try payload.validatedProfile()
-                let preferenceData = try provisioned.preferenceData()
-                if provisioned.userspace { try TransportKeyStore.save(provisioned.transport_key ?? "") }
-                self.relays = provisioned.relays
-                self.listenPort = String(provisioned.listen_port)
-                self.udpEnabled = provisioned.udp_enabled ?? false
-                self.tcpEnabled = provisioned.tcp_enabled ?? true
-                self.mode = provisioned.userspace ? "userspace_multipath" : "native_mptcp"
-                self.schedulerMode = provisioned.userspace ? provisioned.schedulerMode : "auto"
-                self.transportKey = provisioned.transport_key ?? ""
-                UserDefaults.standard.set(preferenceData, forKey: "multipath-profile-v2")
-                self.provisioningRevision = payload.revision ?? ""
-                self.provisioningDisplayName = payload.display_name ?? ""
-                let title = self.provisioningDisplayName.isEmpty ? "API 配置" : self.provisioningDisplayName
-                self.provisioningStatus = payload.revision.map { "\(title) · 已同步 · \($0)" } ?? "\(title) · 已同步"
-                self.append("Provisioning 同步成功：已应用完整配置（\(payload.relays.count) 条 Relay）")
-                self.provisioningSyncing = false
-                if let resident = payload.background_resident, resident != self.backgroundResident {
-                    self.setBackgroundResident(resident)
-                }
-                self.problem = nil
-                if startAfterSync {
-                    if automatic && payload.background_resident == false {
-                        self.append("Provisioning 已关闭后台常驻，本次自动恢复取消")
-                    } else {
-                        self.launch("run", automatic: automatic)
+                let document = try await RelayProvisioningClient.fetch(endpoint: endpoint)
+                switch document {
+                case .profile(let payload):
+                    self.resetProvisioningBundleState()
+                    let provisioned = try payload.validatedProfile()
+                    let preferenceData = try provisioned.preferenceData()
+                    if provisioned.userspace { try TransportKeyStore.save(provisioned.transport_key ?? "") }
+                    try self.applyProvisionedSummary(payload)
+                    UserDefaults.standard.set(preferenceData, forKey: "multipath-profile-v2")
+                    self.provisioningRevision = payload.revision ?? ""
+                    self.provisioningDisplayName = payload.display_name ?? ""
+                    let title = self.provisioningDisplayName.isEmpty ? "API 配置" : self.provisioningDisplayName
+                    self.provisioningStatus = payload.revision.map { "\(title) · 已同步 · \($0)" } ?? "\(title) · 已同步"
+                    self.append("Provisioning 同步成功：已应用单 Profile（\(payload.relays.count) 条 Relay）")
+                    self.provisioningSyncing = false
+                    if let resident = payload.background_resident, resident != self.backgroundResident { self.setBackgroundResident(resident) }
+                    self.problem = nil
+                    if startAfterSync {
+                        if automatic && payload.background_resident == false {
+                            self.append("Provisioning 已关闭后台常驻，本次自动恢复取消")
+                        } else {
+                            self.launch("run", automatic: automatic)
+                        }
+                    }
+
+                case .bundle(let bundle):
+                    try bundle.validate()
+                    let selection = try self.resolvedSelection(bundle)
+                    let selected = try self.orderedSelectedPayloads(bundle, ids: selection)
+                    self.lastProvisioningBundle = bundle
+                    self.provisioningIsBundle = true
+                    self.provisioningBundleMode = bundle.mode
+                    self.provisioningBundleID = bundle.bundle_id
+                    self.provisioningRevision = bundle.revision
+                    self.provisioningDisplayName = bundle.display_name
+                    self.provisioningRuntimeStatus = [:]
+                    try self.applyBundleSelection(bundle, ids: selection)
+                    self.provisioningStatus = bundle.mode == "parallel"
+                        ? "\(bundle.display_name) · 已同步 · \(selection.count) 个 Profile 启用"
+                        : "\(bundle.display_name) · 已同步 · 单配置选择"
+                    self.append("Provisioning Bundle 同步成功：包含 \(bundle.profiles.count) 个 Profile，本机启用 \(selection.count) 个")
+                    self.provisioningSyncing = false
+                    self.problem = nil
+                    let resident = selected.contains { $0.background_resident ?? false }
+                    if startAfterSync {
+                        if automatic && !resident {
+                            self.append("所选 Bundle Profile 均关闭后台常驻，本次自动恢复取消")
+                        } else {
+                            let bundleData = try JSONEncoder().encode(bundle)
+                            let orderedIDs = selected.compactMap(\.profile_id)
+                            self.launch("run-bundle", automatic: automatic, stdinData: bundleData, extraArguments: orderedIDs)
+                        }
                     }
                 }
             } catch {
@@ -403,16 +515,19 @@ final class Model: ObservableObject {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch { /* Diagnostics must not terminate or delay forwarding. */ }
     }
-    func launch(_ requestedAction: String, automatic: Bool = false) {
+    func launch(_ requestedAction: String, automatic: Bool = false, stdinData: Data? = nil, extraArguments: [String] = []) {
         guard !busy && !running else {return}
         let action = requestedAction == "doctor" && userspace ? "doctor-userspace" : requestedAction
         let checking = action.hasPrefix("doctor")
+        let forwarding = action == "run" || action == "run-bundle"
         guard let engine = Bundle.main.url(forResource: "mptcp-desktop-engine", withExtension: nil) else {problem = "安装包缺少传输引擎";return}
         do {
-            var data = Data()
-            if action == "run" {
+            var data = stdinData ?? Data()
+            if action == "run" && stdinData == nil {
                 data = try JSONEncoder().encode(profile())
                 if !automatic { save(); if problem != nil { return } }
+            } else if action == "run-bundle" && stdinData == nil {
+                throw Message("Bundle 启动缺少刚同步的 Provisioning 数据")
             }
             problem = nil; busy = true; status = checking ? "检查环境中" : "连接中"
             udpConnections = 0; udpSent = 0; udpReceived = 0
@@ -421,7 +536,7 @@ final class Model: ObservableObject {
             reorderBytes = 0; reorderPeak = 0; pendingBytes = 0; retransmits = 0; udpDropped = 0
             resources = nil; lifecycle = nil; lastTransportEvent = 0
             configuredSchedulerMode = ""; effectiveSchedulerMode = ""; schedulerModeSwitches = 0; lastSchedulerModeReason = ""
-            let child = Process(); child.executableURL = engine; child.arguments = [action]
+            let child = Process(); child.executableURL = engine; child.arguments = [action] + extraArguments
             let output = Pipe(), input = Pipe(), errors = Pipe()
             child.standardOutput = output; child.standardInput = input; child.standardError = errors
             pending = Data(); reader = output.fileHandleForReading
@@ -439,7 +554,7 @@ final class Model: ObservableObject {
                     self.endForwardingActivity()
                     self.connections = 0
                     self.udpConnections = 0
-                    let recover = action == "run" && self.shouldRecover
+                    let recover = forwarding && self.shouldRecover
                     if recover {
                         self.needsRecovery = true
                         self.recoveryAttempt += 1
@@ -458,7 +573,7 @@ final class Model: ObservableObject {
             }
             process = child
             try child.run()
-            if action == "run" {
+            if forwarding {
                 if !automatic && backgroundResident { setWantsForwarding(true) }
                 needsRecovery = false
                 forwardingActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "TCP / UDP forwarding")
@@ -478,8 +593,29 @@ final class Model: ObservableObject {
         while let end = pending.firstIndex(of: 10) {
             let line = pending.prefix(upTo: end); pending.removeSubrange(...end)
             guard let event = try? JSONDecoder().decode(EngineEvent.self, from: line) else {continue}
+
+            if let profileID = event.profile_id, event.bundle_id != nil {
+                let title = event.profile_name ?? profileID
+                switch event.kind {
+                case "connecting": provisioningRuntimeStatus[profileID] = "连接中"
+                case "ready": provisioningRuntimeStatus[profileID] = "认证通过"
+                case "listening": provisioningRuntimeStatus[profileID] = "已启动"
+                case "error": provisioningRuntimeStatus[profileID] = "错误"
+                case "transport_closed": provisioningRuntimeStatus[profileID] = "已停止"
+                default: break
+                }
+                if event.kind != "stats" && event.kind != "udp_stats", let text = event.message, !text.isEmpty {
+                    append("[\(title)] \(text)")
+                }
+                continue
+            }
+
             receiveSchedulerEvent(event)
             switch event.kind {
+            case "bundle_listening":
+                running = true; busy = false
+                recoveryAttempt = 0; needsRecovery = false; problem = nil
+                status = "多配置入口已启动"
             case "listening":
                 running = true; busy = false
                 recoveryAttempt = 0; needsRecovery = false; problem = nil
@@ -489,10 +625,10 @@ final class Model: ObservableObject {
             case "ready": status = event.message ?? "环境可用"
             default: break
             }
-            if event.kind == "stats" || event.kind == "listening" {
+            if event.kind == "stats" || event.kind == "listening" || event.kind == "bundle_stats" {
                 paths = event.paths ?? 0;connections = event.connections ?? 0
                 sent = event.sent ?? 0;received = event.received ?? 0
-                tcpPaths = event.path_stats ?? []
+                if event.kind != "bundle_stats" { tcpPaths = event.path_stats ?? [] }
                 reorderBytes = event.reorder_bytes ?? 0; reorderPeak = event.reorder_peak ?? 0
                 pendingBytes = event.pending_bytes ?? 0; retransmits = event.retransmits ?? 0
             }
@@ -506,16 +642,18 @@ final class Model: ObservableObject {
                 }
                 lastTransportEvent = current.event_sequence
             }
-            if event.kind == "stats" || event.kind == "transport_closed" { keepDiagnostic(Data(line)) }
-            if event.kind == "udp_stats" {
+            if event.kind == "stats" || event.kind == "transport_closed" || event.kind == "bundle_stats" { keepDiagnostic(Data(line)) }
+            if event.kind == "udp_stats" || event.kind == "bundle_udp_stats" {
                 udpConnections = event.connections ?? 0
                 udpSent = event.sent ?? 0; udpReceived = event.received ?? 0
-                udpPaths = event.path_stats ?? []; udpHealthyPaths = event.paths ?? 0
+                if event.kind != "bundle_udp_stats" { udpPaths = event.path_stats ?? [] }
+                udpHealthyPaths = event.paths ?? 0
                 udpDropped = event.dropped ?? 0
             }
-            if event.kind != "stats", let text = event.message {append(text)}
+            if event.kind != "stats" && event.kind != "bundle_stats" && event.kind != "bundle_udp_stats", let text = event.message {append(text)}
         }
     }
+
     func stop() {
         manualStopRequested = true
         needsRecovery = false
@@ -567,7 +705,7 @@ struct DesktopView: View {
                     HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
                 }
                 Spacer()
-                Text("Multipath 0.9.8 · MPX/4 Draft 04 + Provisioning").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("Multipath 0.10.0 · MPX/4 Draft 04 + Multi-Profile Provisioning").font(.system(size: 11)).foregroundColor(.secondary)
             }
             Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2)}.pickerStyle(.segmented)
             if model.tab == 0 {
@@ -587,14 +725,37 @@ struct DesktopView: View {
                             .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
                     }
                     if model.provisioningManaged {
-                        VStack(alignment:.leading,spacing:7) {
-                            Text("远程配置已接管首页参数").font(.headline)
+                        VStack(alignment:.leading,spacing:8) {
+                            Text(model.provisioningIsBundle ? "Provisioning Bundle 已接管配置" : "远程配置已接管首页参数").font(.headline)
                             if !model.provisioningDisplayName.isEmpty { Text(model.provisioningDisplayName).font(.system(size:12,weight:.medium)) }
                             if !model.provisioningRevision.isEmpty { Text("Revision：\(model.provisioningRevision)").font(.system(size:11,design:.monospaced)).foregroundColor(.secondary) }
-                            Text("\(model.userspace ? "Userspace Multipath" : "Native MPTCP") · 127.0.0.1:\(model.listenPort) · \(model.userspace ? Model.schedulerTitle(model.schedulerMode) : "Native") · TCP \(model.tcpEnabled ? "开" : "关") · UDP \(model.udpEnabled ? "开" : "关") · \(model.relays.count) 条 Relay")
-                                .font(.system(size:11)).foregroundColor(.secondary)
-                            Text("传输模式、监听端口、TCP/UDP、Scheduler、Relay、Weighted 带宽、transport key 与后台常驻都由 Provisioning API 下发；本机不需要再手填。")
-                                .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                            if model.provisioningIsBundle {
+                                Text(model.provisioningBundleMode == "parallel" ? "多配置并行 · 可同时启用多个独立 MPX Session" : "单配置选择 · 每次启用一个 Profile")
+                                    .font(.system(size:11,weight:.medium)).foregroundColor(.secondary)
+                                ForEach(model.provisioningProfiles) { choice in
+                                    let selected = model.provisioningSelectedProfileIDs.contains(choice.id)
+                                    Button { model.setProvisioningProfileSelected(choice.id, selected: !selected) } label: {
+                                        HStack(spacing:9) {
+                                            Image(systemName: model.provisioningBundleMode == "parallel" ? (selected ? "checkmark.square.fill" : "square") : (selected ? "largecircle.fill.circle" : "circle"))
+                                                .foregroundColor(selected ? .accentColor : .secondary)
+                                            VStack(alignment:.leading,spacing:2) {
+                                                Text(choice.name).font(.system(size:12,weight:.medium)).foregroundColor(.primary)
+                                                Text("127.0.0.1:\(choice.listenPort) · \(choice.mode == "userspace_multipath" ? "MPX/4" : "Native") · \(choice.relayCount) Relays")
+                                                    .font(.system(size:10,design:.monospaced)).foregroundColor(.secondary)
+                                            }
+                                            Spacer()
+                                            if let state = model.provisioningRuntimeStatus[choice.id] { Text(state).font(.system(size:10)).foregroundColor(state == "错误" ? .red : .secondary) }
+                                        }.contentShape(Rectangle())
+                                    }.buttonStyle(.plain).disabled(model.running || model.busy || model.provisioningSyncing)
+                                }
+                                Text(model.provisioningBundleMode == "parallel" ? "Listen Port 由 Provisioning Profile 下发；并行模式在服务端保存和 Client 启动前都会检查端口唯一性。每个启用 Profile 使用独立 Session 与独立 Relay 集合。" : "Listen Port 仍由 Provisioning Profile 下发；单配置选择允许不同 Profile 共用同一端口，因为每次只启动一个。")
+                                    .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                            } else {
+                                Text("\(model.userspace ? "Userspace Multipath" : "Native MPTCP") · 127.0.0.1:\(model.listenPort) · \(model.userspace ? Model.schedulerTitle(model.schedulerMode) : "Native") · TCP \(model.tcpEnabled ? "开" : "关") · UDP \(model.udpEnabled ? "开" : "关") · \(model.relays.count) 条 Relay")
+                                    .font(.system(size:11)).foregroundColor(.secondary)
+                                Text("传输模式、监听端口、TCP/UDP、Scheduler、Relay、Weighted 带宽、transport key 与后台常驻都由 Provisioning API 下发；本机不需要再手填。")
+                                    .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                            }
                         }.padding(10).background(Color.secondary.opacity(0.06)).cornerRadius(8)
                     } else {
                         Picker("传输模式", selection: $model.mode) {

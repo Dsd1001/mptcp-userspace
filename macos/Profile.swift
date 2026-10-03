@@ -193,6 +193,11 @@ struct LifecycleMetric: Decodable {
     var events: [TransportEventMetric]?
 }
 struct EngineEvent: Decodable {
+    var profile_id: String?
+    var profile_name: String?
+    var bundle_id: String?
+    var bundle_name: String?
+    var listen_port: Int?
     var configured_scheduler_mode: String?
     var effective_scheduler_mode: String?
     var mode_switches: UInt64?
@@ -250,8 +255,9 @@ enum TransportKeyStore {
 
 // Versioned full-client provisioning response. The provisioning URL and
 // transport key are credentials; neither is stored in UserDefaults or logs.
-struct RelayProvisioningPayload: Decodable {
+struct RelayProvisioningPayload: Codable {
     var schema_version: Int
+    var profile_id: String? = nil
     var revision: String?
     var display_name: String?
     var mode: String
@@ -283,6 +289,69 @@ struct RelayProvisioningPayload: Decodable {
     }
 }
 
+
+struct RelayProvisioningBundlePayload: Codable {
+    var schema_version: Int
+    var kind: String
+    var bundle_id: String
+    var revision: String
+    var display_name: String
+    var mode: String
+    var profiles: [RelayProvisioningPayload]
+
+    func validate() throws {
+        guard schema_version == 2, kind == "bundle" else { throw ProfileError("Provisioning Bundle 仅支持 schema_version=2 / kind=bundle") }
+        guard !bundle_id.isEmpty, bundle_id.utf8.count <= 128, revision.utf8.count <= 128, display_name.utf8.count <= 128 else { throw ProfileError("Provisioning Bundle 标识、名称或 Revision 无效") }
+        guard mode == "single_select" || mode == "parallel" else { throw ProfileError("Bundle mode 仅支持 single_select 或 parallel") }
+        guard (1...32).contains(profiles.count) else { throw ProfileError("Bundle 需要包含 1–32 个 Profile") }
+        var ids = Set<String>()
+        var ports: [Int:String] = [:]
+        for payload in profiles {
+            guard payload.schema_version == 1, let id = payload.profile_id, !id.isEmpty, id.utf8.count <= 128, ids.insert(id).inserted else { throw ProfileError("Bundle Profile ID 必须非空且唯一") }
+            _ = try payload.validatedProfile()
+            if mode == "parallel" {
+                if let other = ports[payload.listen_port] { throw ProfileError("并行 Bundle 端口冲突：\(other) 与 \(payload.display_name ?? id) 都使用 \(payload.listen_port)") }
+                ports[payload.listen_port] = payload.display_name ?? id
+            }
+        }
+    }
+
+    func selectedProfiles(ids: Set<String>) throws -> [RelayProvisioningPayload] {
+        try validate()
+        var wanted = ids
+        if wanted.isEmpty {
+            if mode == "single_select", let first = profiles.first?.profile_id { wanted = [first] }
+            else { wanted = Set(profiles.compactMap(\.profile_id)) }
+        }
+        if mode == "single_select" && wanted.count != 1 { throw ProfileError("单配置选择模式必须且只能选择 1 个 Profile") }
+        guard !wanted.isEmpty else { throw ProfileError("至少选择 1 个 Profile") }
+        let available = Set(profiles.compactMap(\.profile_id))
+        guard wanted.isSubset(of: available) else { throw ProfileError("本机保存的 Profile 选择已不在当前 Bundle 中，请重新选择") }
+        var ports: [Int:String] = [:]
+        let result = profiles.filter { payload in payload.profile_id.map(wanted.contains) ?? false }
+        for payload in result {
+            let title = payload.display_name ?? payload.profile_id ?? "Profile"
+            if let other = ports[payload.listen_port] { throw ProfileError("所选 Profile 端口冲突：\(other) 与 \(title) 都使用 \(payload.listen_port)") }
+            ports[payload.listen_port] = title
+        }
+        return result
+    }
+}
+
+enum RelayProvisioningDocument {
+    case profile(RelayProvisioningPayload)
+    case bundle(RelayProvisioningBundlePayload)
+}
+
+struct ProvisioningProfileChoice: Identifiable {
+    var id: String
+    var name: String
+    var listenPort: Int
+    var relayCount: Int
+    var mode: String
+    var backgroundResident: Bool
+}
+
 private final class RelayProvisioningNoRedirectDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(
         _ session: URLSession,
@@ -294,7 +363,8 @@ private final class RelayProvisioningNoRedirectDelegate: NSObject, URLSessionTas
 }
 
 enum RelayProvisioningClient {
-    static let maximumResponseBytes = 64 * 1024
+    static let maximumProfileResponseBytes = 64 * 1024
+    static let maximumResponseBytes = 512 * 1024
 
     static func endpointURL(_ raw: String) throws -> URL {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -313,7 +383,7 @@ enum RelayProvisioningClient {
         return url
     }
 
-    static func fetch(endpoint: String) async throws -> RelayProvisioningPayload {
+    static func fetch(endpoint: String) async throws -> RelayProvisioningDocument {
         let url = try endpointURL(endpoint)
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
         request.httpMethod = "GET"
@@ -333,8 +403,21 @@ enum RelayProvisioningClient {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ProfileError("Provisioning API 返回的不是 HTTP 响应") }
         guard http.statusCode == 200 else { throw ProfileError("Provisioning API HTTP \(http.statusCode)") }
-        guard !data.isEmpty, data.count <= maximumResponseBytes else { throw ProfileError("Provisioning API 响应为空或超过 64 KiB") }
-        do { return try JSONDecoder().decode(RelayProvisioningPayload.self, from: data) }
+        guard !data.isEmpty, data.count <= maximumResponseBytes else { throw ProfileError("Provisioning API 响应为空或超过 512 KiB") }
+        struct Header: Decodable { var schema_version: Int; var kind: String? }
+        do {
+            let header = try JSONDecoder().decode(Header.self, from: data)
+            if header.schema_version == 1 {
+                guard data.count <= maximumProfileResponseBytes else { throw ProfileError("单 Profile Provisioning 响应超过 64 KiB") }
+                return .profile(try JSONDecoder().decode(RelayProvisioningPayload.self, from: data))
+            }
+            if header.schema_version == 2, header.kind == "bundle" {
+                let bundle = try JSONDecoder().decode(RelayProvisioningBundlePayload.self, from: data)
+                try bundle.validate()
+                return .bundle(bundle)
+            }
+            throw ProfileError("Provisioning API schema/kind 不受支持")
+        } catch let error as ProfileError { throw error }
         catch { throw ProfileError("Provisioning API JSON 无效：\(error.localizedDescription)") }
     }
 }

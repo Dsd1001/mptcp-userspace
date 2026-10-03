@@ -112,9 +112,10 @@ def main() -> None:
             checks.append(f'Linux {arch} {component} ELF byte-identical rebuild from source archive')
             reproduced[f'{component}-linux-{arch}']={'sha256':source.sha(rebuilt.read_bytes()),'comparison':f'entire {component} binary'}
 
+        provision_flags=f'-s -w -buildid= -X main.Version={version} -X main.SourceID={identity}'
         for artifact, arch in [('mpx-provision','amd64'),('mpx-provision-linux-arm64','arm64')]:
             rebuilt=work/artifact
-            run([go,'build','-trimpath','-buildvcs=false','-ldflags=-s -w -buildid=','-o',str(rebuilt),'.'],
+            run([go,'build','-trimpath','-buildvcs=false','-ldflags='+provision_flags,'-o',str(rebuilt),'.'],
                 cwd=frozen/'provisioning',env=dict(env,CGO_ENABLED='0',GOOS='linux',GOARCH=arch))
             if rebuilt.read_bytes()!=(out/artifact).read_bytes():
                 raise ValueError(f'Provisioning {arch} is not byte-reproducible from frozen source')

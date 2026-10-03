@@ -4,9 +4,9 @@ MPTCP Userspace is an application-layer multipath transport for macOS and Linux.
 
 It is **not kernel MPTCP** and it is **not QUIC**. The macOS and Linux Userspace clients use ordinary TCP carrier sockets; the Linux Landing terminates MPX/4 and forwards opaque backend TCP bytes.
 
-Current transport release: **v0.9.8 / MPX/4 Draft 04**. Current standalone Provisioning release: **v0.9.9**.
+Current suite release: **v0.10.0 / MPX/4 Draft 04 + multi-profile Provisioning Bundles**.
 
-- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.8
+- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.0
 - MPX/4 specification: https://github.com/Dsd1001/MPX-4
 - Chinese README: [README.zh-CN.md](README.zh-CN.md)
 
@@ -14,7 +14,7 @@ Current transport release: **v0.9.8 / MPX/4 Draft 04**. Current standalone Provi
 
 | Component | OS / architecture | Artifact |
 |---|---|---|
-| MPTCP Desk client | macOS arm64 + x86_64 | `MPTCP-Desk-0.9.8-universal.dmg` |
+| MPTCP Desk client | macOS arm64 + x86_64 | `MPTCP-Desk-0.10.0-universal.dmg` |
 | Headless client | Linux amd64 | `mptcp-client-linux-amd64` |
 | Headless client | Linux arm64 | `mptcp-client-linux-arm64` |
 | Landing | Linux amd64 | `mptcp-landing` |
@@ -42,10 +42,24 @@ MPTCP Desk / userspace engine
 
 Provisioning web console
         |
-        '-- HTTPS secret profile URL --> MPTCP Desk
+        +-- secret Profile URL -----------------> one runtime Profile
+        '-- secret Bundle URL --> Profile A/B/C --> manual selection or parallel Sessions
 ```
 
 Relay nodes only forward ordinary TCP bytes. MPX/4 authentication, Secure Records, Stream multiplexing, flow control, scheduling, retransmission and cross-Carrier reinjection are end-to-end between MPTCP Desk and Landing.
+
+## v0.10.0: Provisioning Bundles and multi-profile client
+
+v0.10.0 keeps the MPX/4 Draft 04 wire protocol and scheduler semantics unchanged while adding a control-plane/runtime orchestration layer above independent MPX Sessions. Provisioning now has two first-class objects:
+
+- **Profile** — one complete runtime configuration with its own `listen_port`, Relay set, scheduler, transport key and TCP/UDP switches;
+- **Bundle** — an ordered set of Profiles exposed through one independent secret API URL.
+
+A Bundle can operate in **single-select** mode, where the client manually chooses exactly one Profile, or **parallel** mode, where one or more selected Profiles run simultaneously as independent Sessions/listeners. Profiles are never flattened into one Relay pool. In parallel mode Provisioning refuses duplicate `listen_port` values and the client repeats the port-conflict check before starting any Profile. The listen port remains authoritative Provisioning data.
+
+MPTCP Desk can fetch Bundle schema 2, remember the local selection for that Bundle and start the selected Profile(s). The Linux client supports the same Bundle validation/runtime model through `validate-bundle` / `run-bundle`, and can fetch Profile or Bundle URLs through the stdin-only `validate-managed` / `run-managed` control command so the secret URL does not need to appear in process arguments.
+
+Existing schema-1 `/v1/config/...` URLs remain supported. Bundle endpoints use `/v1/bundle/...` and retain the same high-entropy bearer-secret model, including optional readable aliases.
 
 ## v0.9.8: MPX/4 Draft 04
 
@@ -70,18 +84,11 @@ The repository vendors the official Draft 04 `carrier-generation.json` and `erro
 
 ## Managed Provisioning
 
-v0.9.8 formally includes the self-hosted Provisioning platform. A Mac can store one secret HTTPS API URL and obtain its complete runtime profile before starting:
+Provisioning can issue either a single Profile URL or a Bundle URL. A Profile still contains the full authoritative runtime configuration: transport mode, local listen port, TCP/UDP switches, scheduler, Relay list/capacities, transport key and background-resident setting. A Bundle returns multiple complete Profiles in one schema-2 document.
 
-- Userspace MPX/4 or Native mode;
-- local listen port;
-- TCP / UDP switches;
-- Auto / Aggregate / Protect / Weighted scheduler;
-- Relay IPv4/port list;
-- Weighted download/upload capacities;
-- 32-byte MPX transport key;
-- background-resident setting.
+For `single_select`, different Profiles may reuse the same listen port because only one can be active. For `parallel`, all Profiles in the Bundle must use different listen ports. Provisioning validates this when the Bundle is saved and also blocks later Profile edits that would make an existing parallel Bundle invalid. The client validates again before startup and probes the required local sockets before spawning any Profile runtime.
 
-The repository includes the Linux `mpx-provision` service, embedded administration web console, Docker deployment example and macOS managed-mode client. The API URL and transport key are stored in Keychain on macOS; managed mode does not silently start from stale cached configuration if the authoritative API fetch fails.
+Each simultaneously active Profile gets an independent MPX Session and its own Carrier set; Bundle orchestration does not change MPX/4 data-plane bytes. Existing schema-1 Profile URLs and 0.9.9 Provisioning records remain readable after upgrade.
 
 ## Scheduler modes
 
@@ -94,13 +101,13 @@ For Weighted, `download_mbps` is required and `upload_mbps` is optional. Capacit
 
 ## Compatibility
 
-MPX/4 Draft 04 preserves the Draft 03 wire encoding, but v0.9.8 also fixes and enforces the Draft 04 Generation and Error Code semantics. The supported release pairing is therefore **0.9.8 on both MPTCP Desk and Landing**.
+v0.10.0 keeps the same MPX/4 Draft 04 wire encoding and normative state semantics as v0.9.8; the release change is primarily Provisioning/client orchestration. The published and tested suite pairing is nevertheless **0.10.0 client + 0.10.0 Landing + 0.10.0 Provisioning**. Mixed 0.9.8/0.10.0 data-plane binaries are not the release-tested configuration even though their MPX/4 wire semantics are intentionally unchanged.
 
-| MPTCP Desk | Landing | Status |
+| Client | Landing | Status |
 |---|---|---|
-| 0.9.8 | 0.9.8 | Supported — MPX/4 Draft 04 |
-| 0.9.8 | 0.9.6 / 0.9.7-derived build | Same version-4 byte format, but mixed semantic behavior is not a supported release pairing |
-| 0.9.8 | 0.9.5 or older | Incompatible — MPX/3 |
+| 0.10.0 | 0.10.0 | Supported release pairing — MPX/4 Draft 04 |
+| 0.10.0 | 0.9.8 | Same Draft 04 data-plane semantics, but not the tested 0.10.0 suite pairing |
+| 0.10.0 | 0.9.5 or older | Incompatible — MPX/3 |
 
 Existing Relay addresses, ports, scheduler choices and 64-hex-character transport keys can be reused when both endpoints are upgraded.
 
@@ -149,7 +156,7 @@ MPTCP_GO=/path/to/go ./scripts/build-provisioning.sh
 ## Documentation
 
 - [MPX/4 Draft 04 implementation profile](docs/userspace/PROTOCOL.md)
-- [v0.9.8 release notes](docs/userspace/RELEASE.zh-CN.md)
+- [v0.10.0 release notes](docs/userspace/RELEASE.zh-CN.md)
 - [Linux headless client](docs/userspace/LINUX-CLIENT.md)
 - [Managed client provisioning](docs/userspace/PROVISIONING.md)
 - [Scheduler modes](docs/userspace/SCHEDULER-MODES.md)

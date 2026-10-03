@@ -26,10 +26,10 @@
 ## 验证与 Release
 
 - [验证边界](userspace/VALIDATION.md)
-- [0.9.8 Release Notes](userspace/RELEASE.zh-CN.md)
+- [0.10.0 Release Notes](userspace/RELEASE.zh-CN.md)
 
 Release 中的 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、PROVENANCE.json 等是对应二进制的冻结验收证据，不在 main 重复维护副本。
 
-v0.9.8 Tag 对应当前正式发布源码。
+v0.10.0 Tag 对应当前正式发布源码。
 
 - [客户端集中配置 / Provisioning](userspace/PROVISIONING.md) — 网页管理完整 Mac 配置并生成独立 API URL。

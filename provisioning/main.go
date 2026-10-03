@@ -92,6 +92,60 @@ type adminInput struct {
 	Config   provisionConfig `json:"config"`
 }
 
+type bundleRecord struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Token      string    `json:"token"`
+	APIAlias   string    `json:"api_alias,omitempty"`
+	Mode       string    `json:"mode"`
+	ProfileIDs []string  `json:"profile_ids"`
+	Revision   uint64    `json:"revision"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type bundleInput struct {
+	Name       string   `json:"name"`
+	APIAlias   *string  `json:"api_alias,omitempty"`
+	Mode       string   `json:"mode"`
+	ProfileIDs []string `json:"profile_ids"`
+}
+
+type adminBundle struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Revision   uint64    `json:"revision"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	APIURL     string    `json:"api_url"`
+	APIAlias   string    `json:"api_alias,omitempty"`
+	Mode       string    `json:"mode"`
+	ProfileIDs []string  `json:"profile_ids"`
+}
+
+type bundlePublicProfile struct {
+	SchemaVersion      int     `json:"schema_version"`
+	ProfileID          string  `json:"profile_id"`
+	Revision           string  `json:"revision"`
+	DisplayName        string  `json:"display_name"`
+	Mode               string  `json:"mode"`
+	ListenPort         int     `json:"listen_port"`
+	SchedulerMode      string  `json:"scheduler_mode,omitempty"`
+	TCPEnabled         bool    `json:"tcp_enabled"`
+	UDPEnabled         bool    `json:"udp_enabled"`
+	BackgroundResident bool    `json:"background_resident"`
+	TransportKey       string  `json:"transport_key,omitempty"`
+	Relays             []relay `json:"relays"`
+}
+
+type bundlePublicPayload struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Kind          string                `json:"kind"`
+	BundleID      string                `json:"bundle_id"`
+	Revision      string                `json:"revision"`
+	DisplayName   string                `json:"display_name"`
+	Mode          string                `json:"mode"`
+	Profiles      []bundlePublicProfile `json:"profiles"`
+}
+
 type systemInfo struct {
 	Component      string `json:"component"`
 	Version        string `json:"version"`
@@ -109,6 +163,12 @@ type store struct {
 	mu      sync.RWMutex
 	path    string
 	records map[string]record
+}
+
+type bundleStore struct {
+	mu      sync.RWMutex
+	path    string
+	records map[string]bundleRecord
 }
 
 func newStore(path string) (*store, error) {
@@ -383,6 +443,287 @@ func (s *store) list() []record {
 	return out
 }
 
+func (s *store) get(id string) (record, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.records[id]
+	return r, ok
+}
+
+func newBundleStore(path string) (*bundleStore, error) {
+	s := &bundleStore{path: path, records: map[string]bundleRecord{}}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return s, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return nil, fmt.Errorf("secure bundle data file permissions: %w", err)
+	}
+	var rows []bundleRecord
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return nil, fmt.Errorf("decode bundle data file: %w", err)
+	}
+	aliases, tokens := map[string]bool{}, map[string]bool{}
+	for _, r := range rows {
+		if r.ID == "" || r.Token == "" {
+			return nil, errors.New("bundle data file contains record without id/token")
+		}
+		alias, err := normalizeAPIAlias(r.APIAlias)
+		if err != nil {
+			return nil, fmt.Errorf("bundle %s api_alias: %w", r.ID, err)
+		}
+		r.APIAlias = alias
+		if alias != "" && aliases[alias] {
+			return nil, fmt.Errorf("duplicate bundle api_alias %q", alias)
+		}
+		if tokens[r.Token] {
+			return nil, errors.New("duplicate bundle token")
+		}
+		aliases[alias] = alias != ""
+		tokens[r.Token] = true
+		s.records[r.ID] = r
+	}
+	return s, nil
+}
+
+func (s *bundleStore) saveLocked() error {
+	rows := make([]bundleRecord, 0, len(s.records))
+	for _, r := range s.records {
+		rows = append(rows, r)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Name == rows[j].Name {
+			return rows[i].ID < rows[j].ID
+		}
+		return rows[i].Name < rows[j].Name
+	})
+	data, err := json.MarshalIndent(rows, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
+}
+
+func normalizeBundleInput(name, mode string, ids []string) (string, string, []string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len([]byte(name)) > 128 {
+		return "", "", nil, errors.New("name must be 1-128 UTF-8 bytes")
+	}
+	mode = strings.TrimSpace(mode)
+	if mode != "single_select" && mode != "parallel" {
+		return "", "", nil, errors.New("mode must be single_select or parallel")
+	}
+	if len(ids) < 1 || len(ids) > 32 {
+		return "", "", nil, errors.New("profile_ids must contain 1-32 entries")
+	}
+	seen := map[string]bool{}
+	clean := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return "", "", nil, errors.New("profile_ids must be non-empty and unique")
+		}
+		seen[id] = true
+		clean = append(clean, id)
+	}
+	return name, mode, clean, nil
+}
+
+func (s *bundleStore) aliasInUseLocked(alias, exceptID string) bool {
+	if alias == "" {
+		return false
+	}
+	for id, r := range s.records {
+		if id != exceptID && r.APIAlias == alias {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *bundleStore) create(name, mode string, ids []string, rawAlias string) (bundleRecord, error) {
+	name, mode, ids, err := normalizeBundleInput(name, mode, ids)
+	if err != nil {
+		return bundleRecord{}, err
+	}
+	alias, err := normalizeAPIAlias(rawAlias)
+	if err != nil {
+		return bundleRecord{}, err
+	}
+	id, err := randomHex(8)
+	if err != nil {
+		return bundleRecord{}, err
+	}
+	token, err := randomHex(32)
+	if err != nil {
+		return bundleRecord{}, err
+	}
+	r := bundleRecord{ID: id, Name: name, Token: token, APIAlias: alias, Mode: mode, ProfileIDs: ids, Revision: 1, UpdatedAt: time.Now().UTC()}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.aliasInUseLocked(alias, "") {
+		return bundleRecord{}, errors.New("api_alias is already in use")
+	}
+	s.records[id] = r
+	if err := s.saveLocked(); err != nil {
+		delete(s.records, id)
+		return bundleRecord{}, err
+	}
+	return r, nil
+}
+
+func (s *bundleStore) update(id, name, mode string, ids []string, rawAlias *string) (bundleRecord, error) {
+	name, mode, ids, err := normalizeBundleInput(name, mode, ids)
+	if err != nil {
+		return bundleRecord{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[id]
+	if !ok {
+		return bundleRecord{}, os.ErrNotExist
+	}
+	old := r
+	target := r.APIAlias
+	if rawAlias != nil {
+		target, err = normalizeAPIAlias(*rawAlias)
+		if err != nil {
+			return bundleRecord{}, err
+		}
+	}
+	if s.aliasInUseLocked(target, id) {
+		return bundleRecord{}, errors.New("api_alias is already in use")
+	}
+	if target != r.APIAlias {
+		token, e := randomHex(32)
+		if e != nil {
+			return bundleRecord{}, e
+		}
+		r.Token = token
+		r.APIAlias = target
+	}
+	r.Name = name
+	r.Mode = mode
+	r.ProfileIDs = ids
+	r.Revision++
+	r.UpdatedAt = time.Now().UTC()
+	s.records[id] = r
+	if err := s.saveLocked(); err != nil {
+		s.records[id] = old
+		return bundleRecord{}, err
+	}
+	return r, nil
+}
+
+func (s *bundleStore) rotate(id string) (bundleRecord, error) {
+	token, err := randomHex(32)
+	if err != nil {
+		return bundleRecord{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[id]
+	if !ok {
+		return bundleRecord{}, os.ErrNotExist
+	}
+	old := r
+	r.Token = token
+	r.Revision++
+	r.UpdatedAt = time.Now().UTC()
+	s.records[id] = r
+	if err := s.saveLocked(); err != nil {
+		s.records[id] = old
+		return bundleRecord{}, err
+	}
+	return r, nil
+}
+func (s *bundleStore) delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[id]
+	if !ok {
+		return os.ErrNotExist
+	}
+	delete(s.records, id)
+	if err := s.saveLocked(); err != nil {
+		s.records[id] = r
+		return err
+	}
+	return nil
+}
+func (s *bundleStore) get(id string) (bundleRecord, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.records[id]
+	return r, ok
+}
+func (s *bundleStore) list() []bundleRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]bundleRecord, 0, len(s.records))
+	for _, r := range s.records {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name == out[j].Name {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+func (s *bundleStore) byAccess(alias, token string) (bundleRecord, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.records {
+		if r.APIAlias != alias {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(r.Token), []byte(token)) == 1 {
+			return r, true
+		}
+	}
+	return bundleRecord{}, false
+}
+
+func validateBundleProfiles(mode string, ids []string, profiles *store, replacementID string, replacement *provisionConfig) error {
+	ports := map[int]string{}
+	for _, id := range ids {
+		r, ok := profiles.get(id)
+		if !ok {
+			return fmt.Errorf("profile %s does not exist", id)
+		}
+		cfg := r.Config
+		if replacement != nil && id == replacementID {
+			cfg = *replacement
+		}
+		if mode == "parallel" {
+			if other, exists := ports[cfg.ListenPort]; exists {
+				return fmt.Errorf("parallel bundle listen_port conflict: profiles %s and %s both use %d", other, id, cfg.ListenPort)
+			}
+			ports[cfg.ListenPort] = id
+		}
+	}
+	return nil
+}
+
 func validMbps(v *float64) bool {
 	if v == nil {
 		return true
@@ -462,6 +803,8 @@ func validateInput(name string, cfg provisionConfig) error {
 
 type app struct {
 	store        *store
+	bundles      *bundleStore
+	mutationMu   sync.Mutex
 	adminUser    string
 	authMu       sync.RWMutex
 	adminPass    string
@@ -597,6 +940,59 @@ func (a *app) adminView(r *http.Request, rec record) adminRecord {
 		path = "/v1/config/" + rec.APIAlias + "/" + rec.Token
 	}
 	return adminRecord{ID: rec.ID, Name: rec.Name, Revision: rec.Revision, UpdatedAt: rec.UpdatedAt, APIURL: a.baseURL(r) + path, APIAlias: rec.APIAlias, Config: rec.Config}
+}
+
+func (a *app) adminBundleView(r *http.Request, rec bundleRecord) adminBundle {
+	path := "/v1/bundle/" + rec.Token
+	if rec.APIAlias != "" {
+		path = "/v1/bundle/" + rec.APIAlias + "/" + rec.Token
+	}
+	return adminBundle{ID: rec.ID, Name: rec.Name, Revision: rec.Revision, UpdatedAt: rec.UpdatedAt, APIURL: a.baseURL(r) + path, APIAlias: rec.APIAlias, Mode: rec.Mode, ProfileIDs: append([]string(nil), rec.ProfileIDs...)}
+}
+
+func profilePublic(rec record) bundlePublicProfile {
+	return bundlePublicProfile{SchemaVersion: 1, ProfileID: rec.ID, Revision: fmt.Sprintf("r%d-%s", rec.Revision, rec.UpdatedAt.Format("20060102T150405Z")), DisplayName: rec.Name, Mode: rec.Config.Mode, ListenPort: rec.Config.ListenPort, SchedulerMode: rec.Config.SchedulerMode, TCPEnabled: rec.Config.TCPEnabled, UDPEnabled: rec.Config.UDPEnabled, BackgroundResident: rec.Config.BackgroundResident, TransportKey: rec.Config.TransportKey, Relays: rec.Config.Relays}
+}
+
+func (a *app) publicBundle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/bundle/"), "/")
+	parts := strings.Split(rest, "/")
+	alias, token := "", ""
+	switch len(parts) {
+	case 1:
+		token = parts[0]
+	case 2:
+		alias, token = strings.ToLower(parts[0]), parts[1]
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if len(token) != 64 {
+		http.NotFound(w, r)
+		return
+	}
+	rec, ok := a.bundles.byAccess(alias, token)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := validateBundleProfiles(rec.Mode, rec.ProfileIDs, a.store, "", nil); err != nil {
+		http.Error(w, "bundle configuration invalid", http.StatusConflict)
+		return
+	}
+	profiles := make([]bundlePublicProfile, 0, len(rec.ProfileIDs))
+	for _, id := range rec.ProfileIDs {
+		p, _ := a.store.get(id)
+		profiles = append(profiles, profilePublic(p))
+	}
+	payload := bundlePublicPayload{SchemaVersion: 2, Kind: "bundle", BundleID: rec.ID, Revision: fmt.Sprintf("r%d-%s", rec.Revision, rec.UpdatedAt.Format("20060102T150405Z")), DisplayName: rec.Name, Mode: rec.Mode, Profiles: profiles}
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -740,6 +1136,12 @@ func (a *app) adminProfileByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
+		a.mutationMu.Lock()
+		defer a.mutationMu.Unlock()
+		if err := a.validateProfileMutation(id, normalizeConfig(in.Config)); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		rec, err := a.store.updateWithAlias(id, in.Name, in.Config, in.APIAlias)
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
@@ -751,6 +1153,12 @@ func (a *app) adminProfileByID(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, a.adminView(r, rec))
 	case http.MethodDelete:
+		a.mutationMu.Lock()
+		defer a.mutationMu.Unlock()
+		if name, used := a.profileReferenced(id); used {
+			http.Error(w, "profile is used by bundle "+name, http.StatusConflict)
+			return
+		}
 		if err := a.store.delete(id); errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
@@ -762,6 +1170,145 @@ func (a *app) adminProfileByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
+}
+
+func (a *app) adminBundles(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		rows := a.bundles.list()
+		out := make([]adminBundle, 0, len(rows))
+		for _, rec := range rows {
+			out = append(out, a.adminBundleView(r, rec))
+		}
+		writeJSON(w, http.StatusOK, out)
+	case http.MethodPost:
+		var in bundleInput
+		if err := decodeJSON(r, &in); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		alias := ""
+		if in.APIAlias != nil {
+			alias = *in.APIAlias
+		}
+		a.mutationMu.Lock()
+		defer a.mutationMu.Unlock()
+		if err := validateBundleProfiles(in.Mode, in.ProfileIDs, a.store, "", nil); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		rec, err := a.bundles.create(in.Name, in.Mode, in.ProfileIDs, alias)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		writeJSON(w, http.StatusCreated, a.adminBundleView(r, rec))
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
+}
+
+func (a *app) adminBundleByID(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/admin/api/bundles/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	id := parts[0]
+	if len(parts) == 2 && parts[1] == "rotate" {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		rec, err := a.bundles.rotate(id)
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		writeJSON(w, 200, a.adminBundleView(r, rec))
+		return
+	}
+	if len(parts) != 1 {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		var in bundleInput
+		if err := decodeJSON(r, &in); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		a.mutationMu.Lock()
+		defer a.mutationMu.Unlock()
+		if err := validateBundleProfiles(in.Mode, in.ProfileIDs, a.store, "", nil); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		rec, err := a.bundles.update(id, in.Name, in.Mode, in.ProfileIDs, in.APIAlias)
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		writeJSON(w, 200, a.adminBundleView(r, rec))
+	case http.MethodDelete:
+		if err := a.bundles.delete(id); errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		} else if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
+}
+
+func (a *app) validateProfileMutation(id string, cfg provisionConfig) error {
+	if a.bundles == nil {
+		return nil
+	}
+	for _, b := range a.bundles.list() {
+		if b.Mode != "parallel" {
+			continue
+		}
+		contains := false
+		for _, pid := range b.ProfileIDs {
+			if pid == id {
+				contains = true
+				break
+			}
+		}
+		if contains {
+			if err := validateBundleProfiles(b.Mode, b.ProfileIDs, a.store, id, &cfg); err != nil {
+				return fmt.Errorf("bundle %q: %w", b.Name, err)
+			}
+		}
+	}
+	return nil
+}
+func (a *app) profileReferenced(id string) (string, bool) {
+	if a.bundles == nil {
+		return "", false
+	}
+	for _, b := range a.bundles.list() {
+		for _, pid := range b.ProfileIDs {
+			if pid == id {
+				return b.Name, true
+			}
+		}
+	}
+	return "", false
 }
 
 func (a *app) adminSystem(w http.ResponseWriter, r *http.Request) {
@@ -809,12 +1356,15 @@ func (a *app) handler() http.Handler {
 		_, _ = io.WriteString(w, "ok\n")
 	})
 	mux.HandleFunc("/v1/config/", a.publicConfig)
+	mux.HandleFunc("/v1/bundle/", a.publicBundle)
 	mux.HandleFunc("/admin", a.requireAdmin(a.adminPage))
 	mux.HandleFunc("/admin/", a.requireAdmin(a.adminPage))
 	mux.HandleFunc("/admin/api/system", a.requireAdmin(a.adminSystem))
 	mux.HandleFunc("/admin/api/password", a.requireAdmin(a.adminPassword))
 	mux.HandleFunc("/admin/api/profiles", a.requireAdmin(a.adminProfiles))
 	mux.HandleFunc("/admin/api/profiles/", a.requireAdmin(a.adminProfileByID))
+	mux.HandleFunc("/admin/api/bundles", a.requireAdmin(a.adminBundles))
+	mux.HandleFunc("/admin/api/bundles/", a.requireAdmin(a.adminBundleByID))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -866,7 +1416,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	a := &app{store: st, adminUser: user, adminPass: pass, passwordFile: passwordFile, publicBase: publicBase}
+	bundlePath := getenv("MPX_PROVISION_BUNDLES", filepath.Join(filepath.Dir(dataPath), "bundles.json"))
+	bs, err := newBundleStore(bundlePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, b := range bs.list() {
+		if err := validateBundleProfiles(b.Mode, b.ProfileIDs, st, "", nil); err != nil {
+			log.Fatalf("bundle %s invalid: %v", b.ID, err)
+		}
+	}
+	a := &app{store: st, bundles: bs, adminUser: user, adminPass: pass, passwordFile: passwordFile, publicBase: publicBase}
 	srv := &http.Server{Addr: listen, Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	log.Printf("MPX Provisioning %s (%s) listening on %s (admin /admin)", Version, SourceID, listen)
 	log.Fatal(srv.ListenAndServe())

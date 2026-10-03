@@ -1,124 +1,182 @@
-# MPX Provisioning 0.9.9
+# MPX Provisioning 0.10.0
 
-MPTCP Desk supports a managed mode in which the Mac stores only one secret Provisioning API URL. Every time forwarding starts (including background recovery), the client fetches and validates the complete current configuration before starting the transport engine.
+MPX Provisioning is the configuration/control plane for MPTCP Userspace. It is not a data proxy and it does not change MPX/4 Draft 04 data-plane bytes.
 
-The managed configuration covers the settings that would otherwise be entered on the main client screen:
+0.10.0 keeps the existing Profile API and adds **Client Bundles** so one secret URL can deliver multiple complete runtime configurations.
 
-- transport mode (`userspace_multipath` or `native_mptcp`);
-- local listen port;
+## Objects
+
+### Profile
+
+A Profile is still one complete authoritative client runtime configuration:
+
+- transport mode (`userspace_multipath` or `native_mptcp` on macOS);
+- `listen_port`;
 - TCP / UDP switches;
-- scheduler mode;
+- Auto / Aggregate / Protect / Weighted scheduler;
 - 2–8 Relay IPv4/port entries;
 - Weighted download/upload capacities;
 - MPX transport key;
 - background-resident setting.
 
-The repository includes a small self-hosted Provisioning service with an embedded administration web page under `provisioning/`.
+Each Profile owns its own Relay set, scheduler and transport key. `listen_port` remains Provisioning-controlled; the client does not invent or override it.
+
+### Bundle
+
+A Bundle is an ordered list of 1–32 Profiles plus a runtime policy:
+
+- `single_select` — the client must select exactly one Profile. Different Profiles may reuse the same `listen_port` because they are not active together.
+- `parallel` — the client may activate one or more Profiles simultaneously. Every Profile in the Bundle must have a unique `listen_port`.
+
+Parallel Profiles are **independent runtimes**. Each active Profile gets its own local listener, MPX Session, Carrier set, scheduler and transport key. Bundle orchestration never flattens different Profile Relay lists into one Session.
+
+Provisioning validates parallel port uniqueness when a Bundle is saved. A later Profile edit that would make an existing parallel Bundle invalid is rejected. A Profile referenced by any Bundle cannot be deleted until it is removed from that Bundle.
+
+## API schemas
+
+Existing Profile URLs stay compatible:
+
+```text
+https://config.example.com/v1/config/<64-hex-secret>
+https://config.example.com/v1/config/hkbn-5line/<64-hex-secret>
+```
+
+Profile response schema remains `schema_version: 1`.
+
+Bundle URLs are independent credentials:
+
+```text
+https://config.example.com/v1/bundle/<64-hex-secret>
+https://config.example.com/v1/bundle/hk-main/<64-hex-secret>
+```
+
+A Bundle response uses schema 2:
+
+```json
+{
+  "schema_version": 2,
+  "kind": "bundle",
+  "bundle_id": "0123456789abcdef",
+  "revision": "r3-20261003T120000Z",
+  "display_name": "Hong Kong Lines",
+  "mode": "parallel",
+  "profiles": [
+    {
+      "schema_version": 1,
+      "profile_id": "aaaaaaaaaaaaaaaa",
+      "revision": "r4-20261003T115500Z",
+      "display_name": "HKBN",
+      "mode": "userspace_multipath",
+      "listen_port": 1081,
+      "scheduler_mode": "weighted",
+      "tcp_enabled": true,
+      "udp_enabled": true,
+      "background_resident": true,
+      "transport_key": "<64-hex>",
+      "relays": [
+        {"host":"43.250.173.88","port":8849,"download_mbps":94,"upload_mbps":20},
+        {"host":"43.250.173.83","port":8849,"download_mbps":94,"upload_mbps":20}
+      ]
+    }
+  ]
+}
+```
+
+The Bundle document embeds complete Profiles so one authoritative fetch is enough to validate and start the selected set.
+
+## Client behavior
+
+### macOS
+
+MPTCP Desk stores the secret Provisioning URL in Keychain. On sync/start it detects schema 1 vs schema 2.
+
+For a Bundle, the UI shows every Profile with its Provisioning-delivered local port and Relay count. The local selection is remembered by non-secret `bundle_id`:
+
+- `single_select`: exactly one Profile is selected;
+- `parallel`: one or more Profiles may be selected.
+
+Before a parallel start, the client validates the selected ports again and probes all required TCP/UDP loopback sockets before launching any Profile runtime. If a required port is already occupied, the group does not start. After preflight, the engine starts one independent child runtime per selected Profile and reports aggregate plus per-Profile status.
+
+The authoritative Bundle, including transport keys, is passed ephemerally to the engine. Bundle transport keys are not written to ordinary preferences. Managed mode still refuses to start from stale cached configuration when the authoritative fetch fails.
+
+### Linux
+
+The headless Linux client accepts Bundle JSON with:
+
+```sh
+mptcp-client-linux-amd64 validate-bundle [profile-id ...] < bundle.json
+mptcp-client-linux-amd64 run-bundle [profile-id ...] < bundle.json
+```
+
+It can also fetch a secret Provisioning URL without placing that URL in the process argument list:
+
+```sh
+printf '%s\n' '{"url":"https://config.example.com/v1/bundle/hk-main/<secret>","profile_ids":["aaaaaaaaaaaaaaaa","bbbbbbbbbbbbbbbb"]}' \
+  | mptcp-client-linux-amd64 validate-managed
+
+printf '%s\n' '{"url":"https://config.example.com/v1/bundle/hk-main/<secret>","profile_ids":["aaaaaaaaaaaaaaaa","bbbbbbbbbbbbbbbb"]}' \
+  | mptcp-client-linux-amd64 run-managed
+```
+
+For `single_select`, `profile_ids` must resolve to one Profile. For `parallel`, an omitted `profile_ids` selects all Profiles; an explicit subset is also allowed. Linux still supports Userspace MPX/4 only; Native MPTCP is macOS-only.
+
+Remote managed URLs require HTTPS. HTTP is accepted only for loopback development. Redirects are rejected. Bundle responses are bounded to 512 KiB; legacy single-Profile responses remain bounded to 64 KiB.
+
+## Administration UI
+
+The 0.10.0 administration console has two lists:
+
+- **配置中心** — Profile editor with Basic / Relay / Scheduler / Issuance pages;
+- **Client Bundles** — Bundle editor with Profile membership, `single_select` / `parallel` mode, live port-plan diagnostics and independent Bundle API URL controls.
+
+Profile Relay rows support add/copy/reorder/delete. Copy duplicates IP/port/capacity and focuses the IPv4 last octet for convenient same-/24 editing.
+
+Profile and Bundle URLs both support:
+
+- automatic 256-bit random secret;
+- optional readable alias plus the random secret;
+- manual secret rotation;
+- automatic secret rotation when URL mode/alias changes.
+
+Transport keys and API URLs are masked by default in the web UI.
+
+## Administrator password
+
+The System page can change the HTTP Basic Auth administrator password. The request requires the current password. New passwords must be 8–512 characters and cannot contain NUL/newline characters.
+
+Changed passwords are atomically written to `MPX_PROVISION_ADMIN_PASSWORD_FILE` with mode `0600`. If the path is not set, it defaults to `admin-password` beside `MPX_PROVISION_DATA`. The persisted value takes precedence over bootstrap `MPX_PROVISION_ADMIN_PASSWORD` after restart, so the service can remain non-root.
 
 ## Quick start
-
-Build and run the service behind HTTPS:
 
 ```sh
 cd provisioning
 go build -o mpx-provision .
 
-export MPX_PROVISION_ADMIN_PASSWORD='use-a-random-password-at-least-24-characters'
+export MPX_PROVISION_ADMIN_PASSWORD='choose-at-least-8-characters'
 export MPX_PROVISION_LISTEN='127.0.0.1:8088'
 export MPX_PROVISION_PUBLIC_BASE_URL='https://config.example.com'
 export MPX_PROVISION_DATA='/var/lib/mpx-provision/profiles.json'
-# optional; defaults to a sibling admin-password file next to MPX_PROVISION_DATA
+# Optional; defaults beside MPX_PROVISION_DATA:
+export MPX_PROVISION_BUNDLES='/var/lib/mpx-provision/bundles.json'
 export MPX_PROVISION_ADMIN_PASSWORD_FILE='/var/lib/mpx-provision/admin-password'
 ./mpx-provision
 ```
 
-The service intentionally listens on loopback by default. Put Caddy, nginx or another TLS reverse proxy in front of it for remote clients. MPTCP Desk rejects clear-text remote endpoints; HTTP is accepted only for localhost development.
+Put the service behind a maintained HTTPS reverse proxy. The service intentionally listens on loopback by default.
 
-A Docker example is also included:
+## Upgrade compatibility
 
-```sh
-cd provisioning
-cp docker-compose.example.yml docker-compose.yml
-# edit the admin password and public HTTPS base URL
-docker compose up -d --build
-```
+0.10.0 loads existing 0.9.8/0.9.9 Profile records without migration. Existing `/v1/config/<token>` and custom-alias Profile URLs remain valid until explicitly changed or rotated. `bundles.json` is created only when Bundles are saved.
 
-The example publishes the container only on host `127.0.0.1:8088`; expose it remotely through your HTTPS reverse proxy, not by changing that binding to a public interface without equivalent protection.
-
-Open:
-
-```text
-https://config.example.com/admin
-```
-
-The browser will ask for HTTP Basic authentication. The default username is `admin`; it can be changed with `MPX_PROVISION_ADMIN_USER`. `MPX_PROVISION_ADMIN_PASSWORD` is the bootstrap password. If a persisted admin password file exists, it takes precedence on restart.
-
-## Administration page
-
-The 0.9.9 administration UI uses a profile sidebar with second-level pages for Basic settings, Relay paths, Scheduling/transport, and Issuance/security. Each profile owns its own Relay list. Relay rows can be added, copied, reordered or removed; Copy duplicates address/port/capacity and focuses the IPv4 last octet for fast same-/24 editing.
-
-The **System** page can change the administrator Basic Auth password. The user must enter the current password plus a new password of at least 8 characters. A successful change immediately invalidates the old password and atomically writes the new password to `MPX_PROVISION_ADMIN_PASSWORD_FILE` with mode `0600`. The service does not need root privileges for this: by default the password file is stored next to `MPX_PROVISION_DATA`, which should already be a private service-writable `0700` directory. The persisted password takes precedence over the bootstrap environment password after restart.
-
-A newly created profile receives a 32-byte random URL secret. Automatic URLs keep the existing form:
-
-```text
-https://config.example.com/v1/config/4c...64-hex-characters...
-```
-
-The secret is the client credential. 0.9.9 also supports an optional unique custom alias while retaining the random secret, for example `https://config.example.com/v1/config/hkbn-5line/<64-hex-secret>`. Changing URL mode or alias automatically rotates the secret so an old URL cannot become valid again later. Manual secret rotation preserves the alias but immediately invalidates the previous URL. Existing 0.9.8 token-only records remain valid after upgrade until explicitly changed.
-
-## Client API response
-
-A current Userspace response looks like:
-
-```json
-{
-  "schema_version": 1,
-  "revision": "r4-20261003T012345Z",
-  "display_name": "HKBN 5-Line",
-  "mode": "userspace_multipath",
-  "listen_port": 1081,
-  "scheduler_mode": "weighted",
-  "tcp_enabled": true,
-  "udp_enabled": true,
-  "background_resident": true,
-  "transport_key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  "relays": [
-    {"host":"43.250.173.88","port":8849,"download_mbps":94,"upload_mbps":20},
-    {"host":"43.250.173.83","port":8849,"download_mbps":94}
-  ]
-}
-```
-
-For Native mode, `scheduler_mode` and `transport_key` are omitted.
-
-## Mac behavior
-
-Paste the generated URL into **配置来源 → Provisioning API URL** and save it. In managed mode the local configuration editors are hidden; the view shows only a summary of the last successfully fetched profile.
-
-Pressing **启动** performs this sequence:
-
-1. read the secret API URL from Keychain;
-2. GET the current profile using an ephemeral URL session;
-3. reject redirects, non-HTTPS remote URLs, non-200 responses, responses larger than 64 KiB and invalid profile data;
-4. validate all normal MPTCP Desk profile constraints;
-5. write a Userspace transport key to the existing Keychain item when required;
-6. store only the key-free ordinary profile in `UserDefaults`;
-7. apply the optional background-resident setting;
-8. start the engine.
-
-If the authoritative API fetch fails, managed mode **does not start using stale cached configuration**. Existing cached values are left untouched only for diagnostics and for switching back to manual mode.
+A 0.9.9 admin password file, if already created, remains authoritative after the upgrade.
 
 ## Security properties
 
-- Production client endpoints require HTTPS.
-- The client does not follow HTTP redirects for profile fetches.
-- The high-entropy API URL is stored in Keychain and is not included in engine stdin, ordinary preferences or diagnostic logs.
-- The MPX transport key remains in the existing transport Keychain item and is stripped from normal profile persistence.
-- Public API responses include `Cache-Control: no-store` and `Pragma: no-cache`.
-- The administration page and administration JSON endpoints require Basic authentication. Password changes require both a currently authenticated request and the current password in the request body.
-- The persisted administrator password file is atomically replaced with mode `0600`; the Profile data directory remains `0700`. Password values are not returned by APIs or written to normal application logs.
-- The service data file contains API tokens and transport keys and is written with mode `0600`; its directory is created with mode `0700`.
-- The API token lives in the URL path. Configure the TLS reverse proxy to suppress or redact access logs for `/v1/config/` so bearer tokens are not retained in ordinary request logs.
-- Keep the service itself on loopback and terminate public TLS at a maintained reverse proxy unless you deliberately provide equivalent transport security another way.
-- The client credential is in the `/v1/config/<token>` path. Configure the reverse proxy access log to redact or omit that path so tokens are not written to ordinary web logs.
+- Public client credentials are high-entropy bearer secrets in the URL path.
+- Configure reverse-proxy access logs to redact/omit both `/v1/config/` and `/v1/bundle/` paths.
+- Public API responses use `Cache-Control: no-store`; clients do not follow redirects.
+- Production remote client URLs require HTTPS.
+- Profile data and Bundle data are written with mode `0600` under a `0700` private directory.
+- Administrator password persistence uses an atomic `0600` file and is never returned by APIs or written to normal application logs.
+- Bundle selection stored locally by the Mac contains only non-secret Profile IDs; the secret Provisioning URL remains in Keychain.
+- Transport keys in a fetched Bundle are used in memory/engine stdin and are not written to ordinary preferences.

@@ -40,12 +40,22 @@ import Foundation
         precondition(decodedEvent.resources?.rejections.isEmpty == true)
         precondition(decodedEvent.lifecycle?.closed == false)
         model.resources = decodedEvent.resources; model.lifecycle = decodedEvent.lifecycle
-        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false)] {
+        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("userspace-bundle","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false)] {
             model.mode=mode;model.tab=tab;model.problem=nil;model.running=false;model.busy=false
             model.provisioningURL=api ? "https://config.example.test/v1/profile/synthetic-secret-token" : ""
             model.provisioningStatus=api ? "Synthetic Profile · 已同步 · 1" : "手动配置"
             model.provisioningRevision=api ? "1" : ""
             model.provisioningDisplayName=api ? "Synthetic Profile" : ""
+            model.provisioningIsBundle = name == "userspace-bundle"
+            model.provisioningBundleMode = name == "userspace-bundle" ? "parallel" : ""
+            model.provisioningBundleID = name == "userspace-bundle" ? "synthetic-bundle" : ""
+            model.provisioningProfiles = name == "userspace-bundle" ? [
+                ProvisioningProfileChoice(id:"a",name:"HKBN",listenPort:1081,relayCount:5,mode:"userspace_multipath",backgroundResident:true),
+                ProvisioningProfileChoice(id:"b",name:"HKT",listenPort:1082,relayCount:8,mode:"userspace_multipath",backgroundResident:true)
+            ] : []
+            model.provisioningSelectedProfileIDs = name == "userspace-bundle" ? ["a","b"] : []
+            model.provisioningRuntimeStatus = name == "userspace-bundle" ? ["a":"已启动","b":"已启动"] : [:]
+            if name == "userspace-bundle" { model.provisioningDisplayName="Synthetic Bundle"; model.provisioningRevision="r3" }
             let host=NSHostingView(rootView:DesktopView().environment(\.colorScheme,.light))
             let frame=NSRect(x:0,y:0,width:710,height:850)
             let window=NSWindow(contentRect:frame,styleMask:.borderless,backing:.buffered,defer:false)
@@ -59,6 +69,6 @@ import Foundation
             print("Rendered \(name): \(bitmap.pixelsWide)x\(bitmap.pixelsHigh), \(png.count) bytes")
             window.contentView=nil
         }
-        print("PASS: legacy profile stays Native; schema 3 validation; weak-key and both-disabled rejection; four offscreen SwiftUI views including managed Provisioning mode")
+        print("PASS: legacy profile stays Native; schema 3 validation; weak-key and both-disabled rejection; five offscreen SwiftUI views including single-Profile and multi-Profile managed Provisioning modes")
     }
 }

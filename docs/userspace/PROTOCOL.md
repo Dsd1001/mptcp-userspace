@@ -1,8 +1,8 @@
 # MPX/4 Draft 04 implementation profile
 
-MPTCP Userspace 0.9.8 implements MPX/4 Draft 04 over ordinary TCP Carriers. The normative protocol source used for this release is `Dsd1001/MPX-4` commit `5854899b63676eb8bb43048678ef99b4589170c3`.
+MPTCP Userspace 0.10.0 implements MPX/4 Draft 04 over ordinary TCP Carriers. The normative protocol source used for this release is `Dsd1001/MPX-4` commit `5854899b63676eb8bb43048678ef99b4589170c3`.
 
-Provisioning is a separate control/configuration plane and does not alter MPX/4 data-plane bytes.
+Provisioning is a separate control/configuration plane and does not alter MPX/4 data-plane bytes. 0.10.0 may run several Provisioning Profiles concurrently, but each Profile still owns an independent MPX Session and Carrier set.
 
 ## Binding
 
@@ -49,7 +49,7 @@ Draft 04 acknowledgement handling distinguishes:
 
 ## Error scope and closure
 
-v0.9.8 implements the Draft 04 failure scopes:
+v0.10.0 retains the Draft 04 failure scopes introduced in the 0.9.8 implementation:
 
 - Stream-opening `STREAM_LIMIT`, stream-specific `RESOURCE_LIMIT` and the explicit pre-open `STREAM_STATE_ERROR` rule use `STREAM_OPEN_REJECT`;
 - `FRAME_ENCODING_ERROR` is Carrier-scoped and uses `CARRIER_CLOSE` when safely reportable;
@@ -93,7 +93,7 @@ UDP remains the independent MPU/1 authenticated datagram plane. It has its own p
 
 ## Interoperability verification
 
-The 0.9.8 source tree verifies:
+The 0.10.0 source tree verifies:
 
 - canonical MPX VarInt vectors;
 - Frame encoding vectors;

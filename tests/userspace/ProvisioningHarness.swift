@@ -18,7 +18,8 @@ import Foundation
         expectFailure("userinfo endpoint") { _ = try RelayProvisioningClient.endpointURL("https://user:pass@example.com/v1/config/token") }
         expectFailure("fragment endpoint") { _ = try RelayProvisioningClient.endpointURL("https://example.com/v1/config/token#secret") }
 
-        let payload = try await RelayProvisioningClient.fetch(endpoint: endpoint)
+        let document = try await RelayProvisioningClient.fetch(endpoint: endpoint)
+        guard case .profile(let payload) = document else { throw ProfileError("expected synthetic schema-1 Profile") }
         let p = try payload.validatedProfile()
         precondition(payload.schema_version == 1)
         precondition(payload.display_name == "Synthetic")
@@ -40,6 +41,22 @@ import Foundation
         expectFailure("missing key") { _ = try missingKey.validatedProfile() }
         let native = RelayProvisioningPayload(schema_version:1, revision:nil, display_name:nil, mode:"native_mptcp", listen_port:1081, scheduler_mode:nil, tcp_enabled:true, udp_enabled:true, background_resident:false, transport_key:nil, relays:p.relays)
         let np = try native.validatedProfile(); precondition(!np.userspace && np.transport_key == nil)
-        print("PASS: full Provisioning HTTPS policy, full-profile fetch, Userspace/Native validation and key-free preferences")
+
+        var a = payload; a.profile_id = "profile-a"; a.display_name = "A"; a.listen_port = 1081
+        var b = payload; b.profile_id = "profile-b"; b.display_name = "B"; b.listen_port = 1082
+        let bundle = RelayProvisioningBundlePayload(schema_version:2, kind:"bundle", bundle_id:"bundle-1", revision:"r1", display_name:"Main", mode:"parallel", profiles:[a,b])
+        try bundle.validate()
+        let all = try bundle.selectedProfiles(ids: [])
+        precondition(all.count == 2)
+        let one = try bundle.selectedProfiles(ids: ["profile-b"])
+        precondition(one.count == 1 && one[0].listen_port == 1082)
+        var conflictB = b; conflictB.listen_port = 1081
+        let conflict = RelayProvisioningBundlePayload(schema_version:2, kind:"bundle", bundle_id:"bundle-2", revision:"r1", display_name:"Conflict", mode:"parallel", profiles:[a,conflictB])
+        expectFailure("parallel duplicate listen port") { try conflict.validate() }
+        let chooseOne = RelayProvisioningBundlePayload(schema_version:2, kind:"bundle", bundle_id:"bundle-3", revision:"r1", display_name:"Choose", mode:"single_select", profiles:[a,conflictB])
+        try chooseOne.validate()
+        expectFailure("single select multiple active") { _ = try chooseOne.selectedProfiles(ids:["profile-a","profile-b"]) }
+        let chosen = try chooseOne.selectedProfiles(ids:["profile-b"]); precondition(chosen.count == 1)
+        print("PASS: Provisioning HTTPS policy, schema-1 Profile fetch, schema-2 Bundle selection/port rules, Userspace/Native validation and key-free preferences")
     }
 }

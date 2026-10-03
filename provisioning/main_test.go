@@ -344,7 +344,7 @@ func TestAdminUIContainsSecondLevelNavigationAndRelayCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(data)
-	for _, want := range []string{"基础设置", "Relay 路径", "调度与传输", "发放与安全", "duplicateRelay", "自定义标识 + 随机 Secret", "轮换 Secret", "系统", "修改管理员密码", "currentAdminPassword", "changeAdminPassword"} {
+	for _, want := range []string{"基础设置", "Relay 路径", "调度与传输", "发放与安全", "duplicateRelay", "自定义标识 + 随机 Secret", "轮换 Secret", "系统", "修改管理员密码", "currentAdminPassword", "changeAdminPassword", "Client Bundles", "多配置并行", "单配置选择", "bundleConflict", "Bundle API URL"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin UI missing %q", want)
 		}
@@ -474,5 +474,166 @@ func TestAdminPasswordValidation(t *testing.T) {
 	}
 	if err := validAdminPassword("valid123"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func newBundleTestApp(t *testing.T) (*app, *httptest.Server) {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := newStore(filepath.Join(dir, "profiles.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bs, err := newBundleStore(filepath.Join(dir, "bundles.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{store: st, bundles: bs, adminUser: "admin", adminPass: "secret", publicBase: "https://cfg.example.test"}
+	srv := httptest.NewServer(a.handler())
+	t.Cleanup(srv.Close)
+	return a, srv
+}
+
+func configWithPort(port int) provisionConfig {
+	cfg := validConfig()
+	cfg.ListenPort = port
+	return cfg
+}
+
+func TestBundleParallelHTTPFlow(t *testing.T) {
+	a, srv := newBundleTestApp(t)
+	p1, err := a.store.create("HKBN", configWithPort(1081))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := a.store.create("HKT", configWithPort(1082))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := "main-lines"
+	in := bundleInput{Name: "Main Lines", APIAlias: &alias, Mode: "parallel", ProfileIDs: []string{p1.ID, p2.ID}}
+	resp := adminJSON(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/bundles", in)
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create bundle status=%d body=%s", resp.StatusCode, data)
+	}
+	var b adminBundle
+	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if b.Mode != "parallel" || b.APIAlias != alias || len(b.ProfileIDs) != 2 || !strings.Contains(b.APIURL, "/v1/bundle/main-lines/") {
+		t.Fatalf("bad admin bundle: %+v", b)
+	}
+	secret := b.APIURL[strings.LastIndex(b.APIURL, "/")+1:]
+	pub, err := http.Get(srv.URL + "/v1/bundle/main-lines/" + secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub.StatusCode != http.StatusOK {
+		t.Fatalf("public bundle status=%d", pub.StatusCode)
+	}
+	var payload bundlePublicPayload
+	if err := json.NewDecoder(pub.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	_ = pub.Body.Close()
+	if payload.SchemaVersion != 2 || payload.Kind != "bundle" || payload.Mode != "parallel" || payload.BundleID != b.ID || len(payload.Profiles) != 2 {
+		t.Fatalf("bad public bundle: %+v", payload)
+	}
+	if payload.Profiles[0].ProfileID != p1.ID || payload.Profiles[0].ListenPort != 1081 || payload.Profiles[1].ProfileID != p2.ID || payload.Profiles[1].ListenPort != 1082 {
+		t.Fatalf("profile order/config lost: %+v", payload.Profiles)
+	}
+	if payload.Profiles[0].TransportKey == "" || len(payload.Profiles[0].Relays) != 2 {
+		t.Fatal("bundle did not include full runtime profile")
+	}
+
+	rot := adminJSON(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/bundles/"+b.ID+"/rotate", nil)
+	if rot.StatusCode != http.StatusOK {
+		t.Fatalf("rotate status=%d", rot.StatusCode)
+	}
+	var rotated adminBundle
+	if err := json.NewDecoder(rot.Body).Decode(&rotated); err != nil {
+		t.Fatal(err)
+	}
+	_ = rot.Body.Close()
+	if rotated.APIURL == b.APIURL {
+		t.Fatal("bundle secret did not rotate")
+	}
+	old, _ := http.Get(srv.URL + "/v1/bundle/main-lines/" + secret)
+	if old.StatusCode != http.StatusNotFound {
+		t.Fatalf("old bundle URL status=%d", old.StatusCode)
+	}
+	_ = old.Body.Close()
+}
+
+func TestParallelBundleRejectsPortConflictsAndProtectsProfileUpdates(t *testing.T) {
+	a, srv := newBundleTestApp(t)
+	p1, _ := a.store.create("A", configWithPort(1081))
+	p2, _ := a.store.create("B", configWithPort(1082))
+	p3, _ := a.store.create("C", configWithPort(1081))
+
+	bad := bundleInput{Name: "Conflict", Mode: "parallel", ProfileIDs: []string{p1.ID, p3.ID}}
+	resp := adminJSON(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/bundles", bad)
+	if resp.StatusCode != http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("conflict bundle status=%d body=%s", resp.StatusCode, data)
+	}
+	_ = resp.Body.Close()
+
+	// The same listen port is valid when the Bundle is explicitly single-select.
+	single := bundleInput{Name: "Choose One", Mode: "single_select", ProfileIDs: []string{p1.ID, p3.ID}}
+	resp = adminJSON(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/bundles", single)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("single-select same-port status=%d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	parallel := bundleInput{Name: "Parallel", Mode: "parallel", ProfileIDs: []string{p1.ID, p2.ID}}
+	resp = adminJSON(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/bundles", parallel)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("parallel create status=%d", resp.StatusCode)
+	}
+	var created adminBundle
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	// A later Profile edit may not make an existing parallel Bundle invalid.
+	changed := configWithPort(1081)
+	up := adminInput{Name: "B", Config: changed}
+	resp = adminJSON(t, srv.Client(), http.MethodPut, srv.URL+"/admin/api/profiles/"+p2.ID, up)
+	if resp.StatusCode != http.StatusConflict {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("conflicting profile update status=%d body=%s", resp.StatusCode, data)
+	}
+	_ = resp.Body.Close()
+
+	// A Profile used by any Bundle cannot be deleted until it is removed from that Bundle.
+	resp = adminJSON(t, srv.Client(), http.MethodDelete, srv.URL+"/admin/api/profiles/"+p1.ID, nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("referenced delete status=%d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if _, ok := a.bundles.get(created.ID); !ok {
+		t.Fatal("bundle unexpectedly removed")
+	}
+}
+
+func TestBundleStorePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bundles.json")
+	if err := os.WriteFile(path, []byte("[]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newBundleStore(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("bundle mode=%#o", info.Mode().Perm())
 	}
 }

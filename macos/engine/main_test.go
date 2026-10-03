@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -225,5 +228,172 @@ func TestCancelDuringDial(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pending dial leaked")
+	}
+}
+
+func bundleProfile(id, name string, port int) BundleProfile {
+	return BundleProfile{
+		SchemaVersion: 1, ProfileID: id, Revision: "r1-test", DisplayName: name,
+		Mode: "userspace_multipath", ListenPort: port, SchedulerMode: "auto",
+		TCPEnabled: true, UDPEnabled: false, TransportKey: strings.Repeat("a", 64),
+		Relays: []Relay{{Host: "192.0.2.10", Port: 8849}, {Host: "198.51.100.20", Port: 8849}},
+	}
+}
+
+func TestBundleValidationAndSelection(t *testing.T) {
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-1", Revision: "r1", DisplayName: "Main", Mode: "parallel", Profiles: []BundleProfile{bundleProfile("a", "A", 1081), bundleProfile("b", "B", 1082)}}
+	if err := b.validate(); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := b.selected(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 2 || selected[0].ProfileID != "a" || selected[1].ProfileID != "b" {
+		t.Fatalf("default parallel selection=%+v", selected)
+	}
+	selected, err = b.selected([]string{"b"})
+	if err != nil || len(selected) != 1 || selected[0].ListenPort != 1082 {
+		t.Fatalf("explicit selection=%+v err=%v", selected, err)
+	}
+	if _, err := b.selected([]string{"missing"}); err == nil {
+		t.Fatal("accepted unknown profile")
+	}
+	if _, err := b.selected([]string{"a", "a"}); err == nil {
+		t.Fatal("accepted duplicate selection")
+	}
+
+	conflict := b
+	conflict.Profiles = append([]BundleProfile(nil), b.Profiles...)
+	conflict.Profiles[1].ListenPort = 1081
+	if err := conflict.validate(); err == nil {
+		t.Fatal("parallel bundle accepted duplicate listen_port")
+	}
+	conflict.Mode = "single_select"
+	if err := conflict.validate(); err != nil {
+		t.Fatalf("single-select should allow shared ports: %v", err)
+	}
+	if _, err := conflict.selected([]string{"a", "b"}); err == nil {
+		t.Fatal("single-select accepted multiple active profiles")
+	}
+	one, err := conflict.selected([]string{"b"})
+	if err != nil || len(one) != 1 {
+		t.Fatalf("single-select explicit profile failed: %v", err)
+	}
+}
+
+func TestStrictBundleJSON(t *testing.T) {
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-1", Revision: "r1", DisplayName: "Main", Mode: "single_select", Profiles: []BundleProfile{bundleProfile("a", "A", 1081)}}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := readBundle(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.BundleID != b.BundleID {
+		t.Fatal("bundle id changed")
+	}
+	withUnknown := strings.TrimSuffix(string(raw), "}") + ",\"unexpected\":true}"
+	if _, err := readBundle(strings.NewReader(withUnknown)); err == nil {
+		t.Fatal("bundle accepted unknown field")
+	}
+	if _, err := readBundle(strings.NewReader(strings.Repeat(" ", 524289))); err == nil {
+		t.Fatal("oversized bundle accepted")
+	}
+}
+
+func freeTestPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port
+}
+
+func TestBundlePortPreflightIsAtomic(t *testing.T) {
+	p1 := bundleProfile("a", "A", freeTestPort(t))
+	p2 := bundleProfile("b", "B", freeTestPort(t))
+	if err := preflightBundlePorts([]BundleProfile{p1, p2}); err != nil {
+		t.Fatalf("free ports rejected: %v", err)
+	}
+
+	occupied, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(p2.ListenPort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	if err := preflightBundlePorts([]BundleProfile{p1, p2}); err == nil {
+		t.Fatal("occupied parallel port accepted")
+	}
+
+	// The first port was only probed and released; no Profile process was started.
+	probe, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(p1.ListenPort)))
+	if err != nil {
+		t.Fatalf("preflight leaked first port: %v", err)
+	}
+	_ = probe.Close()
+}
+
+func TestManagedProvisioningFetchProfileAndBundle(t *testing.T) {
+	profile := bundleProfile("", "Single", 1081)
+	profile.ProfileID = ""
+	bundle := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-1", Revision: "r1", DisplayName: "Main", Mode: "parallel", Profiles: []BundleProfile{bundleProfile("a", "A", 1081), bundleProfile("b", "B", 1082)}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/profile", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(profile) })
+	mux.HandleFunc("/bundle", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(bundle) })
+	mux.HandleFunc("/redirect", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/bundle", http.StatusFound) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	doc, err := fetchManaged(ctx, srv.URL+"/profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.profile == nil || doc.bundle != nil || doc.profile.DisplayName != "Single" {
+		t.Fatalf("bad profile doc: %+v", doc)
+	}
+	doc, err = fetchManaged(ctx, srv.URL+"/bundle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.bundle == nil || doc.profile != nil || len(doc.bundle.Profiles) != 2 {
+		t.Fatalf("bad bundle doc: %+v", doc)
+	}
+	if _, err := doc.bundle.selected([]string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fetchManaged(ctx, srv.URL+"/redirect"); err == nil {
+		t.Fatal("redirect was followed")
+	}
+}
+
+func TestManagedInputAndURLPolicy(t *testing.T) {
+	for _, good := range []string{"https://cfg.example.test/v1/bundle/x/y", "http://127.0.0.1:8088/v1/config/x", "http://localhost:8088/v1/config/x"} {
+		if _, err := validateProvisioningURL(good); err != nil {
+			t.Fatalf("%s rejected: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"http://cfg.example.test/x", "https://u:p@cfg.example.test/x", "https://cfg.example.test/x#secret"} {
+		if _, err := validateProvisioningURL(bad); err == nil {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+	input := `{"url":"https://cfg.example.test/v1/bundle/x/y","profile_ids":["a","b"]}`
+	got, err := readManagedInput(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ProfileIDs) != 2 {
+		t.Fatal("profile ids lost")
+	}
+	if _, err := readManagedInput(strings.NewReader(`{"url":"https://cfg.example.test/x","profile_ids":["a","a"]}`)); err == nil {
+		t.Fatal("duplicate profile ids accepted")
 	}
 }

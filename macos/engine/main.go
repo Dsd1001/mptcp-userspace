@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,10 +9,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -35,6 +40,54 @@ type Config struct {
 	UDPEnabled    bool    `json:"udp_enabled,omitempty"`
 	TCPEnabled    *bool   `json:"tcp_enabled,omitempty"`
 	TransportKey  string  `json:"transport_key,omitempty"`
+}
+
+type BundleProfile struct {
+	SchemaVersion      int     `json:"schema_version"`
+	ProfileID          string  `json:"profile_id"`
+	Revision           string  `json:"revision"`
+	DisplayName        string  `json:"display_name"`
+	Mode               string  `json:"mode"`
+	ListenPort         int     `json:"listen_port"`
+	SchedulerMode      string  `json:"scheduler_mode,omitempty"`
+	TCPEnabled         bool    `json:"tcp_enabled"`
+	UDPEnabled         bool    `json:"udp_enabled"`
+	BackgroundResident bool    `json:"background_resident"`
+	TransportKey       string  `json:"transport_key,omitempty"`
+	Relays             []Relay `json:"relays"`
+}
+
+type BundlePayload struct {
+	SchemaVersion int             `json:"schema_version"`
+	Kind          string          `json:"kind"`
+	BundleID      string          `json:"bundle_id"`
+	Revision      string          `json:"revision"`
+	DisplayName   string          `json:"display_name"`
+	Mode          string          `json:"mode"`
+	Profiles      []BundleProfile `json:"profiles"`
+}
+
+type ManagedInput struct {
+	URL        string   `json:"url"`
+	ProfileIDs []string `json:"profile_ids,omitempty"`
+}
+
+type managedDocument struct {
+	profile *BundleProfile
+	bundle  *BundlePayload
+}
+
+func (p BundleProfile) config() Config {
+	var scheduler *string
+	if p.Mode == "userspace_multipath" {
+		value := p.SchedulerMode
+		if value == "" {
+			value = string(multipath.SchedulerAuto)
+		}
+		scheduler = &value
+	}
+	tcp := p.TCPEnabled
+	return Config{SchemaVersion: 3, Mode: p.Mode, ListenPort: p.ListenPort, Relays: p.Relays, UDPEnabled: p.UDPEnabled, TCPEnabled: &tcp, TransportKey: p.TransportKey, SchedulerMode: scheduler}
 }
 
 func (c Config) schedulerMode() (multipath.SchedulerMode, error) {
@@ -72,7 +125,12 @@ func (c Config) weightedCapacities() ([]multipath.PathCapacity, error) {
 }
 
 type Event struct {
-	CapabilityRevision int `json:"capability_revision,omitempty"`
+	CapabilityRevision int    `json:"capability_revision,omitempty"`
+	ProfileID          string `json:"profile_id,omitempty"`
+	ProfileName        string `json:"profile_name,omitempty"`
+	BundleID           string `json:"bundle_id,omitempty"`
+	BundleName         string `json:"bundle_name,omitempty"`
+	ListenPort         int    `json:"listen_port,omitempty"`
 	multipath.SchedulerStats
 	Kind             string                    `json:"kind"`
 	Message          string                    `json:"message,omitempty"`
@@ -109,12 +167,14 @@ func emit(e Event) {
 	json.NewEncoder(os.Stdout).Encode(e)
 }
 
-func (c Config) validate() error {
+func (c Config) validate() error { return c.validateForOS(runtime.GOOS) }
+
+func (c Config) validateForOS(goos string) error {
 	legacy := c.SchemaVersion == 2 && c.Mode == "tcp_forward"
 	if !legacy && !(c.SchemaVersion == 3 && (c.Mode == "native_mptcp" || c.Mode == "userspace_multipath")) {
 		return errors.New("支持 schema 2/tcp_forward（保持 Native）或 schema 3/userspace_multipath、native_mptcp；不支持旧 SOCKS5 配置")
 	}
-	if runtime.GOOS != "darwin" && !c.userspace() {
+	if goos != "darwin" && !c.userspace() {
 		return errors.New("Linux client 仅支持 userspace_multipath；Native MPTCP fallback 仅供 macOS 使用")
 	}
 	if c.userspace() {
@@ -185,6 +245,435 @@ func readConfig(reader io.Reader) (Config, error) {
 		return c, errors.New("配置必须是单个 JSON 对象")
 	}
 	return c, c.validate()
+}
+
+func validateProvisioningURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return nil, errors.New("Provisioning URL 必须是没有 userinfo/fragment 的绝对 URL")
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	loopback := host == "localhost" || (ip != nil && ip.IsLoopback())
+	if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
+		return nil, errors.New("远程 Provisioning URL 必须使用 HTTPS；HTTP 仅允许 localhost/loopback")
+	}
+	return u, nil
+}
+
+func readManagedInput(reader io.Reader) (ManagedInput, error) {
+	var in ManagedInput
+	data, err := io.ReadAll(io.LimitReader(reader, 16385))
+	if err != nil {
+		return in, err
+	}
+	if len(data) > 16384 {
+		return in, errors.New("managed input 超过 16 KiB")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		return in, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return in, errors.New("managed input 必须是单个 JSON 对象")
+	}
+	if _, err := validateProvisioningURL(in.URL); err != nil {
+		return in, err
+	}
+	seen := map[string]bool{}
+	for _, id := range in.ProfileIDs {
+		if id == "" || seen[id] {
+			return in, errors.New("profile_ids 必须非空且唯一")
+		}
+		seen[id] = true
+	}
+	return in, nil
+}
+
+func fetchManaged(ctx context.Context, rawURL string) (managedDocument, error) {
+	u, err := validateProvisioningURL(rawURL)
+	if err != nil {
+		return managedDocument{}, err
+	}
+	client := &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return errors.New("Provisioning API redirects are disabled")
+	}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return managedDocument{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Cache-Control", "no-store")
+	resp, err := client.Do(req)
+	if err != nil {
+		return managedDocument{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return managedDocument{}, fmt.Errorf("Provisioning API HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 524289))
+	if err != nil {
+		return managedDocument{}, err
+	}
+	if len(data) == 0 || len(data) > 524288 {
+		return managedDocument{}, errors.New("Provisioning API 响应为空或超过 512 KiB")
+	}
+	var header struct {
+		SchemaVersion int    `json:"schema_version"`
+		Kind          string `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return managedDocument{}, fmt.Errorf("Provisioning API JSON 无效: %w", err)
+	}
+	if header.SchemaVersion == 1 {
+		if len(data) > 65536 {
+			return managedDocument{}, errors.New("单 Profile Provisioning 响应超过 64 KiB")
+		}
+		var p BundleProfile
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&p); err != nil {
+			return managedDocument{}, fmt.Errorf("Provisioning Profile JSON 无效: %w", err)
+		}
+		if err := p.config().validate(); err != nil {
+			return managedDocument{}, err
+		}
+		return managedDocument{profile: &p}, nil
+	}
+	if header.SchemaVersion == 2 && header.Kind == "bundle" {
+		var b BundlePayload
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&b); err != nil {
+			return managedDocument{}, fmt.Errorf("Provisioning Bundle JSON 无效: %w", err)
+		}
+		if err := b.validate(); err != nil {
+			return managedDocument{}, err
+		}
+		return managedDocument{bundle: &b}, nil
+	}
+	return managedDocument{}, errors.New("Provisioning API schema/kind 不受支持")
+}
+
+func runManaged(ctx context.Context, in ManagedInput, validateOnly bool) error {
+	doc, err := fetchManaged(ctx, in.URL)
+	if err != nil {
+		return err
+	}
+	if doc.profile != nil {
+		if len(in.ProfileIDs) > 0 {
+			return errors.New("单 Profile URL 不接受 profile_ids 选择")
+		}
+		if validateOnly {
+			emit(Event{Kind: "ready", Message: "Provisioning 单 Profile 配置有效"})
+			return nil
+		}
+		return runClient(ctx, doc.profile.config())
+	}
+	if doc.bundle == nil {
+		return errors.New("Provisioning API 未返回配置")
+	}
+	if validateOnly {
+		selected, err := doc.bundle.selected(in.ProfileIDs)
+		if err != nil {
+			return err
+		}
+		if err := validateSelectedForRuntime(selected); err != nil {
+			return err
+		}
+		emit(Event{Kind: "ready", BundleID: doc.bundle.BundleID, BundleName: doc.bundle.DisplayName, Message: "Provisioning Bundle 与所选 Profile 有效"})
+		return nil
+	}
+	return runBundle(ctx, *doc.bundle, in.ProfileIDs)
+}
+
+func readBundle(reader io.Reader) (BundlePayload, error) {
+	var b BundlePayload
+	data, err := io.ReadAll(io.LimitReader(reader, 524289))
+	if err != nil {
+		return b, err
+	}
+	if len(data) > 524288 {
+		return b, errors.New("Bundle 配置超过 512 KiB")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&b); err != nil {
+		return b, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return b, errors.New("Bundle 配置必须是单个 JSON 对象")
+	}
+	if err := b.validate(); err != nil {
+		return b, err
+	}
+	return b, nil
+}
+
+func (b BundlePayload) validate() error {
+	if b.SchemaVersion != 2 || b.Kind != "bundle" {
+		return errors.New("Bundle 仅支持 schema_version=2 且 kind=bundle")
+	}
+	if b.BundleID == "" || len(b.BundleID) > 128 || len([]byte(b.DisplayName)) > 128 || len([]byte(b.Revision)) > 128 {
+		return errors.New("Bundle 标识、名称或 revision 无效")
+	}
+	if b.Mode != "single_select" && b.Mode != "parallel" {
+		return errors.New("Bundle mode 仅支持 single_select 或 parallel")
+	}
+	if len(b.Profiles) < 1 || len(b.Profiles) > 32 {
+		return errors.New("Bundle 需要 1-32 个 Profile")
+	}
+	ids := map[string]bool{}
+	ports := map[int]string{}
+	for _, p := range b.Profiles {
+		if p.SchemaVersion != 1 || p.ProfileID == "" || len(p.ProfileID) > 128 || ids[p.ProfileID] {
+			return errors.New("Bundle Profile ID 必须非空且唯一")
+		}
+		ids[p.ProfileID] = true
+		if len([]byte(p.DisplayName)) > 128 || len([]byte(p.Revision)) > 128 {
+			return errors.New("Bundle Profile 名称或 revision 过长")
+		}
+		if err := p.config().validateForOS("darwin"); err != nil {
+			return fmt.Errorf("Profile %s: %w", p.DisplayName, err)
+		}
+		if b.Mode == "parallel" {
+			if other, ok := ports[p.ListenPort]; ok {
+				return fmt.Errorf("并行 Bundle 端口冲突：%s 与 %s 都使用 %d", other, p.DisplayName, p.ListenPort)
+			}
+			ports[p.ListenPort] = p.DisplayName
+		}
+	}
+	return nil
+}
+
+func (b BundlePayload) selected(ids []string) ([]BundleProfile, error) {
+	if err := b.validate(); err != nil {
+		return nil, err
+	}
+	byID := map[string]BundleProfile{}
+	for _, p := range b.Profiles {
+		byID[p.ProfileID] = p
+	}
+	if len(ids) == 0 {
+		if b.Mode == "single_select" {
+			ids = []string{b.Profiles[0].ProfileID}
+		} else {
+			for _, p := range b.Profiles {
+				ids = append(ids, p.ProfileID)
+			}
+		}
+	}
+	if b.Mode == "single_select" && len(ids) != 1 {
+		return nil, errors.New("single_select Bundle 必须且只能选择 1 个 Profile")
+	}
+	if len(ids) < 1 {
+		return nil, errors.New("至少选择 1 个 Profile")
+	}
+	seenID, ports := map[string]bool{}, map[int]string{}
+	out := make([]BundleProfile, 0, len(ids))
+	for _, id := range ids {
+		if seenID[id] {
+			return nil, fmt.Errorf("重复选择 Profile %s", id)
+		}
+		seenID[id] = true
+		p, ok := byID[id]
+		if !ok {
+			return nil, fmt.Errorf("Bundle 不包含 Profile %s", id)
+		}
+		if other, ok := ports[p.ListenPort]; ok {
+			return nil, fmt.Errorf("所选 Profile 端口冲突：%s 与 %s 都使用 %d", other, p.DisplayName, p.ListenPort)
+		}
+		ports[p.ListenPort] = p.DisplayName
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func validateSelectedForRuntime(selected []BundleProfile) error {
+	for _, p := range selected {
+		if err := p.config().validate(); err != nil {
+			return fmt.Errorf("Profile %s: %w", p.DisplayName, err)
+		}
+	}
+	return nil
+}
+
+func preflightBundlePorts(selected []BundleProfile) error {
+	closers := make([]io.Closer, 0, len(selected)*2)
+	closeAll := func() {
+		for _, c := range closers {
+			_ = c.Close()
+		}
+	}
+	defer closeAll()
+	for _, p := range selected {
+		cfg := p.config()
+		address := net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.ListenPort))
+		if cfg.tcpEnabled() {
+			ln, err := net.Listen("tcp4", address)
+			if err != nil {
+				return fmt.Errorf("Profile %s TCP 端口 %d 不可用: %w", p.DisplayName, cfg.ListenPort, err)
+			}
+			closers = append(closers, ln)
+		}
+		if cfg.UDPEnabled {
+			udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: cfg.ListenPort})
+			if err != nil {
+				return fmt.Errorf("Profile %s UDP 端口 %d 不可用: %w", p.DisplayName, cfg.ListenPort, err)
+			}
+			closers = append(closers, udp)
+		}
+	}
+	return nil
+}
+
+type bundleChildEvent struct {
+	profile BundleProfile
+	event   Event
+	scanErr error
+}
+type bundleChildExit struct {
+	profile BundleProfile
+	err     error
+}
+
+func runBundle(ctx context.Context, b BundlePayload, ids []string) error {
+	selected, err := b.selected(ids)
+	if err != nil {
+		return err
+	}
+	if err := validateSelectedForRuntime(selected); err != nil {
+		return err
+	}
+	if err := preflightBundlePorts(selected); err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	groupCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events := make(chan bundleChildEvent, 128)
+	exits := make(chan bundleChildExit, len(selected))
+	cmds := make([]*exec.Cmd, 0, len(selected))
+	for _, p := range selected {
+		cfgData, err := json.Marshal(p.config())
+		if err != nil {
+			cancel()
+			return err
+		}
+		cmd := exec.CommandContext(groupCtx, exe, "run")
+		cmd.Stdin = bytes.NewReader(cfgData)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			cancel()
+			return err
+		}
+		cmd.Stderr = io.Discard
+		if err := cmd.Start(); err != nil {
+			cancel()
+			for _, started := range cmds {
+				if started.Process != nil {
+					_ = started.Process.Kill()
+				}
+			}
+			return fmt.Errorf("Profile %s 启动失败: %w", p.DisplayName, err)
+		}
+		cmds = append(cmds, cmd)
+		go func(profile BundleProfile, r io.Reader) {
+			scanner := bufio.NewScanner(r)
+			buf := make([]byte, 0, 64*1024)
+			scanner.Buffer(buf, 256*1024)
+			for scanner.Scan() {
+				var e Event
+				if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+					events <- bundleChildEvent{profile: profile, scanErr: fmt.Errorf("engine event JSON: %w", err)}
+					return
+				}
+				events <- bundleChildEvent{profile: profile, event: e}
+			}
+			if err := scanner.Err(); err != nil {
+				events <- bundleChildEvent{profile: profile, scanErr: err}
+			}
+		}(p, stdout)
+		go func(profile BundleProfile, c *exec.Cmd) { exits <- bundleChildExit{profile: profile, err: c.Wait()} }(p, cmd)
+	}
+	ready := map[string]bool{}
+	tcpStats := map[string]Event{}
+	udpStats := map[string]Event{}
+	exited := 0
+	emitAggregate := func(kind string, stats map[string]Event) {
+		agg := Event{Kind: kind, BundleID: b.BundleID, BundleName: b.DisplayName}
+		for _, e := range stats {
+			agg.Paths += e.Paths
+			agg.Connections += e.Connections
+			agg.Sent += e.Sent
+			agg.Received += e.Received
+			agg.Retransmits += e.Retransmits
+			agg.Dropped += e.Dropped
+		}
+		emit(agg)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
+			for exited < len(selected) {
+				<-exits
+				exited++
+			}
+			return ctx.Err()
+		case ce := <-events:
+			if ce.scanErr != nil {
+				cancel()
+				return fmt.Errorf("Profile %s 输出读取失败: %w", ce.profile.DisplayName, ce.scanErr)
+			}
+			e := ce.event
+			e.ProfileID = ce.profile.ProfileID
+			e.ProfileName = ce.profile.DisplayName
+			e.BundleID = b.BundleID
+			e.BundleName = b.DisplayName
+			e.ListenPort = ce.profile.ListenPort
+			emit(e)
+			switch e.Kind {
+			case "listening":
+				ready[ce.profile.ProfileID] = true
+				if len(ready) == len(selected) {
+					emit(Event{Kind: "bundle_listening", BundleID: b.BundleID, BundleName: b.DisplayName, Connections: int64(len(selected)), Message: fmt.Sprintf("%d 个 Profile 已同时启动", len(selected))})
+				}
+			case "stats":
+				tcpStats[ce.profile.ProfileID] = e
+				emitAggregate("bundle_stats", tcpStats)
+			case "udp_stats":
+				udpStats[ce.profile.ProfileID] = e
+				emitAggregate("bundle_udp_stats", udpStats)
+			}
+		case ex := <-exits:
+			exited++
+			if groupCtx.Err() == nil {
+				cancel()
+				for exited < len(selected) {
+					<-exits
+					exited++
+				}
+				if ex.err == nil {
+					return fmt.Errorf("Profile %s 意外退出", ex.profile.DisplayName)
+				}
+				return fmt.Errorf("Profile %s 已退出: %w", ex.profile.DisplayName, ex.err)
+			}
+			if exited == len(selected) {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return errors.New("Bundle 运行已停止")
+			}
+		}
+	}
 }
 
 type streamConn interface {
@@ -449,6 +938,31 @@ func main() {
 			message = name + " " + multipath.Version + " MPX/4 Draft 04 userspace client"
 		}
 		emit(Event{Kind: "ready", Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Message: message})
+	case len(os.Args) == 2 && (os.Args[1] == "run-managed" || os.Args[1] == "validate-managed"):
+		var in ManagedInput
+		in, err = readManagedInput(os.Stdin)
+		if err == nil {
+			err = runManaged(ctx, in, os.Args[1] == "validate-managed")
+		}
+	case len(os.Args) >= 2 && os.Args[1] == "run-bundle":
+		var b BundlePayload
+		b, err = readBundle(os.Stdin)
+		if err == nil {
+			err = runBundle(ctx, b, os.Args[2:])
+		}
+	case len(os.Args) >= 2 && os.Args[1] == "validate-bundle":
+		var b BundlePayload
+		b, err = readBundle(os.Stdin)
+		if err == nil {
+			var selected []BundleProfile
+			selected, err = b.selected(os.Args[2:])
+			if err == nil {
+				err = validateSelectedForRuntime(selected)
+			}
+		}
+		if err == nil {
+			emit(Event{Kind: "ready", Message: "Bundle 配置与所选 Profile 有效"})
+		}
 	case len(os.Args) == 2 && os.Args[1] == "run":
 		var c Config
 		c, err = readConfig(os.Stdin)
@@ -461,7 +975,7 @@ func main() {
 			emit(Event{Kind: "ready", Message: "TCP 转发配置有效"})
 		}
 	default:
-		err = fmt.Errorf("usage: mptcp-client doctor-userspace | version | run | validate (JSON stdin); Native doctor is macOS-only")
+		err = fmt.Errorf("usage: mptcp-client doctor-userspace | version | run | validate | run-managed | validate-managed | run-bundle [profile-id...] | validate-bundle [profile-id...] (JSON stdin); Native doctor is macOS-only")
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		emit(Event{Kind: "error", Message: err.Error()})
