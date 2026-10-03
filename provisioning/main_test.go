@@ -344,9 +344,135 @@ func TestAdminUIContainsSecondLevelNavigationAndRelayCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(data)
-	for _, want := range []string{"基础设置", "Relay 路径", "调度与传输", "发放与安全", "duplicateRelay", "自定义标识 + 随机 Secret", "轮换 Secret", "系统"} {
+	for _, want := range []string{"基础设置", "Relay 路径", "调度与传输", "发放与安全", "duplicateRelay", "自定义标识 + 随机 Secret", "轮换 Secret", "系统", "修改管理员密码", "currentAdminPassword", "changeAdminPassword"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin UI missing %q", want)
 		}
+	}
+}
+
+func adminRequestWithPassword(t *testing.T, client *http.Client, method, rawURL, password string, body any) *http.Response {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequest(method, rawURL, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.SetBasicAuth("admin", password)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func TestAdminPasswordChangePersistsAndInvalidatesOldCredentials(t *testing.T) {
+	dir := t.TempDir()
+	st, err := newStore(filepath.Join(dir, "profiles.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPass := "old-admin-password-0123456789"
+	newPass := "new-admin-password-9876543210"
+	passwordFile := filepath.Join(dir, "admin-password")
+	a := &app{store: st, adminUser: "admin", adminPass: oldPass, passwordFile: passwordFile}
+	srv := httptest.NewServer(a.handler())
+	defer srv.Close()
+
+	wrong := adminRequestWithPassword(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/password", oldPass, passwordInput{CurrentPassword: "not-the-current-password", NewPassword: newPass})
+	if wrong.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong-current status=%d", wrong.StatusCode)
+	}
+	_ = wrong.Body.Close()
+
+	short := adminRequestWithPassword(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/password", oldPass, passwordInput{CurrentPassword: oldPass, NewPassword: "too-short"})
+	if short.StatusCode != http.StatusBadRequest {
+		t.Fatalf("short-password status=%d", short.StatusCode)
+	}
+	_ = short.Body.Close()
+
+	changed := adminRequestWithPassword(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/password", oldPass, passwordInput{CurrentPassword: oldPass, NewPassword: newPass})
+	if changed.StatusCode != http.StatusNoContent {
+		data, _ := io.ReadAll(changed.Body)
+		t.Fatalf("change status=%d body=%s", changed.StatusCode, data)
+	}
+	_ = changed.Body.Close()
+
+	oldAuth := adminRequestWithPassword(t, srv.Client(), http.MethodGet, srv.URL+"/admin/api/system", oldPass, nil)
+	if oldAuth.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old password still valid: %d", oldAuth.StatusCode)
+	}
+	_ = oldAuth.Body.Close()
+	newAuth := adminRequestWithPassword(t, srv.Client(), http.MethodGet, srv.URL+"/admin/api/system", newPass, nil)
+	if newAuth.StatusCode != http.StatusOK {
+		t.Fatalf("new password rejected: %d", newAuth.StatusCode)
+	}
+	_ = newAuth.Body.Close()
+
+	data, err := os.ReadFile(passwordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != newPass+"\n" {
+		t.Fatal("persisted password content mismatch")
+	}
+	info, err := os.Stat(passwordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("password file mode=%#o", got)
+	}
+
+	// A restart must prefer the persisted password over the bootstrap env value.
+	reloaded, err := loadAdminPassword(passwordFile, oldPass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded != newPass {
+		t.Fatal("restart did not retain changed password")
+	}
+}
+
+func TestAdminPasswordFilePermissionsAreTightened(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "admin-password")
+	password := "persisted-admin-password-123456"
+	if err := os.WriteFile(path, []byte(password+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadAdminPassword(path, "bootstrap-admin-password-123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != password {
+		t.Fatalf("password=%q", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode=%#o", info.Mode().Perm())
+	}
+}
+
+func TestAdminPasswordValidation(t *testing.T) {
+	for _, bad := range []string{"", "short", strings.Repeat("x", 23), strings.Repeat("x", 513), strings.Repeat("x", 24) + "\n"} {
+		if err := validAdminPassword(bad); err == nil {
+			t.Fatalf("accepted invalid password len=%d", len(bad))
+		}
+	}
+	if err := validAdminPassword("valid-admin-password-123456"); err != nil {
+		t.Fatal(err)
 	}
 }

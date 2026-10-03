@@ -27,6 +27,8 @@ export MPX_PROVISION_ADMIN_PASSWORD='use-a-random-password-at-least-24-character
 export MPX_PROVISION_LISTEN='127.0.0.1:8088'
 export MPX_PROVISION_PUBLIC_BASE_URL='https://config.example.com'
 export MPX_PROVISION_DATA='/var/lib/mpx-provision/profiles.json'
+# optional; defaults to a sibling admin-password file next to MPX_PROVISION_DATA
+export MPX_PROVISION_ADMIN_PASSWORD_FILE='/var/lib/mpx-provision/admin-password'
 ./mpx-provision
 ```
 
@@ -49,11 +51,13 @@ Open:
 https://config.example.com/admin
 ```
 
-The browser will ask for HTTP Basic authentication. The default username is `admin`; it can be changed with `MPX_PROVISION_ADMIN_USER`.
+The browser will ask for HTTP Basic authentication. The default username is `admin`; it can be changed with `MPX_PROVISION_ADMIN_USER`. `MPX_PROVISION_ADMIN_PASSWORD` is the bootstrap password. If a persisted admin password file exists, it takes precedence on restart.
 
 ## Administration page
 
 The 0.9.9 administration UI uses a profile sidebar with second-level pages for Basic settings, Relay paths, Scheduling/transport, and Issuance/security. Each profile owns its own Relay list. Relay rows can be added, copied, reordered or removed; Copy duplicates address/port/capacity and focuses the IPv4 last octet for fast same-/24 editing.
+
+The **System** page can change the administrator Basic Auth password. The user must enter the current password plus a new password of at least 24 characters. A successful change immediately invalidates the old password and atomically writes the new password to `MPX_PROVISION_ADMIN_PASSWORD_FILE` with mode `0600`. The service does not need root privileges for this: by default the password file is stored next to `MPX_PROVISION_DATA`, which should already be a private service-writable `0700` directory. The persisted password takes precedence over the bootstrap environment password after restart.
 
 A newly created profile receives a 32-byte random URL secret. Automatic URLs keep the existing form:
 
@@ -112,7 +116,8 @@ If the authoritative API fetch fails, managed mode **does not start using stale 
 - The high-entropy API URL is stored in Keychain and is not included in engine stdin, ordinary preferences or diagnostic logs.
 - The MPX transport key remains in the existing transport Keychain item and is stripped from normal profile persistence.
 - Public API responses include `Cache-Control: no-store` and `Pragma: no-cache`.
-- The administration page and administration JSON endpoints require Basic authentication.
+- The administration page and administration JSON endpoints require Basic authentication. Password changes require both a currently authenticated request and the current password in the request body.
+- The persisted administrator password file is atomically replaced with mode `0600`; the Profile data directory remains `0700`. Password values are not returned by APIs or written to normal application logs.
 - The service data file contains API tokens and transport keys and is written with mode `0600`; its directory is created with mode `0700`.
 - The API token lives in the URL path. Configure the TLS reverse proxy to suppress or redact access logs for `/v1/config/` so bearer tokens are not retained in ordinary request logs.
 - Keep the service itself on loopback and terminate public TLS at a maintained reverse proxy unless you deliberately provide equivalent transport security another way.

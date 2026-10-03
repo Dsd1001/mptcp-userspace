@@ -93,10 +93,16 @@ type adminInput struct {
 }
 
 type systemInfo struct {
-	Component string `json:"component"`
-	Version   string `json:"version"`
-	SourceID  string `json:"source_id"`
-	APISchema int    `json:"api_schema"`
+	Component      string `json:"component"`
+	Version        string `json:"version"`
+	SourceID       string `json:"source_id"`
+	APISchema      int    `json:"api_schema"`
+	PasswordChange bool   `json:"password_change"`
+}
+
+type passwordInput struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
 }
 
 type store struct {
@@ -455,10 +461,78 @@ func validateInput(name string, cfg provisionConfig) error {
 }
 
 type app struct {
-	store      *store
-	adminUser  string
-	adminPass  string
-	publicBase string
+	store        *store
+	adminUser    string
+	authMu       sync.RWMutex
+	adminPass    string
+	passwordFile string
+	publicBase   string
+}
+
+func validAdminPassword(pass string) error {
+	if len(pass) < 24 {
+		return errors.New("password must be at least 24 characters")
+	}
+	if len(pass) > 512 {
+		return errors.New("password must be at most 512 characters")
+	}
+	if strings.ContainsAny(pass, "\x00\r\n") {
+		return errors.New("password must not contain NUL or line breaks")
+	}
+	return nil
+}
+
+func loadAdminPassword(path, fallback string) (string, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := validAdminPassword(fallback); err != nil {
+			return "", err
+		}
+		return fallback, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return "", fmt.Errorf("secure admin password file permissions: %w", err)
+	}
+	pass := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+	if err := validAdminPassword(pass); err != nil {
+		return "", fmt.Errorf("invalid admin password file: %w", err)
+	}
+	return pass, nil
+}
+
+func writeAdminPassword(path, pass string) error {
+	if err := validAdminPassword(pass); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(pass+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
+
+func (a *app) passwordMatches(pass string) bool {
+	a.authMu.RLock()
+	defer a.authMu.RUnlock()
+	return subtle.ConstantTimeCompare([]byte(pass), []byte(a.adminPass)) == 1
 }
 
 func (a *app) authOK(r *http.Request) bool {
@@ -466,7 +540,31 @@ func (a *app) authOK(r *http.Request) bool {
 	if !ok {
 		return false
 	}
+	a.authMu.RLock()
+	defer a.authMu.RUnlock()
 	return subtle.ConstantTimeCompare([]byte(user), []byte(a.adminUser)) == 1 && subtle.ConstantTimeCompare([]byte(pass), []byte(a.adminPass)) == 1
+}
+
+func (a *app) changePassword(current, next string) error {
+	if err := validAdminPassword(next); err != nil {
+		return err
+	}
+	a.authMu.Lock()
+	defer a.authMu.Unlock()
+	if subtle.ConstantTimeCompare([]byte(current), []byte(a.adminPass)) != 1 {
+		return errors.New("current password is incorrect")
+	}
+	if subtle.ConstantTimeCompare([]byte(next), []byte(a.adminPass)) == 1 {
+		return errors.New("new password must be different")
+	}
+	if a.passwordFile == "" {
+		return errors.New("password persistence is not configured")
+	}
+	if err := writeAdminPassword(a.passwordFile, next); err != nil {
+		return fmt.Errorf("persist admin password: %w", err)
+	}
+	a.adminPass = next
+	return nil
 }
 
 func (a *app) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -671,7 +769,33 @@ func (a *app) adminSystem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusOK, systemInfo{Component: "mpx-provision", Version: Version, SourceID: SourceID, APISchema: 1})
+	writeJSON(w, http.StatusOK, systemInfo{Component: "mpx-provision", Version: Version, SourceID: SourceID, APISchema: 1, PasswordChange: a.passwordFile != ""})
+}
+
+func (a *app) adminPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var in passwordInput
+	if err := decodeJSON(r, &in); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !a.passwordMatches(in.CurrentPassword) {
+		http.Error(w, "current password is incorrect", http.StatusForbidden)
+		return
+	}
+	if err := a.changePassword(in.CurrentPassword, in.NewPassword); err != nil {
+		if strings.Contains(err.Error(), "current password") {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *app) handler() http.Handler {
@@ -688,6 +812,7 @@ func (a *app) handler() http.Handler {
 	mux.HandleFunc("/admin", a.requireAdmin(a.adminPage))
 	mux.HandleFunc("/admin/", a.requireAdmin(a.adminPage))
 	mux.HandleFunc("/admin/api/system", a.requireAdmin(a.adminSystem))
+	mux.HandleFunc("/admin/api/password", a.requireAdmin(a.adminPassword))
 	mux.HandleFunc("/admin/api/profiles", a.requireAdmin(a.adminProfiles))
 	mux.HandleFunc("/admin/api/profiles/", a.requireAdmin(a.adminProfileByID))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -726,20 +851,22 @@ func getenv(key, fallback string) string {
 func main() {
 	listen := getenv("MPX_PROVISION_LISTEN", "127.0.0.1:8088")
 	user := getenv("MPX_PROVISION_ADMIN_USER", "admin")
-	pass := os.Getenv("MPX_PROVISION_ADMIN_PASSWORD")
-	if len(pass) < 24 {
-		log.Fatal("MPX_PROVISION_ADMIN_PASSWORD must be at least 24 characters")
-	}
+	bootstrapPass := os.Getenv("MPX_PROVISION_ADMIN_PASSWORD")
 	publicBase := strings.TrimRight(strings.TrimSpace(os.Getenv("MPX_PROVISION_PUBLIC_BASE_URL")), "/")
 	if err := validatePublicBase(publicBase); err != nil {
 		log.Fatal(err)
 	}
 	dataPath := getenv("MPX_PROVISION_DATA", "./provisioning-data/profiles.json")
+	passwordFile := getenv("MPX_PROVISION_ADMIN_PASSWORD_FILE", filepath.Join(filepath.Dir(dataPath), "admin-password"))
+	pass, err := loadAdminPassword(passwordFile, bootstrapPass)
+	if err != nil {
+		log.Fatal(err)
+	}
 	st, err := newStore(dataPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	a := &app{store: st, adminUser: user, adminPass: pass, publicBase: publicBase}
+	a := &app{store: st, adminUser: user, adminPass: pass, passwordFile: passwordFile, publicBase: publicBase}
 	srv := &http.Server{Addr: listen, Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	log.Printf("MPX Provisioning %s (%s) listening on %s (admin /admin)", Version, SourceID, listen)
 	log.Fatal(srv.ListenAndServe())
