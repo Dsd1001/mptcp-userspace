@@ -1,204 +1,128 @@
 # 故障排查
 
-本页优先排查 Userspace / MPX/3 Rev5 常见问题。
+本文面向 **v0.10.3 / MPX/4 Draft 04**。
 
-## 1. 完全没有速度
+## 1. 先确认版本与 Source-ID
 
-先确认四件事：
-
-1. Mac 与 Landing 版本是否匹配；
-2. Landing 是否运行；
-3. Relay 是否能连接到 Landing；
-4. 上层代理是否把 TCP 交给了正确的本地透明入口。
+Client、Landing、Provisioning 最好使用同一正式版本。当前 0.10.3 Source-ID 为发布包中的 SOURCE_ID；不要只看文件名判断二进制来源。
 
 Landing：
 
 ~~~sh
 /usr/local/bin/mptcp-landing version
-/usr/local/bin/mptcp-landing doctor
-/usr/local/bin/mptcp-landing status
+systemctl status mptcp-userspace-landing.service
 ~~~
 
-Mac 端确认 carrier 数量、连接状态和 configured/effective scheduler。
+Linux Client：
 
-注意：127.0.0.1:1081 是透明 TCP 入口，不是 SOCKS5。把它当普通 SOCKS5 使用会得到错误结果。
+~~~sh
+mptcp-client-linux-amd64 version
+mptcp-client-linux-amd64 doctor-userspace
+~~~
 
-## 2. Weighted 一开就连接失败
+## 2. 完全没有流量
 
-最常见原因是 Landing 不支持 MPX/3 Rev5（例如仍是 0.9.3 或更早）。
+依次确认：
 
-Weighted 使用 0x44 hello 和 Rev5 方向容量字段，要求双端都支持 Rev5；0.9.5 Mac 可以连接 0.9.4 或 0.9.5 Landing。
+1. 本地 listen_port 是否监听；
+2. Client 是否能到达至少一条 Relay；
+3. Relay 是否能把 TCP 转发到正确 Landing 端口；
+4. Client/Landing Transport Key 是否一致；
+5. Landing backend 是否可达；
+6. 上层应用是否真的把 TCP 交给本地透明入口。
 
-如果暂时不能升级 Landing，可先切回 Auto / Aggregate / Protect；0.9.5 在这三个模式下仍与 0.9.3 保持 hello 兼容。
+注意：本地入口不是 SOCKS5。
 
-## 3. 某一条 Relay 基本没有流量
+## 3. 认证失败
 
-不一定是故障。
+最常见原因是 Transport Key 不一致，或者 Relay 指向了错误的 Landing/端口。
 
-可能原因：
+远端客户 UI 会把原始 endpoint 错误收敛成“认证失败 / 连接超时 / 连接失败”等，不直接展示 Relay IP/端口。需要服务端排障时再看受控的 Landing/系统日志。
 
-- 当前业务量不足以同时利用全部路径；
-- Auto/Protect 已把该路径降为 PROBE/BACKUP；
-- 路径处于 penalty；
-- RTT/queue 导致其预计到达成本明显更高；
-- carrier 刚恢复，正在重新学习；
-- Weighted 中虽然配置了容量，但实时交付保护暂时压低了它的使用率。
+## 4. Parallel Bundle 一份配置失败
 
-诊断时不要只看历史 last_error。历史错误存在不代表当前仍处于 penalty。
+0.10.3 的正常行为是：
 
-应同时看：
+- 本地端口预检查失败：整组不启动；
+- 远端连接、认证或运行失败：只标记对应 Profile；
+- 还有健康 Profile 时：Bundle 继续运行；
+- 全部 Profile 都不可用：Bundle 才停止。
+
+因此“某个 Profile 红色错误、另一个仍运行”是故障隔离，不是 Bundle 自身故障。
+
+## 5. 端口冲突
+
+parallel Bundle 要求所有已选择 Profile 的 listen_port 唯一，而且启动时必须都可绑定。
+
+如果出现端口冲突，先检查：
+
+~~~sh
+lsof -nP -iTCP:<port> -sTCP:LISTEN
+~~~
+
+或 Linux：
+
+~~~sh
+ss -lntp
+~~~
+
+single_select 可以让不同 Profile 复用同一个端口，因为一次只运行一份。
+
+## 6. 浏览器打开 Provisioning URL 只看到 v/n/d
+
+这是 0.10.2+ 的正常行为。公网 Profile/Bundle 响应外层是 AES-256-GCM envelope，因此不会直接显示 Relay、端口和 Transport Key。
+
+完整 URL 本身仍然是 bearer credential；不要把它贴到公开日志、Issue 或截图中。
+
+## 7. Weighted 某条路径流量很少
+
+不一定是故障。Weighted 不是固定百分比分流。
+
+实时 RTT、queue、outstanding、delivery、penalty、disconnect 与超时都会改变路径成本。路径也可能处于 LEARNING / PROBE / BACKUP。
+
+应一起看：
 
 - connected；
 - role / role_reason；
-- penalty 状态；
-- base RTT / 当前 RTT；
-- writer queue；
-- measured delivery；
-- retransmission / reinjection；
-- lifecycle 最近事件。
-
-## 4. Weighted 比例与配置值不完全一致
-
-这是预期行为。
-
-Weighted 配置的是容量先验，不是硬性的 packet ratio。
-
-例如六条路径都填 50 Mbps，也不意味着任意 1 秒窗口里每条都必须严格占 1/6 流量。
-
-实时因素仍会改变选择：
-
 - RTT；
-- queue；
-- penalty；
-- timeout；
-- disconnect；
-- 当前 flight；
-- retransmission / reinjection。
+- measured goodput；
+- queue / outstanding；
+- retransmits；
+- last error。
 
-长时间、持续大流量且所有路径健康时，配置容量会对分配产生稳定影响；短流、突发流或异常路径下不应要求精确比例。
+## 8. RTT 满载显著升高
 
-## 5. 空载 RTT 约 30 ms，满载升到 180 ms
+这通常说明路径存在排队或 bufferbloat。调度器会把 RTT/queue 纳入选择，但无法消除运营商、Relay 或出口设备自身的排队。
 
-这通常代表链路出现明显排队。
+Weighted 容量高估也会放大这一现象。
 
-调度器会把实时 RTT 和 writer queue 纳入选择，因此某条路径排队严重时，即使 Weighted 配置容量较高，它的 ETA 成本也会上升。
+## 9. 路径诊断看不到 Relay IP
 
-但如果所有路径都被打满并同时产生 bufferbloat，调度器无法凭空消除物理链路排队。
+远端配置下这是有意设计。客户 UI 只显示“路径 1 / 路径 2 …”及运行指标，不展示 Relay endpoint。
 
-建议同时检查：
+本地配置仍可用于更直接的工程排障。
 
-- 配置容量是否高估；
-- Relay / Landing 出口是否有限速；
-- 运营商链路是否存在深队列；
-- 是否只有单条路径 RTT 上升；
-- retransmission 是否同步上升。
+## 10. 后台常驻没有自动恢复
 
-如果是 Weighted，容量配置应尽量接近**可持续净可用吞吐**，而不是运营商标称峰值。
+确认：
 
-## 6. 上行与下行行为不同
+- MPTCP Desk 的“后台常驻”已开启；
+- macOS 登录项未处于 requires approval；
+- 用户不是刚刚手动点击了“停止”；
+- 网络已经恢复；
+- Provisioning URL 仍可获取权威配置。
 
-Weighted 是有方向的：
+后台恢复会重新建立 Session/Carrier，不会复用睡眠前的旧 socket。
 
-- download_mbps：Landing → Mac；
-- upload_mbps：Mac → Landing。
+## 11. 需要哪些日志
 
-如果 upload_mbps 留空，Mac → Landing 会继续使用 Aggregate 的在线估速。
+客户界面日志只保留同步、连接、认证、启动、错误、恢复与停止等必要事件。
 
-因此“下行按固定容量、上行仍自动学习”是合法配置，不是异常。
-
-## 7. 路径重启后恢复，但之前长期摸鱼
-
-重点检查：
-
-- carrier 是否曾断开；
-- 是否出现 penalty / delivery timeout；
-- role 是否停留在 PROBE/BACKUP；
-- 恢复探测是否成功；
-- retransmission / reinjection 是否持续增长；
-- Relay 自身 CPU / 网络是否异常。
-
-重启 Relay 转发后恢复，说明问题可能发生在 Relay 进程、TCP carrier 或该机网络状态，不等于 scheduler 本身已经证明有 bug。
-
-## 8. status 里看到 last_error，但现在业务正常
-
-last_error 是历史诊断信息。
-
-判断当前是否仍异常，应结合：
-
-- connected；
-- 当前 role；
-- 当前 penalty；
-- 最近 lifecycle；
-- 最新 RTT / delivery；
-- 当前业务流量。
-
-不要仅凭一条历史 last_error 判断路径仍然不可用。
-
-## 9. Landing 升级后异常
-
-先执行：
+协议/服务端排障使用：
 
 ~~~sh
-/usr/local/bin/mptcp-landing doctor
-/usr/local/bin/mptcp-landing status
+journalctl -u mptcp-userspace-landing.service -n 100 --no-pager
+journalctl -u mpx-provision.service -n 100 --no-pager
 ~~~
 
-如果确定新版本不适合当前环境，可以回滚：
-
-~~~sh
-/usr/local/bin/mptcp-landing rollback
-~~~
-
-回滚 Landing 到 0.9.3 后，Mac 不应继续使用 Weighted。
-
-## 10. macOS 无法正常打开 DMG 内 App
-
-v0.9.5 DMG 是 ad-hoc 签名，未 notarize。
-
-请使用正常 macOS 安全提示流程处理，不建议：
-
-- 关闭 SIP；
-- 全局关闭 Gatekeeper；
-- 批量清除安全属性；
-- 从不可信来源重新签名。
-
-安装前先核对 SHA256。
-
-## 11. CPU 突然升高
-
-先区分是：
-
-- Landing；
-- Relay 转发进程；
-- Mac Engine；
-- 上层代理。
-
-Landing 先看 status / logs / doctor；Relay 应单独检查其系统 CPU、连接数和异常进程。
-
-高 CPU 与“某路径被少用”不是同一个问题，不应直接把两者归因于 scheduler。
-
-## 12. 应该提供哪些信息用于排查
-
-在不泄漏密钥的前提下，优先提供：
-
-- Mac / Landing 版本；
-- Source-ID；
-- scheduler mode；
-- Relay 数量；
-- 每条路径配置容量；
-- RTT / minRTT；
-- role / penalty；
-- connected 状态；
-- retransmission / reinjection；
-- doctor / status 中的非敏感部分；
-- 问题发生时间与业务类型。
-
-不要提供：
-
-- transport key；
-- backend 密码；
-- SSH 私钥；
-- API token；
-- 未脱敏的凭据文件。
-
-更深入的调度行为见 [SCHEDULER-MODES.md](../userspace/SCHEDULER-MODES.md)，协议见 [PROTOCOL.md](../userspace/PROTOCOL.md)。
+不要把 Transport Key、完整 Provisioning URL 或其他 bearer secret 放进公开日志。

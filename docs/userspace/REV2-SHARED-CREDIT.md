@@ -1,5 +1,7 @@
 # MPX/3 capability revision 5 (0.9.5)
 
+> **Historical MPX/3 document.** Retained for implementation archaeology; current v0.10.3 MPX/4 behavior is documented in [PROTOCOL.md](PROTOCOL.md).
+
 ## Scope and baseline
 
 This revision fixes starvation caused by retaining monotonic per-stream WINDOW entitlements in a shared receive-credit reservation ledger. It is not a replacement path scheduler. Rev5 adds Weighted, but the shared-credit and directional-finalization model in this document remains unchanged. Baseline: 0.8.0 Source-ID 6da891a037e6478d0e04b835689a2a50237d2ec0bb7b12874b91f0d146e0972a.

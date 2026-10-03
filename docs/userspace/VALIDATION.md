@@ -1,25 +1,53 @@
-# 0.9.5 / MPX/3 Rev5 validation and release limits
+# v0.10.3 / MPX/4 Draft 04 validation and release limits
 
-0.9.5 is the background-resident and sleep/wake recovery release on top of the 0.9.4 Weighted transport. The wire protocol remains capability revision 5. Release evidence must bind the final frozen Source-ID.
+This document describes the current release gate. Historical version-specific validation files are not the source of truth for v0.10.3.
 
-Required 0.9.5 feature gates:
+## Required correctness gates
 
-1. Pure Swift lifecycle-policy harness proving recovery is allowed only when background resident and the persisted run intent are both enabled, and is suppressed during sleep, quit and explicit manual stop.
-2. Bounded restart schedule verification for 1 / 2 / 5 / 10 / 30 seconds with a 30-second cap.
-3. macOS 13 compile/type-check for ServiceManagement, NSWorkspace sleep/wake and Network path monitoring.
-4. Existing Profile/UI/Scheduler offscreen harnesses, now compiled with Lifecycle.swift.
-5. Go full test and vet for the engine/Landing packages.
-6. Race-enabled multipath and Weighted/main tests.
-7. Actual stdin engine coverage for Auto / Aggregate / Protect / Weighted.
-8. Rev5/Weighted direction, optional-upload fallback, penalty/timeout/reinjection and source-matched six-path high-BDP regression.
-9. Universal DMG and Linux Landing provenance verification rebuilt from the frozen source archive.
+A release candidate must pass, at minimum:
 
-The 0.9.5 lifecycle change must not modify MPX/3 hello bytes, capability revision, frame formats, 2048-stream bound, 128 MiB session credit, 128 MiB sender DATA pending, 128 MiB physical receive allocation or 16 MiB per-stream maximum window.
+1. Go engine/Landing full test suite and go vet.
+2. Race-enabled multipath/runtime tests.
+3. MPX/4 VarInt, Frame, key-schedule, Finished and Secure-Record vectors.
+4. Draft 04 Carrier Generation and Error Scope semantic vectors.
+5. Scheduler regressions for Auto / Aggregate / Protect / Weighted.
+6. Provisioning full test/vet, including Profile/Bundle validation and encrypted response envelope.
+7. Wrong-secret/tamper rejection and fresh nonce behavior for Provisioning encryption.
+8. Legacy plaintext managed-response compatibility.
+9. Bundle single_select/parallel selection and local-port conflict tests.
+10. Parallel runtime fault isolation: one failed Profile must not cancel healthy Profile runtimes.
+11. Swift arm64 and x86_64 typecheck.
+12. macOS offscreen UI rendering for local/remote configuration and path diagnostics.
+13. Remote Bundle per-Profile telemetry isolation and hidden Relay endpoint rendering.
+14. Default-collapsed and expanded Stream/Lifecycle and Window/Credit resource panels.
+15. Linux amd64 native runtime validation of managed encrypted Profile/Bundle configuration.
+16. Universal macOS DMG plus Linux amd64/arm64 Client, Landing and Provisioning builds.
+17. Frozen-source reproducibility and Source-ID binding for published artifacts.
 
-The lifecycle harness is deterministic logic coverage. It does not prove that a particular user's macOS login-item privacy setting grants launch-at-login. The real App reports SMAppService status, including requires-approval. Offscreen UI rendering also does not simulate a physical lid-close, Wi-Fi reassociation or actual login session.
+## Current implementation bounds
 
-The formal background-resident release package may be produced when current-source lifecycle/correctness gates and the unchanged Weighted laboratory gates pass, even if the full ten-case 30-second capacity matrix and physical 180-second App+Surge run are not rerun. In that case CAPACITY.json and RUNTIME.json must explicitly say `not-run-for-background-release`.
+Release validation assumes the v0.10.3 current bounds:
 
-A production deployment is separate from package creation. Validation and packaging must not replace the installed App, deploy HKT, or modify Surge, Soga, Relay, firewall or Native services.
+- 2–8 configured Relays per Profile;
+- up to 8 MPX/4 Carriers per Session;
+- 2048 active peer-initiated Streams;
+- 32 KiB STREAM_DATA maximum;
+- 16 MiB per-Stream receive-credit maximum;
+- 128 MiB Session receive-credit;
+- 128 MiB physical receive-page accounting.
 
-The delivery's ACCEPTANCE.md, TESTS.json, SCHEDULER-MODES.json, PROVENANCE.json, CAPACITY.json and RUNTIME.json remain the source of truth.
+Changing any of these is a separate capability/scale change and requires dedicated validation rather than documentation-only edits.
+
+## Evidence separation
+
+Correctness, laboratory performance, capacity, build provenance and production/App+Surge validation are separate evidence classes.
+
+A passing unit/race/offscreen test suite does not by itself prove WAN throughput or a specific production deployment. Performance claims must be tied to source-matched CAPACITY/RUNTIME evidence.
+
+## Production boundary
+
+Packaging or documentation work must not silently modify production Landing, Provisioning, Relay, firewall, backend, Surge or Native MPTCP services.
+
+A production upgrade is a separate operation with backups, hash verification, service health checks and rollback readiness.
+
+The release package TESTS.json, PROVENANCE.json, SCHEDULER-MODES.json, CAPACITY.json, RUNTIME.json and ACCEPTANCE.md are the machine-readable evidence records.

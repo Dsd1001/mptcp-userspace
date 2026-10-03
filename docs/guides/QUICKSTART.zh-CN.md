@@ -2,42 +2,25 @@
 
 [English](QUICKSTART.md)
 
-本文按 GitHub Release v0.9.5 的正式交付物说明最短部署路径。假设你已经有可用的 TCP Relay，并有一台 Linux amd64 机器作为 Landing。
-
-Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.5
+本文面向 **MPTCP Userspace v0.10.3 / MPX/4 Draft 04**。
 
 ## 1. 下载并校验
 
-至少下载：
+从 [v0.10.3 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.3) 下载需要的文件。
 
-- MPTCP-Desk-0.9.5-universal.dmg
-- mptcp-landing
-- MPTCP-Desk-0.9.5-SHA256SUMS
-- mptcp-landing.sha256
+常用产物：
 
-macOS 上校验 DMG：
+- MPTCP-Desk-0.10.3-universal.dmg
+- mptcp-client-linux-amd64 / arm64
+- mptcp-landing / mptcp-landing-linux-arm64
+- 需要远端配置时下载 mpx-provision / arm64
+- MPTCP-Userspace-0.10.3-SHA256SUMS
 
-~~~sh
-shasum -a 256 -c MPTCP-Desk-0.9.5-SHA256SUMS
-~~~
-
-Linux 上校验 Landing：
-
-~~~sh
-sha256sum -c mptcp-landing.sha256
-~~~
-
-v0.9.5 的冻结 Source-ID：
-
-~~~text
-3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
-~~~
-
-如果校验不一致，不要继续安装。
+安装前先校验 SHA256。
 
 ## 2. 准备 Landing
 
-在 Linux amd64 上，管理操作使用 root 或具备相应 sudo 权限的账号：
+Linux 上：
 
 ~~~sh
 chmod 755 ./mptcp-landing
@@ -45,124 +28,80 @@ chmod 755 ./mptcp-landing
 ./mptcp-landing menu
 ~~~
 
-交互管理器提供：
+已有部署升级时，先备份当前二进制、systemd unit 与配置，再替换二进制并重启服务。不要把 Transport Key 写进公开仓库、Issue 或普通日志。
 
-- install
-- config
-- start / stop / restart
-- status
-- logs
-- doctor
-- upgrade
-- rollback
-- uninstall
+推荐正式组合为 0.10.3 Client + 0.10.3 Landing。
 
-对已经托管的旧 Landing，可以直接走受控升级：
+## 3. 安装 Client
 
-~~~sh
-./mptcp-landing upgrade --source ./mptcp-landing --sha256 <可信的完整SHA256>
-/usr/local/bin/mptcp-landing doctor
-/usr/local/bin/mptcp-landing status
-~~~
+### macOS
 
-升级会保留上一份二进制和配套配置，便于 rollback。
+打开 Universal DMG 安装 MPTCP Desk。当前发布为 ad-hoc 签名，未做 Developer ID notarization。
 
-不要把 transport key 放进公开仓库、Issue、聊天或日志。除非你明确要改拓扑，否则沿用原 backend、transport key、Relay 与端口模型。
+首页可以选择：
 
-## 3. 安装 macOS Client
+- **本地配置**：直接填写运行参数；
+- **远端配置**：保存一条 secret Provisioning Profile/Bundle URL。
 
-DMG 是 macOS 13+ 的 arm64/x86_64 Universal 构建。
-
-建议流程：
-
-1. 先停止旧版正在运行的转发。
-2. 打开 DMG。
-3. 用新版本替换 Applications 中的 MPTCP Desk。
-4. 启动 App，按正常 macOS / Keychain 流程授权。
-5. 不要为了打开 App 去关闭 SIP 或 Gatekeeper。
-
-当前 DMG 是 ad-hoc 签名，未 notarize。
-
-0.9.5 还新增可选“后台常驻”：开启后会注册 macOS 登录项、记住转发应保持运行的状态；睡眠唤醒后等待网络恢复并重建 engine/session，而不是复用睡前 carrier socket。用户手动点击“停止”会抑制自动拉起。
-
-## 4. 配置 Userspace
-
-本地入口通常是：
-
-~~~text
-127.0.0.1:1081
-~~~
-
-这是**透明 TCP 入口，不是 SOCKS5**。
-
-继续让原 Surge / SS / AnyTLS 等上层配置把相应 TCP 连接交给该入口即可。
-
-然后配置 Relay 列表，并选择调度模式：
-
-- **Auto**：默认，通常优先推荐作为通用模式。
-- **Aggregate**：固定使用高吞吐学习调度。
-- **Protect**：固定使用路径保护/角色机制。
-- **Weighted**：已知每条 Relay 带宽能力时使用。
-
-### Weighted 配置
-
-每条 Relay：
-
-- 下行 Mbps：必填；
-- 上行 Mbps：选填。
-
-方向含义：
-
-- 下行 = Landing → Mac；
-- 上行 = Mac → Landing。
-
-如果上行留空，则只有 Mac → Landing 这个方向继续使用 Aggregate 在线估速。
-
-## 5. 检查版本兼容
-
-Weighted 要求双端都支持 MPX/3 Rev5；0.9.5 Mac 可以直接连接 0.9.4 或 0.9.5 Landing。
-
-0.9.5 的 Auto / Aggregate / Protect 继续沿用 0.9.3 的 hello，因此这些模式可以与 0.9.3 对接。
-
-MPX/2、Rev2/Rev3 候选和更早协议不能与 MPX/3 Rev5 混连。
-
-## 6. 启动后检查
-
-Landing：
+### Linux
 
 ~~~sh
-/usr/local/bin/mptcp-landing doctor
-/usr/local/bin/mptcp-landing status
+chmod 755 ./mptcp-client-linux-amd64
+./mptcp-client-linux-amd64 version
+./mptcp-client-linux-amd64 doctor-userspace
 ~~~
 
-macOS 诊断页重点看：
+Linux 只支持 Userspace MPX/4；Native MPTCP fallback 仍只在 macOS。
 
-- configured scheduler；
-- effective scheduler；
-- carrier 数量和连接状态；
-- 每条路径 RTT / minRTT；
-- writer queue；
-- role / role reason；
-- penalty / timeout；
-- Weighted rate；
-- retransmission / reinjection；
-- lifecycle 记录。
+## 4. 本地配置
 
-Weighted 中“配置了 50 Mbps”并不等于该路径永远必须跑满 50 Mbps。真实 RTT、queue、断线、penalty、delivery timeout 等仍会覆盖静态容量先验。
+当前 Userspace Profile 需要：
 
-## 7. 回滚
+- listen_port，例如 1081；
+- TCP/UDP 开关；
+- Auto / Aggregate / Protect / Weighted；
+- 2–8 条 Relay IPv4/端口；
+- 64 位十六进制 Transport Key；
+- Weighted 模式下的路径容量。
 
-Landing 托管升级后：
+127.0.0.1:<listen_port> 是透明 TCP 入口，不是 SOCKS5。
+
+## 5. 远端 Provisioning
+
+Provisioning 可以下发单个 Profile，也可以下发包含 1–32 个 Profile 的 Bundle。
+
+macOS 在 **远端配置** 中粘贴 secret URL，保存、同步，选择需要运行的 Profile 后启动。
+
+Linux 建议通过 stdin 传 URL，避免 bearer credential 出现在 ps：
+
+~~~json
+{"url":"https://config.example.com/v1/bundle/<secret>","profile_ids":["profile-a","profile-b"]}
+~~~
 
 ~~~sh
-/usr/local/bin/mptcp-landing rollback
+mptcp-client-linux-amd64 validate-managed < managed.json
+mptcp-client-linux-amd64 run-managed < managed.json
 ~~~
 
-如果 Landing 回滚到 0.9.3 或更早版本，Mac 也必须退出 Weighted；只使用 Auto/Aggregate/Protect 时按兼容矩阵处理。
+远端 URL 必须使用 HTTPS。0.10.2+ Provisioning 的公网响应是加密 envelope，0.10.3 Client 会自动解密。
 
-更多细节：
+## 6. Parallel Bundle
 
-- [部署与回滚](../userspace/DEPLOYMENT.zh-CN.md)
-- [架构说明](ARCHITECTURE.zh-CN.md)
-- [调度策略](../userspace/SCHEDULER-MODES.md)
-- [故障排查](TROUBLESHOOTING.zh-CN.md)
+parallel 启动前先原子检查所有已选择 Profile 的本地 listen_port 是否唯一且可用。
+
+预检查通过后，各 Profile 独立运行：一份配置连接/认证失败，只标记该 Profile 错误，其他健康 Profile 继续运行。只有全部不可用或用户主动停止时才结束整组。
+
+## 7. 验证运行
+
+MPTCP Desk 打开 **路径诊断**，查看：
+
+- Profile 状态；
+- 配置/当前 Scheduler；
+- 路径数量；
+- RTT / Goodput / queue / outstanding；
+- retransmit、reorder、pending；
+- Stream/Lifecycle 与 Window/Credit 资源。
+
+远端 Profile 的客户 UI 会隐藏 Relay IP/端口。
+
+更多说明见 [故障排查](TROUBLESHOOTING.zh-CN.md) 与 [部署/回滚](../userspace/DEPLOYMENT.zh-CN.md)。

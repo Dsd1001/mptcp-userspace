@@ -2,40 +2,25 @@
 
 [中文版](QUICKSTART.zh-CN.md)
 
-This guide uses the published v0.9.5 release artifacts. It assumes that you already have reachable TCP Relay endpoints and a Linux amd64 machine that will run Landing.
-
-Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.5
+This guide targets **MPTCP Userspace v0.10.3 / MPX/4 Draft 04**.
 
 ## 1. Download and verify
 
-Download at least:
+Download the required artifacts from the [v0.10.3 release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.3).
 
-- MPTCP-Desk-0.9.5-universal.dmg
-- mptcp-landing
-- MPTCP-Desk-0.9.5-SHA256SUMS
-- mptcp-landing.sha256
+Typical files:
 
-Verify the macOS DMG on macOS:
+- MPTCP-Desk-0.10.3-universal.dmg
+- mptcp-client-linux-amd64 or mptcp-client-linux-arm64
+- mptcp-landing or mptcp-landing-linux-arm64
+- mpx-provision or mpx-provision-linux-arm64 when managed configuration is needed
+- MPTCP-Userspace-0.10.3-SHA256SUMS
 
-~~~sh
-shasum -a 256 -c MPTCP-Desk-0.9.5-SHA256SUMS
-~~~
-
-Verify Landing on Linux:
-
-~~~sh
-sha256sum -c mptcp-landing.sha256
-~~~
-
-The v0.9.5 release Source-ID is:
-
-~~~text
-3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
-~~~
+Verify hashes before installing.
 
 ## 2. Prepare Landing
 
-On Linux amd64, run management operations as root or with appropriate sudo privileges:
+On Linux:
 
 ~~~sh
 chmod 755 ./mptcp-landing
@@ -43,93 +28,79 @@ chmod 755 ./mptcp-landing
 ./mptcp-landing menu
 ~~~
 
-The interactive manager exposes install, config, start, stop, restart, status, logs, doctor, upgrade, rollback and uninstall operations.
+Keep the Landing configuration, backend, transport key and Relay topology private. For an existing installation, back up the current binary/config before replacing the binary and restart the systemd service only after verifying the release hash.
 
-For an already managed installation, a controlled upgrade is:
+The recommended deployment pair is 0.10.3 Client + 0.10.3 Landing.
 
-~~~sh
-./mptcp-landing upgrade --source ./mptcp-landing --sha256 <trusted-full-sha256>
-/usr/local/bin/mptcp-landing doctor
-/usr/local/bin/mptcp-landing status
-~~~
+## 3. Install the client
 
-Do not publish or paste the transport key. Reuse the existing backend, transport-key and Relay/port model unless you intentionally change the deployment.
+### macOS
 
-## 3. Install the macOS client
+Open the Universal DMG and install MPTCP Desk. The current release is ad-hoc signed and not Developer ID notarized.
 
-The DMG contains a Universal arm64/x86_64 build for macOS 13+.
+The home page lets you choose:
 
-1. Stop the old forwarding session.
-2. Open the DMG.
-3. Replace the existing MPTCP Desk application in Applications.
-4. Launch the app and accept the normal macOS / Keychain prompts.
-5. Do not disable SIP or Gatekeeper.
+- **Local configuration** — enter the runtime configuration directly;
+- **Remote configuration** — save a secret Provisioning Profile/Bundle URL.
 
-The DMG is ad-hoc signed and not notarized.
-
-v0.9.5 also adds optional Background Resident mode. When enabled, the app registers as a macOS login item, remembers the intended running state, waits for network availability after wake, and rebuilds the engine/session instead of trying to reuse pre-sleep carrier sockets. Explicit Stop suppresses automatic restart.
-
-## 4. Configure the profile
-
-The Userspace local entry is normally:
-
-~~~text
-127.0.0.1:1081
-~~~
-
-This is a transparent TCP entry, **not a SOCKS5 server**.
-
-Configure the Relay endpoints and select a scheduler:
-
-- Auto: default and general-purpose.
-- Aggregate: force throughput-oriented learned scheduling.
-- Protect: force path-role protection.
-- Weighted: use known per-Relay capacity.
-
-Weighted requires, for every Relay:
-
-- downstream Mbps: required;
-- upstream Mbps: optional.
-
-If upstream is omitted, Mac → Landing uses learned Aggregate capacity for that direction.
-
-## 5. Version compatibility
-
-Weighted requires MPX/3 Rev5 on both endpoints. A v0.9.5 Mac can use Weighted with either a v0.9.4 or v0.9.5 Landing.
-
-Auto, Aggregate and Protect in v0.9.5 keep the same scheduler hello bytes as v0.9.3 and can interoperate with v0.9.3.
-
-MPX/2 and older protocol candidates are not compatible with MPX/3 Rev5.
-
-## 6. Verify after start
-
-Check the Landing:
+### Linux
 
 ~~~sh
-/usr/local/bin/mptcp-landing doctor
-/usr/local/bin/mptcp-landing status
+chmod 755 ./mptcp-client-linux-amd64
+./mptcp-client-linux-amd64 version
+./mptcp-client-linux-amd64 doctor-userspace
 ~~~
 
-On macOS, check:
+Linux supports Userspace MPX/4 only; Native MPTCP fallback is macOS-only.
 
-- configured scheduler;
-- effective scheduler;
-- carrier count and connectivity;
-- per-path RTT and queue state;
-- path roles / penalties;
-- Weighted rate fields when Weighted is selected;
-- retransmission and lifecycle diagnostics.
+## 4. Local configuration
 
-For Weighted, a configured capacity does not force a broken path to carry traffic. Disconnect, penalty, queue pressure, RTT, delivery timeout and reinjection still apply.
+A current Userspace Profile includes:
 
-## 7. Roll back
+- listen_port, normally a loopback entry such as 1081;
+- TCP/UDP switches;
+- Auto / Aggregate / Protect / Weighted scheduler;
+- 2–8 Relay IPv4/port entries;
+- 64-hex-character Transport Key;
+- Weighted capacity values when Weighted is selected.
 
-If a managed Landing upgrade must be reverted:
+The local listener is a transparent TCP entry, not a SOCKS5 server.
+
+## 5. Managed Provisioning
+
+Provisioning can issue either one Profile or a Bundle containing 1–32 Profiles.
+
+For macOS, paste the secret URL under **Remote configuration**, save it, sync, select the desired Profile(s), then start.
+
+For Linux, keep the URL out of process arguments:
+
+~~~json
+{"url":"https://config.example.com/v1/bundle/<secret>","profile_ids":["profile-a","profile-b"]}
+~~~
 
 ~~~sh
-/usr/local/bin/mptcp-landing rollback
+mptcp-client-linux-amd64 validate-managed < managed.json
+mptcp-client-linux-amd64 run-managed < managed.json
 ~~~
 
-If you roll Landing back to a version older than 0.9.4, stop using Weighted on the Mac as well.
+Remote URLs require HTTPS. Public responses from 0.10.2+ Provisioning are opaque encrypted envelopes; the 0.10.3 client decrypts them automatically.
 
-For more detail, see [Deployment](../userspace/DEPLOYMENT.zh-CN.md), [Scheduler modes](../userspace/SCHEDULER-MODES.md) and [Troubleshooting](TROUBLESHOOTING.zh-CN.md).
+## 6. Parallel Bundles
+
+Parallel startup first validates that all selected local listen ports are unique and available. That preflight is atomic.
+
+After preflight, Profile runtimes are independent. If one Profile cannot reach/authenticate its Landing, that Profile reports an error while healthy Profile listeners continue running. The Bundle stops only when every selected Profile is unavailable or the user stops it.
+
+## 7. Verify operation
+
+In MPTCP Desk, open **Path Diagnostics** and check:
+
+- Profile runtime status;
+- configured/effective scheduler;
+- connected paths;
+- RTT / Goodput / queue / outstanding;
+- retransmits and reorder/pending counters.
+
+For remote Profiles, Relay endpoints are intentionally hidden from the customer UI.
+
+See [Troubleshooting](TROUBLESHOOTING.zh-CN.md) and [Deployment / rollback](../userspace/DEPLOYMENT.zh-CN.md) for more detail.

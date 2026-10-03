@@ -1,5 +1,7 @@
 # MPX/3 Rev5 credit model (0.9.5)
 
+> **Historical MPX/3 document.** Do not use this as the current wire/resource specification. Current v0.10.3 behavior is described in [PROTOCOL.md](PROTOCOL.md).
+
 The current normative model is REV2-SHARED-CREDIT.md and PROTOCOL.md. Revision 1's shared sum of irrevocable WINDOW entitlements is no longer the resource allocator; Rev5 retains the same Rev4 actual-offset accounting and resource bounds. Weighted changes path capacity selection only; 0.9.5 background-resident recovery does not alter credit accounting.
 
 The `receive_credit_bytes` and `growth_credit_bytes` diagnostics now represent actual unconsumed logical offset commitment, including declared holes, not historical grants. `stream_window_entitlement_bytes` reports the separate sum of grants. `idle_irrevocable_growth_bytes` is a legacy entitlement diagnostic and must not be interpreted as actual rev2 usage; use `idle_actual_data_bytes` and the actual session counters.

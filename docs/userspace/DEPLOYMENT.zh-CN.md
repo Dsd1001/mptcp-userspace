@@ -1,53 +1,123 @@
-# 0.9.5 配套部署、后台常驻与回滚
+# 0.10.3 部署、升级与回滚
 
-0.9.5 继续使用 MPX/3 Rev5，网络协议与 0.9.4 相同。0.9.5 Mac 可以直接连接 0.9.4 Landing 并使用 Weighted；只有 0.9.3 及更早 Landing 不理解 Weighted 0x44。Auto / Aggregate / Protect 仍保持与 0.9.3 的 hello 兼容。
+本文面向 **MPTCP Userspace v0.10.3 / MPX/4 Draft 04**。正式环境建议 Client、Landing、Provisioning 使用同一版本。
 
-## Mac：后台常驻
+## 1. 发布文件
 
-0.9.5 新增可选“后台常驻”。开启后：
+从 v0.10.3 Release 下载并校验：
 
-- 使用 macOS ServiceManagement 注册当前 App 为登录项；
-- 记住“转发应保持运行”的用户意图；
-- 监听系统 sleep / wake；
-- 唤醒后主动重建 engine/session，而不是尝试延续睡前 TCP socket；
-- 用 Network framework 等待网络可用后再拨 Relay；
-- engine 意外退出时使用 1 / 2 / 5 / 10 / 30 秒退避；连续 5 次仍未恢复到 listening 时停止本轮自动重试并提示需要处理；
-- 用户手动点击“停止”会清除运行意图，后台逻辑不会再自动拉起；
-- 关闭后台常驻会撤销登录项，但不会强制停止当前已运行的转发。
+- MPTCP-Desk-0.10.3-universal.dmg
+- mptcp-client-linux-amd64 / arm64
+- mptcp-landing / mptcp-landing-linux-arm64
+- mpx-provision / mpx-provision-linux-arm64
+- MPTCP-Userspace-0.10.3-SHA256SUMS
+- SOURCE_ID / PROVENANCE.json / TESTS.json
 
-后台常驻要求 macOS 13+，与本 App 的最低系统版本一致。它不是 root LaunchDaemon，也不会修改系统代理、路由、DNS、防火墙或内核 MPTCP。
+任何二进制替换前先确认 SHA256 与 Source-ID。
 
-若系统设置把登录项状态标记为“需要批准”，App 会显示对应状态；需要用户在 macOS 登录项设置中允许后，下一次登录自启才会生效。睡眠/唤醒和当前 App 会话内的 engine 恢复不依赖 root 权限。
+## 2. Landing
 
-旧 schema 3 Profile 可直接载入。Weighted 每条 Relay 的下行 Mbps 仍必填、上行 Mbps 仍选填；上行留空表示 Mac→Landing 继续自动估算。
+Landing 配置应保存在受限权限文件中，至少包含：
 
-## Landing：0.9.4 可继续使用
+- listen 地址/端口；
+- backend TCP/UDP；
+- Transport Key；
+- UDP 开关；
+- max_sessions。
 
-本版本没有新的 wire revision，因此已经部署的 0.9.4 Landing **无需为了 0.9.5 Mac 再升级**。如希望版本号统一，也可以部署 0.9.5 Landing；其协议与资源边界不变。
+推荐由 systemd 管理，并把配置通过 LoadCredential 或同等受限方式传入。
 
-Landing 管理命令仍为：
+升级步骤：
 
-```sh
-./mptcp-landing version
-./mptcp-landing doctor
-./mptcp-landing status
-```
+1. 记录当前 version / Source-ID / binary SHA256；
+2. 备份旧二进制、systemd unit 与配置；
+3. 校验新二进制；
+4. 原子替换 /usr/local/bin/mptcp-landing；
+5. restart；
+6. 检查监听端口、systemd active 状态与日志；
+7. 用同版本 Client 做一次真实认证/配置验证。
 
-受控升级示例：
+不要为了升级 Landing 修改无关的 Relay、backend、Native MPTCP、AB/network/tunnel 服务。
 
-```sh
-chmod 755 /root/mptcp-landing
-/root/mptcp-landing upgrade --source /root/mptcp-landing --sha256 <完整SHA256>
-/usr/local/bin/mptcp-landing doctor
-/usr/local/bin/mptcp-landing status
-```
+## 3. Provisioning
 
-管理器会保留上一份二进制和配置用于 rollback。不要把 transport key 输出到报告或聊天。
+Provisioning 建议只监听 loopback，例如 127.0.0.1:8088，再由 nginx/Caddy 等成熟反向代理提供 HTTPS。
 
-## 安装与回滚
+升级前备份：
 
-替换 App 前保留上一版 DMG。0.9.5 使用新的 UserDefaults 标志记录后台常驻与“应保持运行”意图；关闭“后台常驻”即可撤销登录项并清除自动运行意图。回滚到 0.9.4 时，0.9.4 不读取这些新标志，因此不会实现自动唤醒恢复。
+- mpx-provision 二进制；
+- systemd unit；
+- env 文件；
+- profiles.json；
+- bundles.json；
+- admin-password；
+- reverse proxy 配置。
 
-构建成功不等于物理 App+Surge 或公网性能验收。精确验证状态以随包 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、CAPACITY.json、RUNTIME.json 为准。
+0.10.3 保持现有 Profile/Bundle 数据模型与 URL；不需要迁移数据。
 
-本发行流程不会自动替换已安装 Mac App，也不会自动部署 HKT；部署是单独、明确的操作。不要顺手调整 Surge、Soga、Relay、Native、防火墙或 UDP 设置。
+公网 /v1/config/ 与 /v1/bundle/ 响应是 v/n/d 加密 envelope。不要用“浏览器看不到明文”替代 HTTPS；完整 URL 本身仍是 bearer credential。
+
+## 4. macOS Client
+
+替换 App 前先停止旧 runtime。
+
+0.10.3 首页有：
+
+- 本地配置；
+- 远端配置。
+
+远端模式下 secret URL 存入 Keychain。Bundle Profile 的 Transport Key 从权威响应进入内存/engine stdin，不写普通 preferences。
+
+后台常驻开启时，登录、睡眠唤醒、网络恢复或 engine 异常后会重建 runtime。用户手动“停止”后不会自动拉起。
+
+## 5. Linux Client
+
+Linux Client 支持：
+
+~~~text
+validate
+run
+validate-bundle
+run-bundle
+validate-managed
+run-managed
+doctor-userspace
+version
+~~~
+
+managed URL 建议只通过 stdin/0600 文件传入，避免出现在命令行参数。
+
+## 6. Parallel Bundle 行为
+
+parallel 模式分两层错误：
+
+**本地配置错误**：重复/占用 listen_port 等在启动前原子预检查，失败时整组不启动。
+
+**远端运行错误**：某个 Profile 无法连接/认证或运行中退出，只停止该 Profile；其他健康 Profile 继续运行。只有全部不可用或用户主动停止时 Bundle 才结束。
+
+## 7. 回滚
+
+每次升级都应保留一个可独立恢复的目录，例如：
+
+~~~text
+/var/backups/mpx-<version>-<timestamp>/
+~~~
+
+至少保存旧二进制、unit、配置和 Provisioning 数据。
+
+回滚时：
+
+1. 停止对应服务；
+2. 恢复旧二进制；
+3. 仅在必要时恢复与该旧版匹配的配置/数据；
+4. daemon-reload（unit 有变化时）；
+5. restart；
+6. 验证 version、监听端口和真实 Client 连接。
+
+不要在没有证据的情况下回滚或覆盖与本次升级无关的网络/代理服务。
+
+## 8. 发布验证边界
+
+发布包的 PROVENANCE/TESTS/CAPACITY/RUNTIME 等记录描述构建与验证证据。它们不能替代具体生产环境的连通性、带宽、Relay 或 backend 检查。
+
+当前验证要求见 [VALIDATION.md](VALIDATION.md)。

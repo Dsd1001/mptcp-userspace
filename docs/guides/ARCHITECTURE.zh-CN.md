@@ -1,186 +1,103 @@
 # MPTCP Userspace 架构说明
 
+本文描述 **v0.10.3 / MPX/4 Draft 04** 的当前架构。历史 MPX/2、MPX/3 文档仅用于实现考古，不是当前部署说明。
+
 ## 1. 组件
 
-MPTCP Userspace 由四类角色组成：
+MPTCP Userspace 由五类角色组成：
 
 1. **应用 / Surge**：产生实际 TCP 业务。
-2. **MPTCP Desk（Mac）**：接收本地透明 TCP 连接，把逻辑流封装进 MPX/3。
-3. **Relay**：只做普通 TCP 字节转发，不理解 MPX/3。
-4. **Landing（Linux）**：认证并终止 MPX/3，将解复用后的业务 TCP 连接到 backend。
-
-示意：
+2. **MPTCP Desk / Headless Client**：接收本地连接并建立 MPX/4 Session。
+3. **Relay**：只做普通 TCP 转发，不理解 MPX/4。
+4. **Landing**：认证并终止 MPX/4，把逻辑 Stream 转成 backend TCP。
+5. **Provisioning（可选）**：管理 Profile / Bundle，不经过业务数据路径。
 
 ~~~text
-            +------------------- macOS -------------------+
-            |                                             |
-App/Surge ->| 127.0.0.1:1081 -> MPTCP Desk Userspace     |
-            |                         |                    |
-            +-------------------------|--------------------+
-                                      |
-                     +----------------+----------------+
-                     |                |                |
-                  Relay A          Relay B          Relay C
-                     |                |                |
-                     +----------------+----------------+
-                                      |
-                                Linux Landing
-                                      |
-                                   Backend
+App / Surge
+    |
+    v
+127.0.0.1:<listen_port>
+    |
+    v
+Client
+    |
+    +-- Carrier 1 --> Relay A --+
+    +-- Carrier 2 --> Relay B --+--> Landing --> backend
+    '-- Carrier N --> Relay N --+
+              MPX/4 Session
 ~~~
 
-## 2. 为什么不是内核 MPTCP
+## 2. Session、Carrier 与 Stream
 
-Userspace 模式不会依赖内核 MPTCP subflow。
+一份 Userspace Profile 对应一个独立 MPX Session。当前 v0.10.3 每个 Profile 配置 2–8 条 Relay，每个 Session 最多 8 条 Carrier。
 
-每条 carrier 是普通 TCP 连接，MPX/3 在应用层完成：
+Carrier 是普通 TCP 连接。每条 Carrier 都通过 MPX/4 CREATE/JOIN 完成认证，并有独立的 Generation、traffic key、IV、序号空间与路径统计。
 
-- session 认证；
-- 多 carrier 归并；
-- 逻辑 stream 标识；
-- DATA / ACK / WINDOW 等记录；
-- scheduler；
-- flow control；
-- timeout / retransmission / reinjection。
+应用 TCP 连接映射为 MPX Stream。Stream 字节身份与 Carrier 无关，因此 DATA 可以在不同 Carrier 上发送、重传或 reinject，而不改变逻辑字节位置。
 
-因此 Relay 只需要能够稳定转发 TCP，不需要支持 MPTCP 协议扩展。
+## 3. Profile 与 Bundle
 
-Native 模式与 Userspace 模式是两条独立路径，不应混为一谈。
+Profile 是一份完整运行配置，拥有自己的：
 
-## 3. 一条业务流如何通过系统
+- listen_port；
+- Relay / Carrier 集合；
+- Scheduler；
+- Transport Key；
+- TCP / UDP 开关；
+- 后台常驻设置。
 
-当上层应用打开一个 TCP 连接时：
+Bundle 可以包含 1–32 个 Profile：
 
-1. 本地入口接收业务连接；
-2. Mac 为它分配 MPX/3 logical stream identity；
-3. OPEN 在会话中建立逻辑流；
-4. DATA 按 scheduler 分配到一条或多条 carrier 的发送机会；
-5. Landing 解密并按 stream/offset 重组；
-6. Landing 与 backend 建立/维护对应 TCP；
-7. 反方向按同样的 MPX/3 机制返回。
+- single_select：一次只运行一份；
+- parallel：同时运行一份或多份。
 
-逻辑流不是“一条业务 TCP 永远绑定一条 Relay”。调度器可以根据当前路径状态选择 DATA 所走的 carrier，必要时执行跨路 reinjection。
+parallel 模式下不同 Profile 仍然是独立 Session，不会合并 Relay。启动前会原子检查本地端口；通过后，某个 Profile 的远端失败不会终止其他健康 Profile。
 
-## 4. 会话与 carrier
+## 4. Scheduler
 
-同一个 MPX/3 session 可以拥有多条 carrier。
+当前支持：
 
-每条 carrier 在加入 session 时通过认证 hello 绑定：
+- **Auto**：根据稳定的路径状态决定是否进入保护行为；
+- **Aggregate**：让多条 eligible Carrier 并行承担 DATA；
+- **Protect**：限制异常路径，只保留有界探测/恢复；
+- **Weighted**：把用户提供的方向容量与实时 RTT、queue、delivery、penalty 等信号一起用于路径选择。
 
-- session / carrier 身份；
-- challenge；
-- configured scheduler；
-- Rev5 Weighted 方向容量字段。
+Weighted 是容量先验，不是硬性流量比例，也不是带宽保证。
 
-Weighted 的方向容量属于 HMAC transcript，因此中间 Relay 不能静默篡改。
+## 5. Flow control 与资源
 
-0.9.5 继续使用 0.9.4 引入的 capability revision 5：
+MPX/4 同时使用 Stream 与 Session Credit。当前实现主要边界：
 
-- 0x41 Auto
-- 0x42 Aggregate
-- 0x43 Protect
-- 0x44 Weighted
+- 2048 active peer-initiated Streams；
+- 32 KiB 最大 STREAM_DATA；
+- 16 MiB 单 Stream 最大 receive-credit window；
+- 128 MiB Session receive-credit；
+- 128 MiB physical receive-page accounting；
+- sender DATA/control queue 有硬上限。
 
-其中前三个值与 0.9.3 保持兼容。
+Carrier 丢失不会自动销毁 Stream；未确认可靠数据可以重新调度到其他健康 Carrier。
 
-## 5. 调度器看到什么
+## 6. 路径诊断
 
-调度器不是只看单一 RTT 或单一带宽值。
+MPTCP Desk 展示：
 
-典型输入包括：
+- configured/effective Scheduler；
+- Carrier/连接数量；
+- RTT、Goodput、queue、outstanding；
+- reorder、pending、retransmit；
+- Stream/Lifecycle 资源；
+- Window/Credit 资源。
 
-- carrier 是否连接；
-- base RTT / 当前 RTT；
-- writer queue；
-- 已发送未确认 DATA 债务；
-- delivery 速率；
-- path role；
-- penalty；
-- stale / delivery timeout；
-- configured capacity（Weighted）。
+远端 Bundle 按 Profile 独立显示完整诊断。客户 UI 不展示 Relay IP/端口或原始 endpoint 错误。
 
-### Weighted
+## 7. UDP
 
-Weighted 把用户提供的容量作为“正常 DATA 调度的容量先验和 flight budget 基础”。
+UDP 使用独立的认证 MPU/1 数据面，拥有自己的路径健康、receipt、分片/重组与调度逻辑。它不是 MPX/4 Core Datagram 扩展。
 
-它不取消动态保护。因此：
+## 8. 安全边界
 
-- 路径断开时不会继续调度；
-- penalty 期间有健康路径时会避开；
-- queue 太深会增加预计到达成本；
-- RTT 上升会影响 ETA；
-- delivery timeout 仍会触发保护和 reinjection。
+MPX/4 Draft 04 使用预共享 Transport Key、HKDF-SHA256/HMAC-SHA256 与 AES-256-GCM。Relay 不需要持有协议密钥。
 
-所以 Weighted 的目标是“让已知容量参与调度”，而不是“强制每条路径永远按固定百分比分流”。
+Provisioning URL 也是 bearer credential。0.10.2+ 的公网配置响应外层使用不透明 AES-256-GCM envelope，但持有完整 URL 的人仍拥有解密材料，因此远程 Provisioning 必须使用 HTTPS。
 
-## 6. Protect / Auto 的路径角色
-
-Protect 以及 Auto 进入保护行为后，会使用路径角色：
-
-- LEARNING：样本不足；
-- ACTIVE：健康业务路径；
-- PROBE：受限探测；
-- BACKUP：默认不承担普通业务 DATA，仅保留有界恢复探测。
-
-这套机制用于避免一条明显异常的路径继续积累大量未确认 DATA。
-
-详细阈值和滞回见 [SCHEDULER-MODES.md](../userspace/SCHEDULER-MODES.md)。
-
-## 7. Flow control
-
-MPX/3 同时存在：
-
-- per-stream WINDOW；
-- session-level SESSION_WINDOW / MAX_DATA；
-- sender DATA pending 限制；
-- physical receive page accounting。
-
-v0.9.5 的主要上限：
-
-- 2048 occupied stream identities；
-- 128 MiB session credit；
-- 128 MiB sender DATA pending；
-- 128 MiB physical receive accounting；
-- 16 MiB per-stream receive window；
-- 32 KiB DATA payload。
-
-这些限制彼此不是同一个计数器。比如 session credit 仍有空间，不代表物理接收页一定还有空间。
-
-详细说明见 [MPX3-CREDIT.md](../userspace/MPX3-CREDIT.md)。
-
-## 8. 可靠性与跨路恢复
-
-普通 DATA ACK 表示“数据已由对端协议层收到”，不等于 backend 应用已经消费。
-
-当 carrier 交付停滞、断开或超时时，已有机制负责：
-
-- 识别 stale / timeout；
-- 降低或移除路径资格；
-- 对必要 DATA 进行 retransmission；
-- 在其他健康路径上 reinject。
-
-因此某条 Relay “短时间摸鱼”不一定立即导致整个 session 中断，但可能表现为：
-
-- 该路径业务量迅速下降；
-- role 降级；
-- penalty；
-- retransmission / reinjection 上升。
-
-## 9. RTT 与满载排队
-
-空载 RTT 低、满载 RTT 明显升高通常说明链路中存在排队。
-
-调度器会看到路径 RTT / queue 等实时信息，并把它们纳入路径成本；Weighted 也不会绕过这些安全信号。
-
-但调度器不能从根本上消除运营商、Relay 或出口设备中的 bufferbloat。若所有路径都在满载下产生严重排队，仍需要从链路容量配置、发送负载或队列管理层面处理。
-
-## 10. 安全边界
-
-MPX/3 使用 PSK 认证与 AES-GCM 保护记录，但：
-
-- 不是 TLS PKI；
-- 0.9.5 不提供 forward secrecy；
-- 不应把 transport key 放进仓库或公开日志；
-- Relay 看见的是普通 TCP carrier，不需要持有协议密钥。
-
-更精确的 wire format 见 [PROTOCOL.md](../userspace/PROTOCOL.md)。
+更精确的 wire 行为见 [PROTOCOL.md](../userspace/PROTOCOL.md)，调度细节见 [SCHEDULER-MODES.md](../userspace/SCHEDULER-MODES.md)。
