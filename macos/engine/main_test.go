@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -395,5 +398,125 @@ func TestManagedInputAndURLPolicy(t *testing.T) {
 	}
 	if _, err := readManagedInput(strings.NewReader(`{"url":"https://cfg.example.test/x","profile_ids":["a","a"]}`)); err == nil {
 		t.Fatal("duplicate profile ids accepted")
+	}
+}
+
+func TestBundleFakeChildProcess(t *testing.T) {
+	if os.Getenv("MPTCP_BUNDLE_HELPER") != "1" {
+		return
+	}
+	switch os.Getenv("MPTCP_BUNDLE_HELPER_KIND") {
+	case "good":
+		fmt.Println(`{"kind":"listening","paths":1,"connections":0,"sent":0,"received":0}`)
+		for {
+			time.Sleep(time.Hour)
+		}
+	case "bad":
+		fmt.Println(`{"kind":"error","message":"synthetic relay unreachable"}`)
+		os.Exit(1)
+	default:
+		fmt.Println(`{"kind":"error","message":"unknown helper mode"}`)
+		os.Exit(2)
+	}
+}
+
+func fakeBundleLauncher(modes map[string]string) bundleChildLauncher {
+	return func(ctx context.Context, _ string, profile BundleProfile, _ []byte) (*exec.Cmd, io.ReadCloser, error) {
+		mode, ok := modes[profile.ProfileID]
+		if !ok {
+			return nil, nil, errors.New("no fake mode for profile")
+		}
+		if mode == "START_ERROR" {
+			return nil, nil, errors.New("synthetic start failure")
+		}
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBundleFakeChildProcess$")
+		cmd.Env = append(os.Environ(), "MPTCP_BUNDLE_HELPER=1", "MPTCP_BUNDLE_HELPER_KIND="+mode)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return nil, nil, err
+		}
+		cmd.Stderr = io.Discard
+		if err := cmd.Start(); err != nil {
+			return nil, nil, err
+		}
+		return cmd, stdout, nil
+	}
+}
+
+func TestParallelBundleKeepsHealthyProfileRunningWhenPeerFails(t *testing.T) {
+	p1 := bundleProfile("good", "Good", freeTestPort(t))
+	p2 := bundleProfile("bad", "Bad", freeTestPort(t))
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-resilient", Revision: "r1", DisplayName: "Resilient", Mode: "parallel", Profiles: []BundleProfile{p1, p2}}
+	launcher := fakeBundleLauncher(map[string]string{
+		"good": "good",
+		"bad":  "bad",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runBundleWithLauncher(ctx, b, nil, launcher) }()
+	select {
+	case err := <-done:
+		t.Fatalf("healthy Profile was stopped by failed peer: %v", err)
+	case <-time.After(700 * time.Millisecond):
+		// Expected: the healthy child remains alive after the bad child exits.
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel result=%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bundle did not stop after cancellation")
+	}
+}
+
+func TestParallelBundleFailsOnlyWhenAllProfilesFail(t *testing.T) {
+	p1 := bundleProfile("a", "A", freeTestPort(t))
+	p2 := bundleProfile("b", "B", freeTestPort(t))
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-all-bad", Revision: "r1", DisplayName: "All Bad", Mode: "parallel", Profiles: []BundleProfile{p1, p2}}
+	launcher := fakeBundleLauncher(map[string]string{
+		"a": "bad",
+		"b": "bad",
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := runBundleWithLauncher(ctx, b, nil, launcher)
+	if err == nil || !strings.Contains(err.Error(), "所有 2 个所选 Profile 均不可用") {
+		t.Fatalf("all-bad bundle err=%v", err)
+	}
+}
+
+func TestParallelBundleStartFailureDoesNotStopStartedPeer(t *testing.T) {
+	p1 := bundleProfile("good", "Good", freeTestPort(t))
+	p2 := bundleProfile("start-bad", "Start Bad", freeTestPort(t))
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-start-failure", Revision: "r1", DisplayName: "Start Failure", Mode: "parallel", Profiles: []BundleProfile{p1, p2}}
+	launcher := fakeBundleLauncher(map[string]string{
+		"good":      "good",
+		"start-bad": "START_ERROR",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runBundleWithLauncher(ctx, b, nil, launcher) }()
+	select {
+	case err := <-done:
+		t.Fatalf("start failure stopped healthy peer: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel result=%v", err)
+	}
+}
+
+func TestSingleSelectStillFailsWhenSelectedProfileFails(t *testing.T) {
+	p := bundleProfile("only", "Only", freeTestPort(t))
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-single", Revision: "r1", DisplayName: "Single", Mode: "single_select", Profiles: []BundleProfile{p}}
+	launcher := fakeBundleLauncher(map[string]string{"only": "bad"})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := runBundleWithLauncher(ctx, b, []string{"only"}, launcher)
+	if err == nil || !strings.Contains(err.Error(), "所有 1 个所选 Profile 均不可用") {
+		t.Fatalf("single-select err=%v", err)
 	}
 }

@@ -29,6 +29,7 @@ final class Model: ObservableObject {
     @Published var provisioningProfiles: [ProvisioningProfileChoice] = []
     @Published var provisioningSelectedProfileIDs = Set<String>()
     @Published var provisioningRuntimeStatus: [String:String] = [:]
+    @Published var provisioningRuntimeError: [String:String] = [:]
     private var lastProvisioningBundle: RelayProvisioningBundlePayload?
     private static let bundleSelectionPrefix = "provisioning-bundle-selection-v1."
     var provisioningManaged: Bool { !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -264,6 +265,7 @@ final class Model: ObservableObject {
         provisioningProfiles = []
         provisioningSelectedProfileIDs = []
         provisioningRuntimeStatus = [:]
+        provisioningRuntimeError = [:]
         lastProvisioningBundle = nil
     }
     private func selectionKey(_ bundleID: String) -> String { Self.bundleSelectionPrefix + bundleID }
@@ -327,6 +329,7 @@ final class Model: ObservableObject {
             saveBundleSelection(bundle.bundle_id, ids: next)
             try applyBundleSelection(bundle, ids: next)
             provisioningRuntimeStatus = [:]
+            provisioningRuntimeError = [:]
             let count = next.count
             provisioningStatus = bundle.mode == "parallel" ? "\(bundle.display_name) · 已选择 \(count) 个 Profile" : "\(bundle.display_name) · 已选择 1 个 Profile"
             problem = nil
@@ -421,6 +424,7 @@ final class Model: ObservableObject {
                     self.provisioningRevision = bundle.revision
                     self.provisioningDisplayName = bundle.display_name
                     self.provisioningRuntimeStatus = [:]
+                    self.provisioningRuntimeError = [:]
                     try self.applyBundleSelection(bundle, ids: selection)
                     self.provisioningStatus = bundle.mode == "parallel"
                         ? "\(bundle.display_name) · 已同步 · \(selection.count) 个 Profile 启用"
@@ -530,6 +534,7 @@ final class Model: ObservableObject {
                 throw Message("Bundle 启动缺少刚同步的 Provisioning 数据")
             }
             problem = nil; busy = true; status = checking ? "检查环境中" : "连接中"
+            if action == "run-bundle" { provisioningRuntimeStatus = [:]; provisioningRuntimeError = [:] }
             udpConnections = 0; udpSent = 0; udpReceived = 0
             paths = 0; connections = 0; sent = 0; received = 0
             tcpPaths = []; udpPaths = []; udpHealthyPaths = 0
@@ -597,11 +602,20 @@ final class Model: ObservableObject {
             if let profileID = event.profile_id, event.bundle_id != nil {
                 let title = event.profile_name ?? profileID
                 switch event.kind {
-                case "connecting": provisioningRuntimeStatus[profileID] = "连接中"
-                case "ready": provisioningRuntimeStatus[profileID] = "认证通过"
-                case "listening": provisioningRuntimeStatus[profileID] = "已启动"
-                case "error": provisioningRuntimeStatus[profileID] = "错误"
-                case "transport_closed": provisioningRuntimeStatus[profileID] = "已停止"
+                case "connecting":
+                    provisioningRuntimeStatus[profileID] = "连接中"
+                    provisioningRuntimeError.removeValue(forKey: profileID)
+                case "ready":
+                    provisioningRuntimeStatus[profileID] = "认证通过"
+                    provisioningRuntimeError.removeValue(forKey: profileID)
+                case "listening":
+                    provisioningRuntimeStatus[profileID] = "已启动"
+                    provisioningRuntimeError.removeValue(forKey: profileID)
+                case "error":
+                    provisioningRuntimeStatus[profileID] = "错误"
+                    provisioningRuntimeError[profileID] = event.message ?? "Profile 不可用"
+                case "transport_closed":
+                    if provisioningRuntimeStatus[profileID] != "错误" { provisioningRuntimeStatus[profileID] = "已停止" }
                 default: break
                 }
                 if event.kind != "stats" && event.kind != "udp_stats", let text = event.message, !text.isEmpty {
@@ -614,8 +628,26 @@ final class Model: ObservableObject {
             switch event.kind {
             case "bundle_listening":
                 running = true; busy = false
-                recoveryAttempt = 0; needsRecovery = false; problem = nil
-                status = "多配置入口已启动"
+                recoveryAttempt = 0; needsRecovery = false
+                let failed = event.failed_profiles ?? 0
+                if failed > 0 {
+                    status = "部分配置运行中"
+                    problem = event.message ?? "部分 Profile 不可用；可用配置继续运行"
+                } else {
+                    problem = nil
+                    status = (event.connecting_profiles ?? 0) > 0 ? "部分配置已启动" : "多配置入口已启动"
+                }
+            case "bundle_degraded":
+                running = (event.active_profiles ?? 0) > 0; busy = false
+                recoveryAttempt = 0; needsRecovery = false
+                status = running ? "部分配置运行中" : "等待可用配置"
+                problem = event.message ?? "部分 Profile 不可用"
+            case "bundle_connecting":
+                status = event.message ?? "部分配置连接中"
+            case "bundle_failed":
+                running = false; busy = false
+                status = "全部配置不可用"
+                problem = event.message ?? "所有选中 Profile 均不可用"
             case "listening":
                 running = true; busy = false
                 recoveryAttempt = 0; needsRecovery = false; problem = nil
@@ -705,7 +737,7 @@ struct DesktopView: View {
                     HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
                 }
                 Spacer()
-                Text("Multipath 0.10.0 · MPX/4 Draft 04 + Multi-Profile Provisioning").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("Multipath 0.10.1 · MPX/4 Draft 04 + Resilient Multi-Profile").font(.system(size: 11)).foregroundColor(.secondary)
             }
             Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2)}.pickerStyle(.segmented)
             if model.tab == 0 {
@@ -742,13 +774,16 @@ struct DesktopView: View {
                                                 Text(choice.name).font(.system(size:12,weight:.medium)).foregroundColor(.primary)
                                                 Text("127.0.0.1:\(choice.listenPort) · \(choice.mode == "userspace_multipath" ? "MPX/4" : "Native") · \(choice.relayCount) Relays")
                                                     .font(.system(size:10,design:.monospaced)).foregroundColor(.secondary)
+                                                if let detail = model.provisioningRuntimeError[choice.id], !detail.isEmpty {
+                                                    Text(detail).font(.system(size:10)).foregroundColor(.red).lineLimit(2).help(detail)
+                                                }
                                             }
                                             Spacer()
                                             if let state = model.provisioningRuntimeStatus[choice.id] { Text(state).font(.system(size:10)).foregroundColor(state == "错误" ? .red : .secondary) }
                                         }.contentShape(Rectangle())
                                     }.buttonStyle(.plain).disabled(model.running || model.busy || model.provisioningSyncing)
                                 }
-                                Text(model.provisioningBundleMode == "parallel" ? "Listen Port 由 Provisioning Profile 下发；并行模式在服务端保存和 Client 启动前都会检查端口唯一性。每个启用 Profile 使用独立 Session 与独立 Relay 集合。" : "Listen Port 仍由 Provisioning Profile 下发；单配置选择允许不同 Profile 共用同一端口，因为每次只启动一个。")
+                                Text(model.provisioningBundleMode == "parallel" ? "Listen Port 由 Provisioning Profile 下发；并行模式启动前仍会原子检查端口唯一性。各 Profile 独立建立 Session：某一组线路不可用时会单独标红报错，其他可用 Profile 继续运行。" : "Listen Port 仍由 Provisioning Profile 下发；单配置选择允许不同 Profile 共用同一端口，因为每次只启动一个。")
                                     .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
                             } else {
                                 Text("\(model.userspace ? "Userspace Multipath" : "Native MPTCP") · 127.0.0.1:\(model.listenPort) · \(model.userspace ? Model.schedulerTitle(model.schedulerMode) : "Native") · TCP \(model.tcpEnabled ? "开" : "关") · UDP \(model.udpEnabled ? "开" : "关") · \(model.relays.count) 条 Relay")

@@ -1,4 +1,4 @@
-# 0.10.0 / MPX/4 Draft 04 + Multi-Profile Provisioning
+# 0.10.1 / MPX/4 Draft 04 + Resilient Multi-Profile
 
 0.10.0 发布候选至少必须通过：
 

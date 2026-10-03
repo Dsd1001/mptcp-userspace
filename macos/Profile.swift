@@ -198,6 +198,10 @@ struct EngineEvent: Decodable {
     var bundle_id: String?
     var bundle_name: String?
     var listen_port: Int?
+    var total_profiles: Int?
+    var active_profiles: Int?
+    var connecting_profiles: Int?
+    var failed_profiles: Int?
     var configured_scheduler_mode: String?
     var effective_scheduler_mode: String?
     var mode_switches: UInt64?

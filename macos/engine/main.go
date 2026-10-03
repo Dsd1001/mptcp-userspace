@@ -131,6 +131,10 @@ type Event struct {
 	BundleID           string `json:"bundle_id,omitempty"`
 	BundleName         string `json:"bundle_name,omitempty"`
 	ListenPort         int    `json:"listen_port,omitempty"`
+	TotalProfiles      int    `json:"total_profiles,omitempty"`
+	ActiveProfiles     int    `json:"active_profiles,omitempty"`
+	ConnectingProfiles int    `json:"connecting_profiles,omitempty"`
+	FailedProfiles     int    `json:"failed_profiles,omitempty"`
 	multipath.SchedulerStats
 	Kind             string                    `json:"kind"`
 	Message          string                    `json:"message,omitempty"`
@@ -541,7 +545,27 @@ type bundleChildExit struct {
 	err     error
 }
 
+type bundleChildLauncher func(context.Context, string, BundleProfile, []byte) (*exec.Cmd, io.ReadCloser, error)
+
+func defaultBundleChildLauncher(ctx context.Context, exe string, profile BundleProfile, cfgData []byte) (*exec.Cmd, io.ReadCloser, error) {
+	cmd := exec.CommandContext(ctx, exe, "run")
+	cmd.Stdin = bytes.NewReader(cfgData)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	return cmd, stdout, nil
+}
+
 func runBundle(ctx context.Context, b BundlePayload, ids []string) error {
+	return runBundleWithLauncher(ctx, b, ids, defaultBundleChildLauncher)
+}
+
+func runBundleWithLauncher(ctx context.Context, b BundlePayload, ids []string, launch bundleChildLauncher) error {
 	selected, err := b.selected(ids)
 	if err != nil {
 		return err
@@ -560,31 +584,35 @@ func runBundle(ctx context.Context, b BundlePayload, ids []string) error {
 	defer cancel()
 	events := make(chan bundleChildEvent, 128)
 	exits := make(chan bundleChildExit, len(selected))
-	cmds := make([]*exec.Cmd, 0, len(selected))
+	cmds := make(map[string]*exec.Cmd, len(selected))
+	started := make(map[string]bool, len(selected))
+	exitedProfiles := make(map[string]bool, len(selected))
+	failedStarts := make(map[string]string, len(selected))
+	profileErrors := make(map[string]string, len(selected))
+
+	emitProfileError := func(p BundleProfile, message string) {
+		if message == "" {
+			message = "Profile 不可用"
+		}
+		profileErrors[p.ProfileID] = message
+		emit(Event{Kind: "error", ProfileID: p.ProfileID, ProfileName: p.DisplayName, BundleID: b.BundleID, BundleName: b.DisplayName, ListenPort: p.ListenPort, Message: message})
+	}
+
 	for _, p := range selected {
 		cfgData, err := json.Marshal(p.config())
 		if err != nil {
-			cancel()
-			return err
+			failedStarts[p.ProfileID] = err.Error()
+			emitProfileError(p, fmt.Sprintf("Profile %s 配置编码失败: %v", p.DisplayName, err))
+			continue
 		}
-		cmd := exec.CommandContext(groupCtx, exe, "run")
-		cmd.Stdin = bytes.NewReader(cfgData)
-		stdout, err := cmd.StdoutPipe()
+		cmd, stdout, err := launch(groupCtx, exe, p, cfgData)
 		if err != nil {
-			cancel()
-			return err
+			failedStarts[p.ProfileID] = err.Error()
+			emitProfileError(p, fmt.Sprintf("Profile %s 启动失败: %v", p.DisplayName, err))
+			continue
 		}
-		cmd.Stderr = io.Discard
-		if err := cmd.Start(); err != nil {
-			cancel()
-			for _, started := range cmds {
-				if started.Process != nil {
-					_ = started.Process.Kill()
-				}
-			}
-			return fmt.Errorf("Profile %s 启动失败: %w", p.DisplayName, err)
-		}
-		cmds = append(cmds, cmd)
+		cmds[p.ProfileID] = cmd
+		started[p.ProfileID] = true
 		go func(profile BundleProfile, r io.Reader) {
 			send := func(event bundleChildEvent) bool {
 				select {
@@ -613,13 +641,53 @@ func runBundle(ctx context.Context, b BundlePayload, ids []string) error {
 		}(p, stdout)
 		go func(profile BundleProfile, c *exec.Cmd) { exits <- bundleChildExit{profile: profile, err: c.Wait()} }(p, cmd)
 	}
+
+	startedCount := len(started)
+	if startedCount == 0 {
+		message := fmt.Sprintf("所有 %d 个所选 Profile 均启动失败", len(selected))
+		emit(Event{Kind: "bundle_failed", BundleID: b.BundleID, BundleName: b.DisplayName, TotalProfiles: len(selected), FailedProfiles: len(selected), Message: message})
+		return errors.New(message)
+	}
+
 	ready := map[string]bool{}
 	tcpStats := map[string]Event{}
 	udpStats := map[string]Event{}
 	exited := 0
+	aliveCount := func() int {
+		n := 0
+		for id := range started {
+			if !exitedProfiles[id] {
+				n++
+			}
+		}
+		return n
+	}
+	readyCount := func() int {
+		n := 0
+		for id := range ready {
+			if !exitedProfiles[id] {
+				n++
+			}
+		}
+		return n
+	}
+	failedCount := func() int { return len(failedStarts) + len(exitedProfiles) }
+	connectingCount := func() int {
+		n := aliveCount() - readyCount()
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
+	emitBundleState := func(kind, message string) {
+		emit(Event{Kind: kind, BundleID: b.BundleID, BundleName: b.DisplayName, TotalProfiles: len(selected), ActiveProfiles: readyCount(), ConnectingProfiles: connectingCount(), FailedProfiles: failedCount(), Message: message})
+	}
 	emitAggregate := func(kind string, stats map[string]Event) {
-		agg := Event{Kind: kind, BundleID: b.BundleID, BundleName: b.DisplayName}
-		for _, e := range stats {
+		agg := Event{Kind: kind, BundleID: b.BundleID, BundleName: b.DisplayName, TotalProfiles: len(selected), ActiveProfiles: readyCount(), ConnectingProfiles: connectingCount(), FailedProfiles: failedCount()}
+		for id, e := range stats {
+			if exitedProfiles[id] {
+				continue
+			}
 			agg.Paths += e.Paths
 			agg.Connections += e.Connections
 			agg.Sent += e.Sent
@@ -629,19 +697,27 @@ func runBundle(ctx context.Context, b BundlePayload, ids []string) error {
 		}
 		emit(agg)
 	}
+	if len(failedStarts) > 0 {
+		emitBundleState("bundle_connecting", fmt.Sprintf("%d 个 Profile 启动失败；其余 %d 个继续连接", len(failedStarts), aliveCount()))
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			cancel()
-			for exited < len(selected) {
+			for exited < startedCount {
 				<-exits
 				exited++
 			}
 			return ctx.Err()
 		case ce := <-events:
 			if ce.scanErr != nil {
-				cancel()
-				return fmt.Errorf("Profile %s 输出读取失败: %w", ce.profile.DisplayName, ce.scanErr)
+				if _, seen := profileErrors[ce.profile.ProfileID]; !seen {
+					emitProfileError(ce.profile, fmt.Sprintf("Profile %s 输出读取失败: %v", ce.profile.DisplayName, ce.scanErr))
+				}
+				if cmd := cmds[ce.profile.ProfileID]; cmd != nil && cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+				continue
 			}
 			e := ce.event
 			e.ProfileID = ce.profile.ProfileID
@@ -650,12 +726,25 @@ func runBundle(ctx context.Context, b BundlePayload, ids []string) error {
 			e.BundleName = b.DisplayName
 			e.ListenPort = ce.profile.ListenPort
 			emit(e)
+			if e.Kind == "error" {
+				profileErrors[ce.profile.ProfileID] = e.Message
+			}
+			// Wait may win the race with draining a child's final stdout. Forward
+			// late diagnostics, but never let a dead child re-enter ready/stats state.
+			if exitedProfiles[ce.profile.ProfileID] {
+				continue
+			}
 			switch e.Kind {
 			case "listening":
 				ready[ce.profile.ProfileID] = true
-				if len(ready) == len(selected) {
-					emit(Event{Kind: "bundle_listening", BundleID: b.BundleID, BundleName: b.DisplayName, Connections: int64(len(selected)), Message: fmt.Sprintf("%d 个 Profile 已同时启动", len(selected))})
+				active, failed, connecting := readyCount(), failedCount(), connectingCount()
+				message := fmt.Sprintf("%d/%d 个 Profile 已启动", active, len(selected))
+				if failed > 0 {
+					message += fmt.Sprintf("，%d 个失败；可用配置继续运行", failed)
+				} else if connecting > 0 {
+					message += fmt.Sprintf("，%d 个仍在连接", connecting)
 				}
+				emitBundleState("bundle_listening", message)
 			case "stats":
 				tcpStats[ce.profile.ProfileID] = e
 				emitAggregate("bundle_stats", tcpStats)
@@ -665,22 +754,39 @@ func runBundle(ctx context.Context, b BundlePayload, ids []string) error {
 			}
 		case ex := <-exits:
 			exited++
-			if groupCtx.Err() == nil {
-				cancel()
-				for exited < len(selected) {
-					<-exits
-					exited++
+			if groupCtx.Err() != nil {
+				if exited == startedCount {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return errors.New("Bundle 运行已停止")
 				}
-				if ex.err == nil {
-					return fmt.Errorf("Profile %s 意外退出", ex.profile.DisplayName)
-				}
-				return fmt.Errorf("Profile %s 已退出: %w", ex.profile.DisplayName, ex.err)
+				continue
 			}
-			if exited == len(selected) {
-				if ctx.Err() != nil {
-					return ctx.Err()
+			id := ex.profile.ProfileID
+			exitedProfiles[id] = true
+			delete(ready, id)
+			delete(tcpStats, id)
+			delete(udpStats, id)
+			if _, seen := profileErrors[id]; !seen {
+				message := fmt.Sprintf("Profile %s 意外退出", ex.profile.DisplayName)
+				if ex.err != nil {
+					message = fmt.Sprintf("Profile %s 已退出: %v", ex.profile.DisplayName, ex.err)
 				}
-				return errors.New("Bundle 运行已停止")
+				emitProfileError(ex.profile, message)
+			}
+			emitAggregate("bundle_stats", tcpStats)
+			emitAggregate("bundle_udp_stats", udpStats)
+			if aliveCount() == 0 {
+				message := fmt.Sprintf("所有 %d 个所选 Profile 均不可用", len(selected))
+				emitBundleState("bundle_failed", message)
+				cancel()
+				return errors.New(message)
+			}
+			if readyCount() > 0 {
+				emitBundleState("bundle_degraded", fmt.Sprintf("%d 个 Profile 正常运行，%d 个失败；可用配置继续运行", readyCount(), failedCount()))
+			} else {
+				emitBundleState("bundle_connecting", fmt.Sprintf("%d 个 Profile 失败；其余 %d 个仍在连接", failedCount(), aliveCount()))
 			}
 		}
 	}

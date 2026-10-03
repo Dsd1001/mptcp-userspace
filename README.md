@@ -4,9 +4,9 @@ MPTCP Userspace is an application-layer multipath transport for macOS and Linux.
 
 It is **not kernel MPTCP** and it is **not QUIC**. The macOS and Linux Userspace clients use ordinary TCP carrier sockets; the Linux Landing terminates MPX/4 and forwards opaque backend TCP bytes.
 
-Current suite release: **v0.10.0 / MPX/4 Draft 04 + multi-profile Provisioning Bundles**.
+Current client/Landing release: **v0.10.1 / MPX/4 Draft 04 + resilient parallel Bundles**. Provisioning remains **v0.10.0** and is API-compatible with the 0.10.1 clients.
 
-- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.0
+- Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.1
 - MPX/4 specification: https://github.com/Dsd1001/MPX-4
 - Chinese README: [README.zh-CN.md](README.zh-CN.md)
 
@@ -14,7 +14,7 @@ Current suite release: **v0.10.0 / MPX/4 Draft 04 + multi-profile Provisioning B
 
 | Component | OS / architecture | Artifact |
 |---|---|---|
-| MPTCP Desk client | macOS arm64 + x86_64 | `MPTCP-Desk-0.10.0-universal.dmg` |
+| MPTCP Desk client | macOS arm64 + x86_64 | `MPTCP-Desk-0.10.1-universal.dmg` |
 | Headless client | Linux amd64 | `mptcp-client-linux-amd64` |
 | Headless client | Linux arm64 | `mptcp-client-linux-arm64` |
 | Landing | Linux amd64 | `mptcp-landing` |
@@ -23,6 +23,8 @@ Current suite release: **v0.10.0 / MPX/4 Draft 04 + multi-profile Provisioning B
 | Provisioning | Linux arm64 | `mpx-provision-linux-arm64` |
 
 The Linux client supports `userspace_multipath`; Native MPTCP fallback remains macOS-only.
+
+In a `parallel` Provisioning Bundle, local listen-port conflicts are still rejected atomically before any Profile starts. After that preflight, Profile runtimes are independent: if one Profile cannot authenticate/reach its Landing or exits, healthy Profile listeners remain active and the failed Profile is reported separately. The Bundle stops only when all selected Profiles are unavailable or the user stops it.
 
 ## Architecture
 

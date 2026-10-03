@@ -120,6 +120,8 @@ printf '%s\n' '{"url":"https://config.example.com/v1/bundle/hk-main/<secret>","p
 
 For `single_select`, `profile_ids` must resolve to one Profile. For `parallel`, an omitted `profile_ids` selects all Profiles; an explicit subset is also allowed. Linux still supports Userspace MPX/4 only; Native MPTCP is macOS-only.
 
+Client/Landing 0.10.1 changes parallel runtime failure handling only: after atomic port preflight, one failed/unreachable Profile no longer cancels healthy Profile runtimes. Per-Profile error events are emitted and healthy local listeners remain active; all-selected failure still terminates the Bundle. Provisioning schema 2 is unchanged.
+
 Remote managed URLs require HTTPS. HTTP is accepted only for loopback development. Redirects are rejected. Bundle responses are bounded to 512 KiB; legacy single-Profile responses remain bounded to 64 KiB.
 
 ## Administration UI
