@@ -586,19 +586,29 @@ func runBundle(ctx context.Context, b BundlePayload, ids []string) error {
 		}
 		cmds = append(cmds, cmd)
 		go func(profile BundleProfile, r io.Reader) {
+			send := func(event bundleChildEvent) bool {
+				select {
+				case events <- event:
+					return true
+				case <-groupCtx.Done():
+					return false
+				}
+			}
 			scanner := bufio.NewScanner(r)
 			buf := make([]byte, 0, 64*1024)
 			scanner.Buffer(buf, 256*1024)
 			for scanner.Scan() {
 				var e Event
 				if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
-					events <- bundleChildEvent{profile: profile, scanErr: fmt.Errorf("engine event JSON: %w", err)}
+					_ = send(bundleChildEvent{profile: profile, scanErr: fmt.Errorf("engine event JSON: %w", err)})
 					return
 				}
-				events <- bundleChildEvent{profile: profile, event: e}
+				if !send(bundleChildEvent{profile: profile, event: e}) {
+					return
+				}
 			}
 			if err := scanner.Err(); err != nil {
-				events <- bundleChildEvent{profile: profile, scanErr: err}
+				_ = send(bundleChildEvent{profile: profile, scanErr: err})
 			}
 		}(p, stdout)
 		go func(profile BundleProfile, c *exec.Cmd) { exits <- bundleChildExit{profile: profile, err: c.Wait()} }(p, cmd)
