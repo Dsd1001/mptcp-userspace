@@ -2,13 +2,27 @@
 
 MPTCP Userspace is an application-layer multipath transport for macOS and Linux. It combines multiple ordinary TCP carrier connections into one authenticated MPX/4 Session and multiplexes application TCP streams across those Carriers.
 
-It is **not kernel MPTCP** and it is **not QUIC**. The macOS client uses ordinary TCP carrier sockets; the Linux Landing terminates MPX/4 and forwards opaque backend TCP bytes.
+It is **not kernel MPTCP** and it is **not QUIC**. The macOS and Linux Userspace clients use ordinary TCP carrier sockets; the Linux Landing terminates MPX/4 and forwards opaque backend TCP bytes.
 
 Current release: **v0.9.8 / MPX/4 Draft 04 + Provisioning**.
 
 - Release: https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.8
 - MPX/4 specification: https://github.com/Dsd1001/MPX-4
 - Chinese README: [README.zh-CN.md](README.zh-CN.md)
+
+## Published platforms
+
+| Component | OS / architecture | Artifact |
+|---|---|---|
+| MPTCP Desk client | macOS arm64 + x86_64 | `MPTCP-Desk-0.9.8-universal.dmg` |
+| Headless client | Linux amd64 | `mptcp-client-linux-amd64` |
+| Headless client | Linux arm64 | `mptcp-client-linux-arm64` |
+| Landing | Linux amd64 | `mptcp-landing` |
+| Landing | Linux arm64 | `mptcp-landing-linux-arm64` |
+| Provisioning | Linux amd64 | `mpx-provision` |
+| Provisioning | Linux arm64 | `mpx-provision-linux-arm64` |
+
+The Linux client supports `userspace_multipath`; Native MPTCP fallback remains macOS-only.
 
 ## Architecture
 
@@ -122,10 +136,13 @@ go test ./...
 # macOS Universal DMG
 MPTCP_GO=/path/to/go ./macos/build.sh
 
-# Linux amd64 Landing
+# Linux amd64 + arm64 headless client
+MPTCP_GO=/path/to/go ./scripts/build-linux-client.sh
+
+# Linux amd64 + arm64 Landing
 MPTCP_GO=/path/to/go ./scripts/build-userspace-landing.sh
 
-# Linux amd64 Provisioning service
+# Linux amd64 + arm64 Provisioning service
 MPTCP_GO=/path/to/go ./scripts/build-provisioning.sh
 ```
 
@@ -133,6 +150,7 @@ MPTCP_GO=/path/to/go ./scripts/build-provisioning.sh
 
 - [MPX/4 Draft 04 implementation profile](docs/userspace/PROTOCOL.md)
 - [v0.9.8 release notes](docs/userspace/RELEASE.zh-CN.md)
+- [Linux headless client](docs/userspace/LINUX-CLIENT.md)
 - [Managed client provisioning](docs/userspace/PROVISIONING.md)
 - [Scheduler modes](docs/userspace/SCHEDULER-MODES.md)
 - [Deployment and rollback](docs/userspace/DEPLOYMENT.zh-CN.md)

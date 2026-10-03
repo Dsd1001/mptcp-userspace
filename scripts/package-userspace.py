@@ -152,7 +152,13 @@ def main() -> None:
         complete=gates.check(capacity,runtime,identity,required=args.require_live)
         if args.engineering: complete=False
     (out/'ACCEPTANCE.md').write_text(acceptance_text(identity,capacity,runtime,complete,scheduler,version=version,untested=args.untested_release,preview=args.preview_release,background_release=args.background_release))
-    names=[f'MPTCP-Desk-{version}-universal.dmg','mptcp-landing','mptcp-landing.sha256','mptcp-landing.BUILDINFO','mpx-provision','mpx-provision.sha256','mpx-provision.BUILDINFO',
+    names=[f'MPTCP-Desk-{version}-universal.dmg',
+           'mptcp-client-linux-amd64','mptcp-client-linux-amd64.sha256','mptcp-client-linux-amd64.BUILDINFO',
+           'mptcp-client-linux-arm64','mptcp-client-linux-arm64.sha256','mptcp-client-linux-arm64.BUILDINFO',
+           'mptcp-landing','mptcp-landing.sha256','mptcp-landing.BUILDINFO',
+           'mptcp-landing-linux-arm64','mptcp-landing-linux-arm64.sha256','mptcp-landing-linux-arm64.BUILDINFO',
+           'mpx-provision','mpx-provision.sha256','mpx-provision.BUILDINFO',
+           'mpx-provision-linux-arm64','mpx-provision-linux-arm64.sha256','mpx-provision-linux-arm64.BUILDINFO',
            'MPTCP-Desk.BUILDINFO',source_name,'SOURCE_ID','SOURCE_SHA256SUMS','PROVENANCE.json','CAPACITY.json','RUNTIME.json','SCHEDULER-MODES.json','REV2-AB.json','ACCEPTANCE.md']
     if args.preview_release or args.background_release:
         names.append('TESTS.json')

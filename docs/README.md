@@ -6,11 +6,12 @@ This directory contains the public documentation for MPTCP Userspace.
 
 ## Start here
 
-- [Quick Start](guides/QUICKSTART.md) — install the released macOS client and Linux Landing.
+- [Quick Start](guides/QUICKSTART.md) — install the released macOS/Linux client and Linux Landing.
 - [Build from source](guides/BUILDING.md) — toolchain, reproducible release source and build outputs.
 - [Architecture](guides/ARCHITECTURE.zh-CN.md) — component and data-flow overview.
 - [Deployment / rollback](userspace/DEPLOYMENT.zh-CN.md) — managed Landing upgrades and rollback.
 - [Troubleshooting](guides/TROUBLESHOOTING.zh-CN.md) — common runtime and compatibility problems.
+- [Linux headless client](userspace/LINUX-CLIENT.md) — amd64/arm64 Userspace MPX/4 client CLI.
 - [Managed client provisioning](userspace/PROVISIONING.md) — self-hosted configuration page and secret client API URLs.
 
 ## Protocol and scheduling
@@ -28,4 +29,4 @@ This directory contains the public documentation for MPTCP Userspace.
 
 Published release evidence such as ACCEPTANCE.md, TESTS.json, SCHEDULER-MODES.json and PROVENANCE.json is attached to the GitHub Release rather than duplicated into the default branch.
 
-The v0.9.5 tag is the frozen release source. Documentation-only commits may appear on main after the tag.
+The v0.9.8 tag identifies the current release source.

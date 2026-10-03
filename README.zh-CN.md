@@ -2,13 +2,27 @@
 
 MPTCP Userspace 是一个运行在应用层的多路径传输系统，由 macOS 客户端 **MPTCP Desk**、Linux **Landing** 和可选的 **Provisioning 网页/API 平台**组成。它把多条普通 TCP Carrier 组合成一个经过认证的 MPX/4 Session，再把应用 TCP Stream 调度到这些 Carrier 上。
 
-它**不是内核 MPTCP，也不是 QUIC**。macOS Userspace 模式使用普通 TCP socket；Linux Landing 终止 MPX/4 并转发透明 backend TCP 字节。
+它**不是内核 MPTCP，也不是 QUIC**。macOS 与 Linux Userspace Client 都使用普通 TCP socket；Linux Landing 终止 MPX/4 并转发透明 backend TCP 字节。
 
 当前正式版本：**v0.9.8 / MPX/4 Draft 04 + Provisioning**。
 
 - Release：https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.9.8
 - MPX/4 规范：https://github.com/Dsd1001/MPX-4
 - English README：[README.md](README.md)
+
+## 发布平台
+
+| 组件 | 系统 / 架构 | Release 产物 |
+|---|---|---|
+| MPTCP Desk Client | macOS arm64 + x86_64 | `MPTCP-Desk-0.9.8-universal.dmg` |
+| Headless Client | Linux amd64 | `mptcp-client-linux-amd64` |
+| Headless Client | Linux arm64 | `mptcp-client-linux-arm64` |
+| Landing | Linux amd64 | `mptcp-landing` |
+| Landing | Linux arm64 | `mptcp-landing-linux-arm64` |
+| Provisioning | Linux amd64 | `mpx-provision` |
+| Provisioning | Linux arm64 | `mpx-provision-linux-arm64` |
+
+Linux Client 只支持 `userspace_multipath`；Native MPTCP fallback 仍然只在 macOS 使用。
 
 ## 架构
 
@@ -117,6 +131,7 @@ cd macos/engine
 go test ./...
 
 MPTCP_GO=/path/to/go ./macos/build.sh
+MPTCP_GO=/path/to/go ./scripts/build-linux-client.sh
 MPTCP_GO=/path/to/go ./scripts/build-userspace-landing.sh
 MPTCP_GO=/path/to/go ./scripts/build-provisioning.sh
 ```
@@ -125,6 +140,7 @@ MPTCP_GO=/path/to/go ./scripts/build-provisioning.sh
 
 - [MPX/4 Draft 04 实现说明](docs/userspace/PROTOCOL.md)
 - [0.9.8 Release Notes](docs/userspace/RELEASE.zh-CN.md)
+- [Linux Headless Client](docs/userspace/LINUX-CLIENT.md)
 - [完整 Provisioning API](docs/userspace/PROVISIONING.md)
 - [调度模式](docs/userspace/SCHEDULER-MODES.md)
 - [部署与回滚](docs/userspace/DEPLOYMENT.zh-CN.md)

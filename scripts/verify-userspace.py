@@ -96,21 +96,36 @@ def main() -> None:
                 path=frozen/entry.name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
         if source.manifest(source.collect(frozen))!=sums:
             raise ValueError('Extracted frozen tree differs')
-        linux=work/'mptcp-landing'
-        run([go,'build','-trimpath','-buildvcs=false','-ldflags='+flags,'-o',str(linux),'./cmd/mptcp-landing'],
-            cwd=frozen/'macos/engine',env=dict(env,CGO_ENABLED='0',GOOS='linux',GOARCH='amd64'))
-        if linux.read_bytes()!=(out/'mptcp-landing').read_bytes():
-            raise ValueError('Landing is not byte-reproducible from frozen source')
-        checks.append('Linux amd64 Landing ELF byte-identical rebuild from source archive')
-        reproduced['linux-amd64']={'sha256':source.sha(linux.read_bytes()),'comparison':'entire Landing binary'}
-        provision=work/'mpx-provision'
-        run([go,'build','-trimpath','-buildvcs=false','-ldflags=-s -w -buildid=','-o',str(provision),'.'],
-            cwd=frozen/'provisioning',env=dict(env,CGO_ENABLED='0',GOOS='linux',GOARCH='amd64'))
-        if provision.read_bytes()!=(out/'mpx-provision').read_bytes():
-            raise ValueError('Provisioning service is not byte-reproducible from frozen source')
-        checks.append('Linux amd64 Provisioning ELF byte-identical rebuild from source archive')
-        reproduced['provision-linux-amd64']={'sha256':source.sha(provision.read_bytes()),'comparison':'entire Provisioning binary'}
-        for info in ['mptcp-landing.BUILDINFO','MPTCP-Desk.BUILDINFO','mpx-provision.BUILDINFO']:
+        linux_artifacts = [
+            ('mptcp-client-linux-amd64', 'client', 'amd64'),
+            ('mptcp-client-linux-arm64', 'client', 'arm64'),
+            ('mptcp-landing', 'landing', 'amd64'),
+            ('mptcp-landing-linux-arm64', 'landing', 'arm64'),
+        ]
+        for artifact, component, arch in linux_artifacts:
+            rebuilt=work/artifact
+            package='.' if component=='client' else './cmd/mptcp-landing'
+            run([go,'build','-trimpath','-buildvcs=false','-ldflags='+flags,'-o',str(rebuilt),package],
+                cwd=frozen/'macos/engine',env=dict(env,CGO_ENABLED='0',GOOS='linux',GOARCH=arch))
+            if rebuilt.read_bytes()!=(out/artifact).read_bytes():
+                raise ValueError(f'{component} {arch} is not byte-reproducible from frozen source')
+            checks.append(f'Linux {arch} {component} ELF byte-identical rebuild from source archive')
+            reproduced[f'{component}-linux-{arch}']={'sha256':source.sha(rebuilt.read_bytes()),'comparison':f'entire {component} binary'}
+
+        for artifact, arch in [('mpx-provision','amd64'),('mpx-provision-linux-arm64','arm64')]:
+            rebuilt=work/artifact
+            run([go,'build','-trimpath','-buildvcs=false','-ldflags=-s -w -buildid=','-o',str(rebuilt),'.'],
+                cwd=frozen/'provisioning',env=dict(env,CGO_ENABLED='0',GOOS='linux',GOARCH=arch))
+            if rebuilt.read_bytes()!=(out/artifact).read_bytes():
+                raise ValueError(f'Provisioning {arch} is not byte-reproducible from frozen source')
+            checks.append(f'Linux {arch} Provisioning ELF byte-identical rebuild from source archive')
+            reproduced[f'provision-linux-{arch}']={'sha256':source.sha(rebuilt.read_bytes()),'comparison':'entire Provisioning binary'}
+
+        buildinfos=['MPTCP-Desk.BUILDINFO']
+        for artifact, _, _ in linux_artifacts:
+            buildinfos.append(artifact+'.BUILDINFO')
+        buildinfos += ['mpx-provision.BUILDINFO','mpx-provision-linux-arm64.BUILDINFO']
+        for info in buildinfos:
             if 'Source-ID: '+identity not in (out/info).read_text():
                 raise ValueError('Buildinfo does not bind source: '+info)
         run(['hdiutil','verify',str(out/dmg_name)])
@@ -172,7 +187,13 @@ def main() -> None:
             run(['hdiutil','detach',str(mount)])
     if source.manifest(source.collect())!=sums:
         raise ValueError('Sources changed during verification')
-    artifacts=[dmg_name,'mptcp-landing','mpx-provision',source_name,'mptcp-landing.BUILDINFO','MPTCP-Desk.BUILDINFO','mpx-provision.BUILDINFO']
+    artifacts=[dmg_name,source_name,'MPTCP-Desk.BUILDINFO',
+        'mptcp-client-linux-amd64','mptcp-client-linux-amd64.BUILDINFO',
+        'mptcp-client-linux-arm64','mptcp-client-linux-arm64.BUILDINFO',
+        'mptcp-landing','mptcp-landing.BUILDINFO',
+        'mptcp-landing-linux-arm64','mptcp-landing-linux-arm64.BUILDINFO',
+        'mpx-provision','mpx-provision.BUILDINFO',
+        'mpx-provision-linux-arm64','mpx-provision-linux-arm64.BUILDINFO']
     receipt={'version':version,'source_id':identity,'verified':True,'checks':checks,'reproduced':reproduced,
              'artifact_sha256':{name:source.sha((out/name).read_bytes()) for name in artifacts},
              'limitations':['Not a reproducible DMG filesystem container','No Developer ID notarization',

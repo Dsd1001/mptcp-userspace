@@ -1,5 +1,18 @@
 # MPTCP Userspace 0.9.8 / MPX/4 Draft 04 + Provisioning
 
+## 多平台发布补充
+
+0.9.8 Release 现在同时提供以下正式二进制：
+
+- macOS Client：Universal arm64 + x86_64 DMG；
+- Linux Headless Client：amd64 + arm64；
+- Linux Landing：amd64 + arm64；
+- Linux Provisioning：amd64 + arm64。
+
+Linux Client 与 MPTCP Desk 复用同一套 MPX/4 Draft 04 Go transport core。Linux 版本只开放 `userspace_multipath`，不提供 macOS 专用的 Native MPTCP fallback；配置通过 schema-3 JSON stdin 输入。
+
+Provisioning Dockerfile 也改为使用 BuildKit `TARGETOS/TARGETARCH`，可构建 amd64 或 arm64 镜像。
+
 ## 本次版本
 
 0.9.8 同时完成两件事：

@@ -13,7 +13,10 @@
 - Provisioning 服务 `go test` / `go vet`；
 - Provisioning URL HTTPS/localhost policy、redirect rejection、64 KiB response bound、完整 Profile 校验与 key-free preferences；
 - arm64 / x86_64 Swift 编译与 managed-mode UI harness；
-- Universal DMG、Linux amd64 Landing、Linux amd64 `mpx-provision`；
+- Universal DMG；
+- Linux Client amd64/arm64 静态 ELF；
+- Linux Landing amd64/arm64 静态 ELF；
+- Linux `mpx-provision` amd64/arm64 静态 ELF；
 - 所有发布组件使用同一个 Source-ID。
 
 macOS DMG 为 ad-hoc 签名、未 notarize。

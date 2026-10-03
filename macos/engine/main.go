@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -112,6 +113,9 @@ func (c Config) validate() error {
 	legacy := c.SchemaVersion == 2 && c.Mode == "tcp_forward"
 	if !legacy && !(c.SchemaVersion == 3 && (c.Mode == "native_mptcp" || c.Mode == "userspace_multipath")) {
 		return errors.New("支持 schema 2/tcp_forward（保持 Native）或 schema 3/userspace_multipath、native_mptcp；不支持旧 SOCKS5 配置")
+	}
+	if runtime.GOOS != "darwin" && !c.userspace() {
+		return errors.New("Linux client 仅支持 userspace_multipath；Native MPTCP fallback 仅供 macOS 使用")
 	}
 	if c.userspace() {
 		mode, err := c.schedulerMode()
@@ -438,7 +442,13 @@ func main() {
 			emit(Event{Kind: "ready", Mode: "userspace_multipath", Message: fmt.Sprintf("Userspace 引擎可用；RLIMIT_NOFILE 已提升/满足 %d，可承载 %d 业务流；尚未检查 Relay、Landing 密钥和端口", userspaceDesiredNOFILE, multipath.MaxStreams)})
 		}
 	case len(os.Args) == 2 && os.Args[1] == "version":
-		emit(Event{Kind: "ready", Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Message: "mptcp-desktop-engine " + multipath.Version + " MPX/4 Draft 04 + Native fallback"})
+		name := "mptcp-desktop-engine"
+		message := name + " " + multipath.Version + " MPX/4 Draft 04 + Native fallback"
+		if runtime.GOOS == "linux" {
+			name = "mptcp-client"
+			message = name + " " + multipath.Version + " MPX/4 Draft 04 userspace client"
+		}
+		emit(Event{Kind: "ready", Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Message: message})
 	case len(os.Args) == 2 && os.Args[1] == "run":
 		var c Config
 		c, err = readConfig(os.Stdin)
@@ -451,7 +461,7 @@ func main() {
 			emit(Event{Kind: "ready", Message: "TCP 转发配置有效"})
 		}
 	default:
-		err = fmt.Errorf("usage: mptcp-desktop-engine doctor | doctor-userspace | version | run | validate (JSON stdin)")
+		err = fmt.Errorf("usage: mptcp-client doctor-userspace | version | run | validate (JSON stdin); Native doctor is macOS-only")
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		emit(Event{Kind: "error", Message: err.Error()})

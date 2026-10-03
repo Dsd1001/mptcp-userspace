@@ -18,7 +18,7 @@ FIXED = (
     'macos/Info.plist', 'macos/build.sh', 'macos/README.zh-CN.md',
     'macos/VALIDATION.md', 'macos/tcp-profile.example.json',
     'macos/userspace-profile.example.json', 'macos/engine/go.mod',
-    'scripts/build-userspace-landing.sh', 'scripts/build-provisioning.sh', 'scripts/package-userspace.py',
+    'scripts/build-linux-client.sh', 'scripts/build-userspace-landing.sh', 'scripts/build-provisioning.sh', 'scripts/package-userspace.py',
     'scripts/source-manifest.py', 'scripts/verify-userspace.py', 'scripts/release-gates.py', 'scripts/scheduler-gates.py',
 )
 
