@@ -387,7 +387,7 @@ func TestAdminUIContainsSecondLevelNavigationAndRelayCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(data)
-	for _, want := range []string{"基础设置", "Relay 路径", "调度与传输", "发放与安全", "duplicateRelay", "自定义标识 + 随机 Secret", "轮换 Secret", "系统", "修改管理员密码", "currentAdminPassword", "changeAdminPassword", "Client Bundles", "多配置并行", "单配置选择", "bundleConflict", "Bundle API URL"} {
+	for _, want := range []string{"基础设置", "Relay 路径", "调度与传输", "发放与安全", "duplicateRelay", "自定义标识 + 随机 Secret", "轮换 Secret", "系统", "修改管理员密码", "currentAdminPassword", "changeAdminPassword", "Client Bundles", "多配置并行", "单配置选择", "bundleConflict", "Bundle API URL", "Devices", "一次性配对码", "同步配置", "更新到最新版", "不提供 Shell 或任意命令执行"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin UI missing %q", want)
 		}

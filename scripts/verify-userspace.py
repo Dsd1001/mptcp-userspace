@@ -13,6 +13,7 @@ import struct
 import subprocess
 import tarfile
 import tempfile
+import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('source_manifest', ROOT/'scripts/source-manifest.py')
@@ -83,6 +84,34 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix='mpx-source-verification-',dir='/tmp') as temporary:
         work=pathlib.Path(temporary);frozen=work/'source';frozen.mkdir()
         expected=dict(files,SOURCE_SHA256SUMS=sums,SOURCE_ID=(identity+'\n').encode())
+        sparkle_archive=ROOT/'macos/build/vendor/Sparkle-2.10.0.tar.xz'
+        if not sparkle_archive.is_file() or source.sha(sparkle_archive.read_bytes())!='c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c':
+            raise ValueError('Pinned Sparkle 2.10.0 archive missing or checksum mismatch')
+        sparkle=work/'sparkle';sparkle.mkdir()
+        run(['tar','-xJf',str(sparkle_archive),'-C',str(sparkle),'./Sparkle.framework','./bin/sign_update'])
+        sign_update=sparkle/'bin/sign_update'
+        appcast=out/'appcast.xml'
+        if not appcast.is_file():
+            raise ValueError('Signed appcast.xml missing')
+        feed=ET.parse(appcast).getroot()
+        ns={'sparkle':'http://www.andymatuschak.org/xml-namespaces/sparkle'}
+        item=feed.find('./channel/item')
+        if item is None:
+            raise ValueError('appcast item missing')
+        short=item.findtext('sparkle:shortVersionString',namespaces=ns)
+        build=item.findtext('sparkle:version',namespaces=ns)
+        enclosure=item.find('enclosure')
+        if short!=version or build!=str(plistlib.loads((ROOT/'macos/Info.plist').read_bytes())['CFBundleVersion']) or enclosure is None:
+            raise ValueError('appcast version/build mismatch')
+        signature=enclosure.attrib.get('{http://www.andymatuschak.org/xml-namespaces/sparkle}edSignature','')
+        if not signature or int(enclosure.attrib.get('length','0'))!=(out/dmg_name).stat().st_size:
+            raise ValueError('appcast DMG signature/length metadata invalid')
+        expected_url=f'https://github.com/Dsd1001/mptcp-userspace/releases/download/v{version}/{dmg_name}'
+        if enclosure.attrib.get('url')!=expected_url:
+            raise ValueError('appcast DMG URL mismatch')
+        run([str(sign_update),'--verify',str(out/dmg_name),signature])
+        run([str(sign_update),'--verify',str(appcast)])
+        checks.append('Sparkle appcast and DMG EdDSA signatures verified')
         with tarfile.open(out/source_name,'r:gz') as archive:
             if set(archive.getnames())!=set(expected):
                 raise ValueError('Frozen source archive inventory differs')
@@ -138,6 +167,14 @@ def main() -> None:
             info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
             if info['CFBundleShortVersionString']!=version or info.get('MPTCPSourceID')!=identity or info.get('LSUIElement') is not True:
                 raise ValueError('App version/source/menu-bar metadata differs')
+            if info.get('SUPublicEDKey')!='2ADwJkrQ2XxjFo4bC3mjQkxjGBpsj3hfP7JTV0wdtek=':
+                raise ValueError('Sparkle public update key differs')
+            if info.get('SUFeedURL')!='https://github.com/Dsd1001/mptcp-userspace/releases/latest/download/appcast.xml':
+                raise ValueError('Sparkle feed URL differs')
+            packaged_sparkle=app/'Contents/Frameworks/Sparkle.framework'
+            if not packaged_sparkle.is_dir():
+                raise ValueError('Sparkle.framework missing from app')
+            run(['codesign','--verify','--deep','--strict',str(packaged_sparkle)])
             resources=app/'Contents/Resources'
             for p in [resources/'SOURCE_ID',mount/'SOURCE_ID']:
                 if p.read_text().strip()!=identity:
@@ -162,7 +199,9 @@ def main() -> None:
                 rebuilt_ui=work/('MPTCPDesk-'+goarch)
                 run(['xcrun','swiftc','-O','-swift-version','5','-parse-as-library','-target',arch+'-apple-macosx13.0',
                      '-module-cache-path','/tmp/mptcp-swift-cache','-debug-prefix-map',str(frozen)+'=.',
-                     str(frozen/'macos/Lifecycle.swift'),str(frozen/'macos/Profile.swift'),str(frozen/'macos/App.swift'),'-o',str(rebuilt_ui)])
+                     '-F',str(sparkle),'-framework','Sparkle','-Xlinker','-rpath','-Xlinker','@executable_path/../Frameworks',
+                     str(frozen/'macos/Lifecycle.swift'),str(frozen/'macos/Profile.swift'),str(frozen/'macos/RemoteControl.swift'),
+                     str(frozen/'macos/UpdateController.swift'),str(frozen/'macos/App.swift'),'-o',str(rebuilt_ui)])
                 thin_ui=work/('packaged-ui-'+goarch)
                 run(['lipo',str(ui),'-thin',arch,'-output',str(thin_ui)])
                 if macho_sections(thin_ui)!=macho_sections(rebuilt_ui):
@@ -181,14 +220,14 @@ def main() -> None:
                 raise ValueError('Placeholder transport key accepted')
             profile=json.loads(files['macos/userspace-profile.example.json']);profile['transport_key']='0a'*32
             run([str(engine),'validate'],input=json.dumps(profile).encode())
-            checks.extend(['read-only DMG and strict ad-hoc signature','ARM and x86_64 packaged engine execution',
-                'App and engine section-identical rebuilds from frozen source','schema2/3 compatibility and placeholder rejection',
+            checks.extend(['read-only DMG and strict ad-hoc signature','embedded Sparkle framework and pinned public update key',
+                'ARM and x86_64 packaged engine execution','App and engine section-identical rebuilds from frozen source','schema2/3 compatibility and placeholder rejection',
                 'packaged documentation equals frozen source'])
         finally:
             run(['hdiutil','detach',str(mount)])
     if source.manifest(source.collect())!=sums:
         raise ValueError('Sources changed during verification')
-    artifacts=[dmg_name,source_name,'MPTCP-Desk.BUILDINFO',
+    artifacts=[dmg_name,'appcast.xml',source_name,'MPTCP-Desk.BUILDINFO',
         'mptcp-client-linux-amd64','mptcp-client-linux-amd64.BUILDINFO',
         'mptcp-client-linux-arm64','mptcp-client-linux-arm64.BUILDINFO',
         'mptcp-landing','mptcp-landing.BUILDINFO',

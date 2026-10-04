@@ -815,6 +815,7 @@ func validateInput(name string, cfg provisionConfig) error {
 type app struct {
 	store        *store
 	bundles      *bundleStore
+	devices      *deviceStore
 	mutationMu   sync.Mutex
 	adminUser    string
 	authMu       sync.RWMutex
@@ -1416,6 +1417,10 @@ func (a *app) handler() http.Handler {
 	})
 	mux.HandleFunc("/v1/config/", a.publicConfig)
 	mux.HandleFunc("/v1/bundle/", a.publicBundle)
+	mux.HandleFunc("/v1/device/pair", a.devicePair)
+	mux.HandleFunc("/v1/device/poll", a.devicePoll)
+	mux.HandleFunc("/v1/device/report", a.deviceReport)
+	mux.HandleFunc("/v1/device/unpair", a.deviceUnpair)
 	mux.HandleFunc("/admin", a.requireAdmin(a.adminPage))
 	mux.HandleFunc("/admin/", a.requireAdmin(a.adminPage))
 	mux.HandleFunc("/admin/api/system", a.requireAdmin(a.adminSystem))
@@ -1424,6 +1429,8 @@ func (a *app) handler() http.Handler {
 	mux.HandleFunc("/admin/api/profiles/", a.requireAdmin(a.adminProfileByID))
 	mux.HandleFunc("/admin/api/bundles", a.requireAdmin(a.adminBundles))
 	mux.HandleFunc("/admin/api/bundles/", a.requireAdmin(a.adminBundleByID))
+	mux.HandleFunc("/admin/api/devices", a.requireAdmin(a.adminDevices))
+	mux.HandleFunc("/admin/api/devices/", a.requireAdmin(a.adminDeviceByID))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -1480,13 +1487,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	devicePath := getenv("MPX_PROVISION_DEVICES", filepath.Join(filepath.Dir(dataPath), "devices.json"))
+	ds, err := newDeviceStore(devicePath)
+	if err != nil {
+		log.Fatal(err)
+	}
 	for _, b := range bs.list() {
 		if err := validateBundleProfiles(b.Mode, b.ProfileIDs, st, "", nil); err != nil {
 			log.Fatalf("bundle %s invalid: %v", b.ID, err)
 		}
 	}
-	a := &app{store: st, bundles: bs, adminUser: user, adminPass: pass, passwordFile: passwordFile, publicBase: publicBase}
-	srv := &http.Server{Addr: listen, Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	a := &app{store: st, bundles: bs, devices: ds, adminUser: user, adminPass: pass, passwordFile: passwordFile, publicBase: publicBase}
+	srv := &http.Server{Addr: listen, Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	log.Printf("MPX Provisioning %s (%s) listening on %s (admin /admin)", Version, SourceID, listen)
 	log.Fatal(srv.ListenAndServe())
 }

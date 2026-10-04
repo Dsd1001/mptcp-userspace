@@ -1,4 +1,4 @@
-# Linux client — MPTCP Userspace 0.10.5
+# Linux client — MPTCP Userspace 0.10.6
 
 The headless Linux Client reuses the same Go Userspace MPX/4 engine as MPTCP Desk. Published artifacts are available for linux/amd64 and linux/arm64.
 
@@ -56,7 +56,7 @@ After preflight, Profile runtimes are independent. If one Profile cannot connect
 
 ## Parallel Bundle automatic reconnect
 
-In v0.10.5, run-bundle supervises each selected Profile independently. A failed child retries after 1s, 2s, 5s, 10s, 30s, then every 30s indefinitely. A successful listening event resets that Profile's backoff. Healthy Profiles are not restarted, and an all-down parallel Bundle stays alive waiting for recovery.
+In v0.10.6, run-bundle supervises each selected Profile independently. A failed child retries after 1s, 2s, 5s, 10s, 30s, then every 30s indefinitely. A successful listening event resets that Profile's backoff. Healthy Profiles are not restarted, and an all-down parallel Bundle stays alive waiting for recovery.
 
 ## Managed Provisioning
 
@@ -78,7 +78,7 @@ The URL may refer to a Profile or Bundle.
 
 Remote URLs require HTTPS; loopback HTTP is permitted for development. Redirects are rejected. Single-Profile responses are bounded to 64 KiB and Bundle responses to 512 KiB.
 
-0.10.5 automatically decrypts the opaque v/n/d Provisioning envelope introduced in 0.10.2 and also accepts legacy plaintext schema-1/schema-2 responses for migration.
+0.10.6 automatically decrypts the opaque v/n/d Provisioning envelope introduced in 0.10.2 and also accepts legacy plaintext schema-1/schema-2 responses for migration.
 
 Treat the managed URL as a bearer credential. If persisted, protect the input file with restrictive permissions such as 0600.
 

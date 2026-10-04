@@ -6,11 +6,17 @@
 <key>CFBundleDisplayName</key><string>MPTCP Desk</string>
 <key>CFBundleExecutable</key><string>MPTCPDesk</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.10.5</string>
-<key>CFBundleVersion</key><string>24</string>
+<key>CFBundleShortVersionString</key><string>0.10.6</string>
+<key>CFBundleVersion</key><string>25</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleIconFile</key><string>AppIcon</string>
+<key>SUFeedURL</key><string>https://github.com/Dsd1001/mptcp-userspace/releases/latest/download/appcast.xml</string>
+<key>SUPublicEDKey</key><string>2ADwJkrQ2XxjFo4bC3mjQkxjGBpsj3hfP7JTV0wdtek=</string>
+<key>SUEnableAutomaticChecks</key><true/>
+<key>SUScheduledCheckInterval</key><real>86400</real>
+<key>SUAutomaticallyUpdate</key><false/>
+<key>SUAllowsAutomaticUpdates</key><true/>
 <key>NSHumanReadableCopyright</key><string>MPTCP Desk contributors</string>
 </dict></plist>

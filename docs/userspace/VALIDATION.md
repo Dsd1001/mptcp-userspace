@@ -1,6 +1,6 @@
-# v0.10.5 / MPX/4 Draft 04 validation and release limits
+# v0.10.6 / MPX/4 Draft 04 validation and release limits
 
-This document describes the current release gate. Historical version-specific validation files are not the source of truth for v0.10.5.
+This document describes the current release gate. Historical version-specific validation files are not the source of truth for v0.10.6.
 
 ## Required correctness gates
 
@@ -32,7 +32,7 @@ A release candidate must pass, at minimum:
 
 ## Current implementation bounds
 
-Release validation assumes the v0.10.5 current bounds:
+Release validation assumes the v0.10.6 current bounds:
 
 - 2–8 configured Relays per Profile;
 - up to 8 MPX/4 Carriers per Session;
@@ -49,6 +49,14 @@ Changing any of these is a separate capability/scale change and requires dedicat
 Correctness, laboratory performance, capacity, build provenance and production/App+Surge validation are separate evidence classes.
 
 A passing unit/race/offscreen test suite does not by itself prove WAN throughput or a specific production deployment. Performance claims must be tied to source-matched CAPACITY/RUNTIME evidence.
+
+## 0.10.6 control/update gates
+
+- Device pairing secret isolation, revocation, observed-state report and offline desired-state persistence.
+- Exact whitelist of start/stop/config-sync/restart/signed-update behavior; unknown command fields rejected.
+- Mac local-only policy: remote-management enable/server URL cannot be provisioned remotely.
+- Swift arm64/x86_64 typecheck and Settings UI smoke with remote management default-off.
+- Sparkle 2.10.0 dependency SHA-256 pin, embedded public key/feed URL, appcast XML validation and EdDSA verification.
 
 ## Production boundary
 

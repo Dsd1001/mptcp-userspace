@@ -1,10 +1,10 @@
 # 故障排查
 
-本文面向 **v0.10.5 / MPX/4 Draft 04**。
+本文面向 **v0.10.6 / MPX/4 Draft 04**。
 
 ## 1. 先确认版本与 Source-ID
 
-Client、Landing、Provisioning 最好使用同一正式版本。当前 0.10.5 Source-ID 为发布包中的 SOURCE_ID；不要只看文件名判断二进制来源。
+Client、Landing、Provisioning 最好使用同一正式版本。当前 0.10.6 Source-ID 为发布包中的 SOURCE_ID；不要只看文件名判断二进制来源。
 
 Landing：
 
@@ -41,7 +41,7 @@ mptcp-client-linux-amd64 doctor-userspace
 
 ## 4. Parallel Bundle 一份配置失败
 
-0.10.5 的正常行为是：
+0.10.6 的正常行为是：
 
 - 本地端口预检查失败：整组不启动；
 - 远端连接、认证或运行失败：只标记对应 Profile；
@@ -53,7 +53,7 @@ mptcp-client-linux-amd64 doctor-userspace
 
 ## 4.1 Parallel Profile 自动重连
 
-0.10.5 中，parallel Bundle 的单个 Profile 断线会显示“重连中”，并按 1s → 2s → 5s → 10s → 30s → 每 30s 自动重试。其他健康 Profile 继续工作。
+0.10.6 中，parallel Bundle 的单个 Profile 断线会显示“重连中”，并按 1s → 2s → 5s → 10s → 30s → 每 30s 自动重试。其他健康 Profile 继续工作。
 
 如果所有 Profile 都暂时不可用，主状态会显示“全部配置重连中”，run-bundle 不会退出。恢复后对应 Profile 会自动重新进入“已启动”，无需手动停止/启动。
 
@@ -121,7 +121,7 @@ Weighted 容量高估也会放大这一现象。
 - 网络已经恢复；
 - 至少曾成功同步过一次远端配置，或者当前 API 可用以完成首次同步。
 
-0.10.5 有匹配 LKG 缓存时，睡眠唤醒恢复不会等待 Provisioning API；它直接用缓存重建 Session/Carrier，同时在后台刷新 API。若 API 暂时不可用，现有缓存仍然有效。
+0.10.6 有匹配 LKG 缓存时，睡眠唤醒恢复不会等待 Provisioning API；它直接用缓存重建 Session/Carrier，同时在后台刷新 API。若 API 暂时不可用，现有缓存仍然有效。
 
 ## 11. 需要哪些日志
 

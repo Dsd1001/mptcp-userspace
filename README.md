@@ -4,21 +4,21 @@ MPTCP Userspace is an **application-layer multipath transport** for macOS and Li
 
 It is **not kernel MPTCP** and it is **not QUIC**. Relay nodes only forward ordinary TCP bytes; MPX/4 authentication, encryption, stream state, flow control and scheduling are end-to-end between the Client and Landing.
 
-**Current release: v0.10.5 · MPX/4 Draft 04**
+**Current release: v0.10.6 · MPX/4 Draft 04**
 
-- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.5)
+- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.6)
 - [MPX/4 specification](https://github.com/Dsd1001/MPX-4)
 - [中文说明](README.zh-CN.md)
 
-## v0.10.5: self-healing parallel Profiles
+## v0.10.6: signed in-app updates and opt-in remote device management
 
-Parallel Bundles now supervise every selected Profile independently. If one Profile cannot start, loses its transport, or its child runtime exits, only that Profile enters reconnecting state; healthy Profile listeners and MPX Sessions continue running unchanged.
+MPTCP Desk now includes a Sparkle 2 update channel. The app can check for updates manually or every 24 hours, and remote administrators can request an update only through the same EdDSA-signed appcast. The updater does not accept arbitrary download URLs or arbitrary executables.
 
-The retry cadence is **1s → 2s → 5s → 10s → 30s → every 30s** until the Profile returns or the user stops the Bundle. A successful listening state resets that Profile's retry backoff, so a later disconnect starts again at 1 second.
+Provisioning now includes an optional **Devices** control plane. A Mac must enable remote management locally, enter the HTTPS control-server address locally, and complete a one-time pairing locally. Provisioning/control responses cannot enable this switch or replace the control-server address.
 
-If every selected Profile is temporarily down, the Bundle supervisor stays alive in a reconnecting state instead of exiting. Profiles can therefore recover without a manual Stop/Start cycle.
+Paired clients use outbound HTTPS long polling, so they do not need a public IP. The admin console can assign a Profile/Bundle, persist desired running/stopped state, request configuration sync, restart the forwarding runtime, request a signed app update, and view observed version/runtime/Profile state. There is deliberately no Shell or arbitrary-command interface.
 
-The cache-first managed configuration introduced in v0.10.4 remains unchanged: matching Last Known Good configuration starts immediately, Provisioning refresh is asynchronous, the cache has no TTL, and successful API syncs are checked again after 48 hours.
+The 0.10.5 parallel Profile supervisor and 0.10.4 Last Known Good cache behavior remain unchanged. **MPX/4 stays on Draft 04 / WireProtocol 4 / CapabilityRevision 4.**
 
 ## What is included
 
@@ -119,7 +119,7 @@ For a remote Bundle, every Profile keeps an independent diagnostic state. Expand
 
 ## Current implementation bounds
 
-The current v0.10.5 implementation uses:
+The current v0.10.6 implementation uses:
 
 - **2–8 configured Relays per Profile**;
 - **up to 8 MPX/4 Carriers per Session**;
@@ -143,9 +143,9 @@ download_mbps is required for Weighted. upload_mbps is optional; an omitted upli
 
 ## Compatibility
 
-The supported release suite is **0.10.5 Client + 0.10.5 Landing + 0.10.5 Provisioning**.
+The supported release suite is **0.10.6 Client + 0.10.6 Landing + 0.10.6 Provisioning**.
 
-v0.10.5 keeps the exact MPX/4 Draft 04 data plane, Carrier Generation/Error Scope, scheduler, flow-control and key-schedule semantics used by v0.10.3. This release changes managed-configuration persistence and recovery only. v0.10.5 clients also continue to accept legacy plaintext schema-1/schema-2 Provisioning responses for migration, while 0.10.2+ Provisioning normally returns the opaque encrypted envelope.
+v0.10.6 keeps the exact MPX/4 Draft 04 data plane, Carrier Generation/Error Scope, scheduler, flow-control and key-schedule semantics used by v0.10.5. This release changes macOS distribution/update and remote device-control behavior above the transport. v0.10.6 clients continue to accept legacy plaintext schema-1/schema-2 Provisioning responses for migration, while 0.10.2+ Provisioning normally returns the opaque encrypted envelope.
 
 Pre-MPX/4 releases are retained in the repository history and historical documents, but they are not the current deployment target.
 
@@ -194,6 +194,6 @@ See [Building from source](docs/guides/BUILDING.md) for the full build workflow.
 - [Scheduler modes](docs/userspace/SCHEDULER-MODES.md)
 - [Deployment and rollback](docs/userspace/DEPLOYMENT.zh-CN.md)
 - [Validation and release limits](docs/userspace/VALIDATION.md)
-- [v0.10.5 release notes](docs/userspace/RELEASE.zh-CN.md)
+- [v0.10.6 release notes](docs/userspace/RELEASE.zh-CN.md)
 
 Version-specific MPX/2 and MPX/3 documents are retained for historical/implementation archaeology and are not the current protocol guide.

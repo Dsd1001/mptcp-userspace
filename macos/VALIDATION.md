@@ -1,6 +1,12 @@
-# MPTCP Desk 0.10.5 validation
+# MPTCP Desk 0.10.6 validation
 
-A 0.10.5 release candidate must cover:
+A 0.10.6 release candidate must cover:
+
+- remote management is default-off and desired control is ignored while locally disabled;
+- HTTPS-only control-server validation, with loopback HTTP allowed only for development;
+- per-device pairing/auth isolation and Keychain-only device secret handling;
+- signed Sparkle appcast / DMG metadata, pinned public key and embedded framework;
+- remote update cannot specify an arbitrary URL or executable;
 
 - engine/Landing go test, go vet and race suite;
 - MPX/4 Draft 04 protocol vectors and error/generation semantics;

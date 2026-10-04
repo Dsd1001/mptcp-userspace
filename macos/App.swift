@@ -106,6 +106,18 @@ final class Model: ObservableObject {
     @Published var sent: Int64 = 0
     @Published var received: Int64 = 0
     @Published var tab = 0
+    @Published var remoteManagementEnabled = false
+    @Published var remoteControlServer = ""
+    @Published var remotePairingCode = ""
+    @Published var remoteControlStatus = "关闭"
+    @Published var remoteControlConnected = false
+    @Published var remoteDeviceID = ""
+    @Published var remoteControlLastSeen: Date?
+    var remoteControlRevision: UInt64 = 0
+    var remoteRestartGeneration: UInt64 = 0
+    var remoteSyncGeneration: UInt64 = 0
+    var remoteUpdateGeneration: UInt64 = 0
+    var remoteControlClient: RemoteControlClient?
     private var process: Process?
     private var reader: FileHandle?
     private var pending = Data()
@@ -146,7 +158,7 @@ final class Model: ObservableObject {
             manualStopRequested: manualStopRequested
         )
     }
-    private func refreshLoginItemStatus() {
+    func refreshLoginItemStatus() {
         switch SMAppService.mainApp.status {
         case .enabled: backgroundResidentStatus = "登录自启已启用"
         case .requiresApproval: backgroundResidentStatus = "需在系统设置允许登录项"
@@ -155,7 +167,7 @@ final class Model: ObservableObject {
         @unknown default: backgroundResidentStatus = "登录项状态未知"
         }
     }
-    private func registerLoginItem() {
+    func registerLoginItem() {
         do {
             if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
             refreshLoginItemStatus()
@@ -179,13 +191,22 @@ final class Model: ObservableObject {
         } else {
             needsRecovery = false
             setWantsForwarding(false)
-            backgroundResidentStatus = "正在关闭登录项"
-            Task { @MainActor [weak self] in
-                do { try await SMAppService.mainApp.unregister() }
-                catch { self?.problem = "关闭登录自启失败：\(error.localizedDescription)" }
-                self?.refreshLoginItemStatus()
+            if remoteManagementEnabled {
+                backgroundResidentStatus = "远程管理保持登录自启"
+                refreshLoginItemStatus()
+            } else {
+                unregisterLoginItemIfUnused()
             }
             append("后台常驻已关闭；当前转发不会被强制停止，但之后不再自动恢复")
+        }
+    }
+    func unregisterLoginItemIfUnused() {
+        guard !backgroundResident && !remoteManagementEnabled else { refreshLoginItemStatus(); return }
+        backgroundResidentStatus = "正在关闭登录项"
+        Task { @MainActor [weak self] in
+            do { try await SMAppService.mainApp.unregister() }
+            catch { self?.problem = "关闭登录自启失败：\(error.localizedDescription)" }
+            self?.refreshLoginItemStatus()
         }
     }
     private func startLifecycleObservers() {
@@ -312,6 +333,7 @@ final class Model: ObservableObject {
         } else {
             refreshLoginItemStatus()
         }
+        initializeRemoteManagement()
     }
     func apply(_ p: Profile) {
         guard !configurationLocked else { return }
@@ -511,7 +533,7 @@ final class Model: ObservableObject {
         }
     }
 
-    private func scheduleProvisioningBackgroundRefresh(after delay: TimeInterval, reason: String) {
+    func scheduleProvisioningBackgroundRefresh(after delay: TimeInterval, reason: String) {
         guard remoteConfigurationSelected, !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         provisioningRefreshWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.beginProvisioningBackgroundRefresh(reason: reason) }
@@ -768,6 +790,30 @@ final class Model: ObservableObject {
                 }
                 self.append("Provisioning API 同步失败；未覆盖最近一次成功缓存")
             }
+        }
+    }
+
+    func applyRemoteAssignedProvisioningURL(_ endpoint: String) throws {
+        guard remoteManagementEnabled else { throw Message("远程管理未在本机启用") }
+        let cleaned = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = try RelayProvisioningClient.endpointURL(cleaned)
+        let previous = provisioningURL
+        try ProvisioningURLStore.save(cleaned)
+        provisioningURL = cleaned
+        configurationSource = "remote"
+        UserDefaults.standard.set("remote", forKey: Self.configurationSourceKey)
+        if previous != cleaned {
+            resetProvisioningBundleState()
+            provisioningRevision = ""
+            provisioningDisplayName = ""
+            provisioningUpdatePending = false
+            provisioningUsingCache = false
+            provisioningStatus = "远程管理分配 · 正在同步"
+        }
+        if running || busy {
+            scheduleProvisioningBackgroundRefresh(after: 0.1, reason: "远程管理配置分配")
+        } else if !provisioningSyncing {
+            syncProvisioning()
         }
     }
 
@@ -1101,6 +1147,8 @@ final class Model: ObservableObject {
     }
     func quit() {
         quitting = true
+        remoteControlClient?.stop()
+        remoteControlClient = nil
         recoveryWorkItem?.cancel(); recoveryWorkItem = nil
         if !backgroundResident { setWantsForwarding(false) }
         defer { endForwardingActivity() }
@@ -1126,6 +1174,7 @@ final class Model: ObservableObject {
 
 struct DesktopView: View {
     @ObservedObject var model = Model.shared
+    @ObservedObject var updater = AppUpdater.shared
     var locked: Bool {model.configurationLocked}
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1136,9 +1185,9 @@ struct DesktopView: View {
                     HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
                 }
                 Spacer()
-                Text("0.10.5").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("0.10.6").font(.system(size: 11)).foregroundColor(.secondary)
             }
-            Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2)}.pickerStyle(.segmented)
+            Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2);Text("设置").tag(3)}.pickerStyle(.segmented)
             HStack(spacing:12) {
                 Text("配置").font(.system(size:12,weight:.medium))
                 Picker("配置", selection: Binding(get:{model.configurationSource}, set:{model.setConfigurationSource($0)})) {
@@ -1266,7 +1315,7 @@ struct DesktopView: View {
             } else if model.tab == 1 {
                 ScrollView {Text(model.logs.joined(separator:"\n")).font(.system(size:11,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.topLeading)}
                     .frame(maxWidth:.infinity,maxHeight:.infinity)
-            } else {
+            } else if model.tab == 2 {
                 VStack(alignment:.leading,spacing:12) {
                     if model.remoteConfigurationSelected && model.provisioningIsBundle {
                         HStack(spacing:16) {
@@ -1347,6 +1396,62 @@ struct DesktopView: View {
                             .font(.system(size:12)).foregroundColor(.secondary)
                     }
                 }.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+            } else {
+                ScrollView {
+                    VStack(alignment:.leading,spacing:16) {
+                        VStack(alignment:.leading,spacing:10) {
+                            HStack {
+                                Text("远程管理").font(.headline)
+                                Spacer()
+                                Toggle("", isOn: Binding(get:{model.remoteManagementEnabled}, set:{model.setRemoteManagementEnabled($0)}))
+                                    .toggleStyle(.switch)
+                            }
+                            Text("默认关闭。只能在这台 Mac 上手动开启、配置服务器和完成配对；Provisioning / Control API 无权打开此开关或修改控制服务器。")
+                                .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                            TextField("控制服务器，例如 https://control.example.com", text:$model.remoteControlServer)
+                                .textFieldStyle(.roundedBorder)
+                                .disabled(model.remoteManagementEnabled && !model.remoteDeviceID.isEmpty)
+                            HStack {
+                                Button("保存服务器") { model.saveRemoteControlServer() }
+                                    .disabled(model.remoteManagementEnabled && !model.remoteDeviceID.isEmpty)
+                                Spacer()
+                                Circle().fill(model.remoteControlConnected ? Color.green : Color.secondary).frame(width:7,height:7)
+                                Text(model.remoteControlStatus).font(.system(size:11)).foregroundColor(.secondary)
+                            }
+                            if model.remoteDeviceID.isEmpty {
+                                SecureField("一次性配对码", text:$model.remotePairingCode).textFieldStyle(.roundedBorder)
+                                Button("配对并启用") { model.pairRemoteManagement() }
+                                    .disabled(model.remoteControlServer.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || model.remotePairingCode.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                            } else {
+                                HStack {
+                                    Text("Device ID").font(.system(size:11)).foregroundColor(.secondary)
+                                    Text(model.remoteDeviceID).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
+                                    Spacer()
+                                    Button("解除配对…") { model.unpairRemoteManagement() }
+                                }
+                            }
+                            if let seen = model.remoteControlLastSeen {
+                                Text("最近控制连接：\(DateFormatter.localizedString(from: seen, dateStyle: .none, timeStyle: .medium))")
+                                    .font(.system(size:10)).foregroundColor(.secondary)
+                            }
+                        }.padding(12).background(Color.secondary.opacity(0.05)).cornerRadius(8)
+
+                        VStack(alignment:.leading,spacing:10) {
+                            HStack {
+                                Text("客户端更新").font(.headline)
+                                Spacer()
+                                Button("检查更新…") { updater.checkForUpdates() }
+                            }
+                            Toggle("自动检查更新", isOn: Binding(
+                                get:{updater.automaticChecks},
+                                set:{updater.setAutomaticChecks($0)}
+                            )).toggleStyle(.switch)
+                            Text(updater.status).font(.system(size:11)).foregroundColor(.secondary)
+                            Text("更新由 Sparkle 2 验证 EdDSA 签名；远程“更新”也只能触发这一签名更新通道，不能下载或执行任意程序。")
+                                .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
+                        }.padding(12).background(Color.secondary.opacity(0.05)).cornerRadius(8)
+                    }.frame(maxWidth:.infinity,alignment:.topLeading)
+                }
             }
             if let problem = model.problem {
                 Label(problem,systemImage:"exclamationmark.triangle.fill").font(.system(size:12)).foregroundColor(.red).fixedSize(horizontal:false,vertical:true)
@@ -1497,6 +1602,7 @@ struct StatusMenu: View {
             if model.udpEnabled { Text("UDP 映射：\(model.udpConnections)") }
         }
         Text("后台常驻：\(model.backgroundResident ? model.backgroundResidentStatus : "关闭")")
+        Text("远程管理：\(model.remoteManagementEnabled ? model.remoteControlStatus : "关闭")")
         Divider()
         Button("打开主窗口") {
             openWindow(id: "main")
@@ -1507,6 +1613,7 @@ struct StatusMenu: View {
         } else {
             Button("启动转发") { model.startForwarding() }
         }
+        Button("检查更新…") { AppUpdater.shared.checkForUpdates() }
         Divider()
         Button("退出 MPTCP Desk") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
     }
@@ -1517,7 +1624,13 @@ struct StatusMenu: View {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
         Window("MPTCP Desk", id: "main") {DesktopView()}.windowResizability(.contentMinSize)
-            .commands {CommandGroup(replacing:.newItem) {};CommandGroup(replacing:.appInfo) {Button("关于 MPTCP Desk"){NSApplication.shared.orderFrontStandardAboutPanel()}}}
+            .commands {
+                CommandGroup(replacing:.newItem) {}
+                CommandGroup(replacing:.appInfo) {
+                    Button("关于 MPTCP Desk"){NSApplication.shared.orderFrontStandardAboutPanel()}
+                    Button("检查更新…"){AppUpdater.shared.checkForUpdates()}
+                }
+            }
         MenuBarExtra("MPTCP Desk", systemImage: "network") { StatusMenu() }
     }
 }

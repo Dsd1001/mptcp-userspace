@@ -65,6 +65,13 @@ import Foundation
         let cacheAttributes = try FileManager.default.attributesOfItem(atPath: ManagedProvisioningCacheStore.cacheURL().path)
         precondition((cacheAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
 
+        let secureControl = try RemoteControlEndpoint.baseURL("https://control.example.test")
+        precondition(secureControl.scheme == "https")
+        let localControl = try RemoteControlEndpoint.baseURL("http://127.0.0.1:8088")
+        precondition(localControl.host == "127.0.0.1")
+        do { _ = try RemoteControlEndpoint.baseURL("http://control.example.test"); fatalError("insecure remote-control URL accepted") } catch is ProfileError {}
+        do { _ = try RemoteControlEndpoint.baseURL("https://control.example.test/path"); fatalError("remote-control subpath accepted") } catch is ProfileError {}
+
         let legacy = Profile(schema_version:2,mode:"tcp_forward",listen_port:1081,relays:relays,udp_enabled:nil,tcp_enabled:nil,transport_key:nil)
         try legacy.validate();precondition(!legacy.userspace)
         var modern = Profile(schema_version:3,mode:"userspace_multipath",listen_port:1081,relays:relays,udp_enabled:true,tcp_enabled:true,transport_key:String(repeating:"a",count:64))
@@ -84,6 +91,17 @@ import Foundation
         precondition(cachePlan?.fetchedAt == cacheFetchedAt)
         model.configurationSource = "local"
         model.provisioningURL = ""
+        precondition(model.remoteManagementEnabled == false)
+        let ignoredDesired = RemoteDesiredState(
+            revision: 99, desired_state: "running", assignment_type: "bundle", assignment_id: "remote-bundle",
+            provisioning_url: cacheEndpoint, restart_generation: 9, sync_generation: 9,
+            update_generation: 9, desired_version: "latest"
+        )
+        model.applyRemoteDesiredState(ignoredDesired)
+        precondition(model.remoteManagementEnabled == false)
+        precondition(model.configurationSource == "local")
+        precondition(model.provisioningURL.isEmpty)
+        precondition(model.remoteControlRevision == 0)
         model.relays=relays;model.transportKey=String(repeating:"a",count:64)
         model.tcpPaths=[
             PathMetric(id:1,address:"192.0.2.10:24001",connected:true,sent:2000000,received:4000000,rtt_ms:23.4,goodput_bps:2097152,outstanding_bytes:65536,queue_bytes:32768,errors:0,last_error:nil),
@@ -136,7 +154,7 @@ import Foundation
         model.append("Userspace 认证通过；实际带宽叠加取决于链路容量，不作为测速结论")
         precondition(model.logs.last?.contains("认证通过") == true)
         precondition(model.logs.last?.contains("测速") == false)
-        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("userspace-bundle","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false),("userspace-paths-expanded","userspace_multipath",2,false),("userspace-bundle-paths","userspace_multipath",2,true),("userspace-bundle-paths-expanded","userspace_multipath",2,true)] {
+        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("userspace-bundle","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false),("userspace-paths-expanded","userspace_multipath",2,false),("userspace-bundle-paths","userspace_multipath",2,true),("userspace-bundle-paths-expanded","userspace_multipath",2,true),("settings","userspace_multipath",3,false)] {
             model.mode=mode;model.tab=tab;model.problem=nil;model.running=false;model.busy=false
             model.configurationSource=api ? "remote" : "local"
             model.provisioningURL=api ? "https://config.example.test/v1/bundle/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" : ""
@@ -172,6 +190,6 @@ import Foundation
             print("Rendered \(name): \(bitmap.pixelsWide)x\(bitmap.pixelsHigh), \(png.count) bytes")
             window.contentView=nil
         }
-        print("PASS: persistent managed cache/fingerprint/48h policy/cache-first launch plan, parallel reconnect telemetry, per-Profile diagnostics isolation, hidden remote endpoints, resource disclosures, and eight offscreen SwiftUI views")
+        print("PASS: managed LKG/cache-first, parallel reconnect telemetry, local-only remote-management policy, HTTPS control endpoint validation, per-Profile diagnostics, signed-updater settings, and nine offscreen SwiftUI views")
     }
 }

@@ -1,4 +1,4 @@
-# MPX Provisioning 0.10.5
+# MPX Provisioning 0.10.6
 
 MPX Provisioning is the optional configuration/control plane for MPTCP Userspace. It is **not** a data proxy and does not change MPX/4 Draft 04 data-plane bytes.
 
@@ -63,13 +63,13 @@ The existing 256-bit URL secret is used as key material. HMAC-SHA256 over the fi
 
 The encrypted plaintext is still the existing schema-1 Profile or schema-2 Bundle document, so the internal control-plane model remains simple.
 
-This layer is intentionally lightweight: it prevents Relay endpoints and Transport Keys from being immediately readable when a secret URL is opened in a browser, without adding device enrollment, a public-key infrastructure or a second credential.
+This layer is intentionally lightweight: Profile/Bundle decryption still needs no device enrollment or public-key infrastructure. The optional Device Control service added in 0.10.6 is a separate control credential and is not required to fetch/decrypt a Provisioning URL.
 
 **Possession of the complete URL still grants decryption capability.** HTTPS remains mandatory for remote use.
 
-0.10.5 clients also accept legacy plaintext schema-1/schema-2 responses for migration.
+0.10.6 clients also accept legacy plaintext schema-1/schema-2 responses for migration.
 
-## 0.10.5 managed client cache
+## 0.10.6 managed client cache
 
 After the first successful managed sync, MPTCP Desk persists the Last Known Good Profile/Bundle response under the user's Application Support/MPTCPDesk directory. The cache file is mode 0600 and contains the endpoint SHA-256 fingerprint, fetch time, selected Profile IDs and the last validated response bytes. The full Provisioning URL is not written to this file and remains in Keychain.
 
@@ -131,19 +131,53 @@ Profile and Bundle URLs support:
 
 Transport Keys and URLs are masked by default.
 
+## Device control / remote management
+
+0.10.6 adds a Devices control plane to the existing Provisioning service. It is intentionally opt-in from the Mac side.
+
+A device record stores only desired/observed state and a hash of its device credential. The Mac must:
+
+1. enable Remote Management locally;
+2. enter the HTTPS control-server root URL locally;
+3. enter a 10-minute one-time pairing code locally.
+
+Neither Profile/Bundle Provisioning nor Device Control responses contain a field that can enable remote management or replace the locally configured control-server address.
+
+After pairing, the Mac uses outbound HTTPS long polling and therefore needs no inbound port or public IP. The server exposes fixed device operations for desired running/stopped state, Profile/Bundle assignment, configuration sync generation, forwarding restart generation and signed-app update generation. There is no Shell or arbitrary-command field.
+
+Device credentials are unique per Mac. The device secret is stored in the macOS Keychain; Provisioning stores only its SHA-256 hash in devices.json. Pairing codes are also stored only as hashes. The admin UI can rotate pairing, revoke/delete a device and inspect a bounded audit log.
+
+The relevant device endpoints are:
+
+~~~text
+POST /v1/device/pair
+GET  /v1/device/poll?since=<control-revision>
+POST /v1/device/report
+POST /v1/device/unpair
+
+GET/POST       /admin/api/devices
+GET/PUT/DELETE /admin/api/devices/<id>
+POST           /admin/api/devices/<id>/pairing
+POST           /admin/api/devices/<id>/sync
+POST           /admin/api/devices/<id>/restart
+POST           /admin/api/devices/<id>/update
+~~~
+
+The public device endpoints use a per-device Bearer secret plus X-MPX-Device-ID. Admin endpoints remain behind the existing administrator authentication.
+
 ## Security and storage
 
 - Configure reverse-proxy access logs to omit/redact /v1/config/ and /v1/bundle/ paths.
 - Public configuration responses use Cache-Control: no-store.
-- Profile/Bundle data files should be mode 0600 under a private directory.
+- Profile/Bundle/device data files should be mode 0600 under a private directory.
 - Administrator password persistence is atomic and mode 0600.
 - Never expose the full URL or Transport Key in public logs/screenshots.
 - Provisioning is a control plane; application traffic never passes through it.
 
 ## Upgrade compatibility
 
-0.10.5 keeps the existing Profile/Bundle data model and URL format. Existing records and URLs remain valid unless explicitly edited/rotated.
+0.10.6 keeps the existing Profile/Bundle data model and URL format. Existing records and URLs remain valid unless explicitly edited/rotated.
 
 When upgrading from a Provisioning version before 0.10.2, upgrade clients to 0.10.2+ before switching the server to encrypted envelope responses.
 
-For the current release, use a matched **0.10.5 Client + 0.10.5 Landing + 0.10.5 Provisioning** suite.
+For the current release, use a matched **0.10.6 Client + 0.10.6 Landing + 0.10.6 Provisioning** suite.
