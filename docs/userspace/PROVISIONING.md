@@ -1,4 +1,4 @@
-# MPX Provisioning 0.10.4
+# MPX Provisioning 0.10.5
 
 MPX Provisioning is the optional configuration/control plane for MPTCP Userspace. It is **not** a data proxy and does not change MPX/4 Draft 04 data-plane bytes.
 
@@ -67,9 +67,9 @@ This layer is intentionally lightweight: it prevents Relay endpoints and Transpo
 
 **Possession of the complete URL still grants decryption capability.** HTTPS remains mandatory for remote use.
 
-0.10.4 clients also accept legacy plaintext schema-1/schema-2 responses for migration.
+0.10.5 clients also accept legacy plaintext schema-1/schema-2 responses for migration.
 
-## 0.10.4 managed client cache
+## 0.10.5 managed client cache
 
 After the first successful managed sync, MPTCP Desk persists the Last Known Good Profile/Bundle response under the user's Application Support/MPTCPDesk directory. The cache file is mode 0600 and contains the endpoint SHA-256 fingerprint, fetch time, selected Profile IDs and the last validated response bytes. The full Provisioning URL is not written to this file and remains in Keychain.
 
@@ -142,8 +142,8 @@ Transport Keys and URLs are masked by default.
 
 ## Upgrade compatibility
 
-0.10.4 keeps the existing Profile/Bundle data model and URL format. Existing records and URLs remain valid unless explicitly edited/rotated.
+0.10.5 keeps the existing Profile/Bundle data model and URL format. Existing records and URLs remain valid unless explicitly edited/rotated.
 
 When upgrading from a Provisioning version before 0.10.2, upgrade clients to 0.10.2+ before switching the server to encrypted envelope responses.
 
-For the current release, use a matched **0.10.4 Client + 0.10.4 Landing + 0.10.4 Provisioning** suite.
+For the current release, use a matched **0.10.5 Client + 0.10.5 Landing + 0.10.5 Provisioning** suite.

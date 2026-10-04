@@ -4,19 +4,21 @@ MPTCP Userspace 是一个面向 macOS 与 Linux 的**应用层多路径传输系
 
 它**不是内核 MPTCP，也不是 QUIC**。Relay 只需要转发普通 TCP 字节；MPX/4 的认证、加密、Stream 状态、流控和调度都由 Client 与 Landing 端到端完成。
 
-**当前正式版本：v0.10.4 · MPX/4 Draft 04**
+**当前正式版本：v0.10.5 · MPX/4 Draft 04**
 
-- [最新 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.4)
+- [最新 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.5)
 - [MPX/4 规范仓库](https://github.com/Dsd1001/MPX-4)
 - [English README](README.md)
 
-## 0.10.4：远端配置本地缓存优先
+## 0.10.5：Parallel Profile 自动重连
 
-第一次 Provisioning 同步成功后，macOS Client 会持久化最近一次完整获取、解密并校验通过的 Profile/Bundle 作为 Last Known Good 配置。之后正常启动、App/系统重启以及睡眠唤醒恢复都直接从匹配缓存启动，不再先等待 API timeout。
+Parallel Bundle 现在会对每一份已启用 Profile 独立监督。某一份 Profile 启动失败、链路断开或子 runtime 异常退出时，只让这一份进入重连状态；其他健康 Profile 的本地监听和 MPX Session 全程不重启。
 
-API 更新改为异步后台行为。拿到新配置后只替换**下一次重连**使用的缓存，不强制重启当前 Session。缓存本身不设置过期时间。每次成功同步后 48 小时自动再检查一次；后台失败后按 1 分钟、5 分钟、30 分钟、3 小时退避，之后继续按 3 小时重试，现有连接与缓存保持有效。
+重试节奏固定为 **1 秒 → 2 秒 → 5 秒 → 10 秒 → 30 秒 → 此后每 30 秒一次**，一直持续到该 Profile 恢复或用户主动停止 Bundle。Profile 一旦重新进入 listening，自己的退避计数立即清零，下一次断线重新从 1 秒开始。
 
-缓存通过 Provisioning URL 的 SHA-256 指纹绑定来源，更换 URL 后不会误用旧缓存。完整 secret URL 仍保存在 Keychain。缓存文件位于用户 Application Support/MPTCPDesk 目录，权限为 0600，保存最近一次验证通过的响应和 Bundle 选择的 Profile ID。
+即使所有已选择 Profile 同时暂时不可用，Bundle supervisor 也不会退出，而是保持“全部配置重连中”，因此不再需要手动点一次停止/启动才能恢复。
+
+0.10.4 引入的远端配置本地缓存逻辑保持不变：匹配的 Last Known Good 配置立即启动，Provisioning API 后台异步更新，缓存不设 TTL，每次成功同步后 48 小时再次自动检查。
 
 ## 项目包含什么
 
@@ -116,7 +118,7 @@ MPTCP Desk 展示的是 Session 与路径运行状态，而不是单一“测速
 
 ## 当前实现边界
 
-v0.10.4 当前实现限制为：
+v0.10.5 当前实现限制为：
 
 - 每个 Profile **2–8 条 Relay**；
 - 每个 MPX/4 Session **最多 8 条 Carrier**；
@@ -140,9 +142,9 @@ Weighted 的 download_mbps 必填，upload_mbps 可选；未填上行容量时�
 
 ## 兼容性
 
-当前正式支持组合是 **0.10.4 Client + 0.10.4 Landing + 0.10.4 Provisioning**。
+当前正式支持组合是 **0.10.5 Client + 0.10.5 Landing + 0.10.5 Provisioning**。
 
-0.10.4 完整沿用 0.10.3 的 MPX/4 Draft 04 数据面、Carrier Generation/Error Scope、Scheduler、flow-control 与 key schedule 语义；本版只调整远端配置的持久化与恢复路径。0.10.4 Client 继续接受旧的明文 schema-1/schema-2 Provisioning 响应用于迁移；0.10.2 及之后的 Provisioning 默认返回不透明加密封装。
+0.10.5 完整沿用 0.10.3 的 MPX/4 Draft 04 数据面、Carrier Generation/Error Scope、Scheduler、flow-control 与 key schedule 语义；本版只调整远端配置的持久化与恢复路径。0.10.5 Client 继续接受旧的明文 schema-1/schema-2 Provisioning 响应用于迁移；0.10.2 及之后的 Provisioning 默认返回不透明加密封装。
 
 MPX/4 之前的版本和相关设计文档仍保留在仓库历史中，但不应再作为当前部署说明。
 
@@ -183,6 +185,6 @@ MPTCP_GO=/path/to/go ./scripts/build-provisioning.sh
 - [调度模式](docs/userspace/SCHEDULER-MODES.md)
 - [部署与回滚](docs/userspace/DEPLOYMENT.zh-CN.md)
 - [验证与发布边界](docs/userspace/VALIDATION.md)
-- [v0.10.4 Release Notes](docs/userspace/RELEASE.zh-CN.md)
+- [v0.10.5 Release Notes](docs/userspace/RELEASE.zh-CN.md)
 
 仓库中带有 MPX/2、MPX/3 或旧版本号的文档保留用于历史与实现考古，不是当前协议/部署指南。

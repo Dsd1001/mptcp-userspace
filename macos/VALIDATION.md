@@ -1,6 +1,6 @@
-# MPTCP Desk 0.10.4 validation
+# MPTCP Desk 0.10.5 validation
 
-A 0.10.4 release candidate must cover:
+A 0.10.5 release candidate must cover:
 
 - engine/Landing go test, go vet and race suite;
 - MPX/4 Draft 04 protocol vectors and error/generation semantics;
@@ -11,7 +11,10 @@ A 0.10.4 release candidate must cover:
 - cache-first launch planning, 48-hour refresh/retry policy and no immediate apply/restart while a runtime is active;
 - single_select and parallel Bundle validation;
 - atomic duplicate/occupied local-port preflight;
-- one-bad/one-good parallel runtime isolation;
+- one-bad/one-good parallel runtime isolation and automatic recovery without restarting the healthy peer;
+- exact 1s/2s/5s/10s/30s/30s Profile retry schedule;
+- all-down parallel Bundle supervisor survival/recovery;
+- runtime crash reconnect, cancellation and permanent-failure backoff;
 - per-Profile remote diagnostic state isolation;
 - hidden Relay endpoint rendering for managed diagnostics;
 - Stream/Lifecycle and Window/Credit disclosure panels default-collapsed and expanded;

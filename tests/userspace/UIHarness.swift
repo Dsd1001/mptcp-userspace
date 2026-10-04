@@ -121,6 +121,18 @@ import Foundation
         precondition(model.provisioningDiagnostics["b"]?.connections == 3)
         precondition(model.provisioningDiagnostics["b"]?.resources?.active_streams == 3)
         precondition(model.provisioningDiagnostics["b"]?.effectiveSchedulerMode == "protect")
+        let reconnectingEvent = try JSONDecoder().decode(
+            EngineEvent.self,
+            from: Data(#"{"profile_id":"b","profile_name":"HKT","bundle_id":"synthetic-bundle","kind":"reconnecting","retry_after_seconds":30,"retry_attempt":6,"message":"30 秒后自动重连"}"#.utf8)
+        )
+        precondition(model.consumeBundleProfileEvent(reconnectingEvent))
+        precondition(model.provisioningRuntimeStatus["b"] == "重连中 · 30s")
+        let reconnectAttempt = try JSONDecoder().decode(
+            EngineEvent.self,
+            from: Data(#"{"profile_id":"b","profile_name":"HKT","bundle_id":"synthetic-bundle","kind":"reconnect_attempt","message":"Profile 正在重新连接"}"#.utf8)
+        )
+        precondition(model.consumeBundleProfileEvent(reconnectAttempt))
+        precondition(model.provisioningRuntimeStatus["b"] == "连接中")
         model.append("Userspace 认证通过；实际带宽叠加取决于链路容量，不作为测速结论")
         precondition(model.logs.last?.contains("认证通过") == true)
         precondition(model.logs.last?.contains("测速") == false)
@@ -160,6 +172,6 @@ import Foundation
             print("Rendered \(name): \(bitmap.pixelsWide)x\(bitmap.pixelsHigh), \(png.count) bytes")
             window.contentView=nil
         }
-        print("PASS: persistent managed cache/fingerprint/48h policy/cache-first launch plan, full per-Profile diagnostics isolation, hidden remote endpoints, resource disclosures, and eight offscreen SwiftUI views")
+        print("PASS: persistent managed cache/fingerprint/48h policy/cache-first launch plan, parallel reconnect telemetry, per-Profile diagnostics isolation, hidden remote endpoints, resource disclosures, and eight offscreen SwiftUI views")
     }
 }

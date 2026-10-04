@@ -944,9 +944,15 @@ final class Model: ObservableObject {
         guard let profileID = event.profile_id, event.bundle_id != nil else { return false }
         let title = event.profile_name ?? profileID
         switch event.kind {
-        case "connecting":
+        case "connecting", "reconnect_attempt":
             provisioningRuntimeStatus[profileID] = "连接中"
             provisioningRuntimeError.removeValue(forKey: profileID)
+        case "reconnecting":
+            if let seconds = event.retry_after_seconds, seconds > 0 {
+                provisioningRuntimeStatus[profileID] = "重连中 · \(seconds)s"
+            } else {
+                provisioningRuntimeStatus[profileID] = "重连中"
+            }
         case "ready":
             provisioningRuntimeStatus[profileID] = "认证通过"
             provisioningRuntimeError.removeValue(forKey: profileID)
@@ -986,9 +992,17 @@ final class Model: ObservableObject {
         provisioningDiagnostics[profileID] = diagnostic
 
         if event.kind == "error" { append("[\(title)] \(customerFacingRemoteError(event.message))") }
-        else if ["connecting","ready","listening","transport_closed"].contains(event.kind) {
+        else if event.kind == "reconnecting" {
+            let seconds = event.retry_after_seconds ?? 0
+            append(seconds > 0 ? "[\(title)] 断线，\(seconds) 秒后自动重连" : "[\(title)] 断线，正在自动重连")
+        } else if ["connecting","reconnect_attempt","ready","listening","transport_closed"].contains(event.kind) {
             let label: String
-            switch event.kind { case "connecting": label = "正在连接"; case "ready": label = "认证通过"; case "listening": label = "已启动"; default: label = "已停止" }
+            switch event.kind {
+            case "connecting", "reconnect_attempt": label = "正在连接"
+            case "ready": label = "认证通过"
+            case "listening": label = "已启动"
+            default: label = "已停止"
+            }
             append("[\(title)] \(label)")
         }
         return true
@@ -1009,19 +1023,24 @@ final class Model: ObservableObject {
             case "bundle_listening":
                 running = true; busy = false
                 recoveryAttempt = 0; needsRecovery = false
-                let failed = event.failed_profiles ?? 0
-                if failed > 0 {
+                let reconnecting = event.reconnecting_profiles ?? 0
+                if reconnecting > 0 {
                     status = "部分配置运行中"
-                    problem = event.message ?? "部分 Profile 不可用；可用配置继续运行"
+                    problem = nil
                 } else {
                     problem = nil
                     status = (event.connecting_profiles ?? 0) > 0 ? "部分配置已启动" : "多配置入口已启动"
                 }
             case "bundle_degraded":
-                running = (event.active_profiles ?? 0) > 0; busy = false
+                running = true; busy = false
                 recoveryAttempt = 0; needsRecovery = false
-                status = running ? "部分配置运行中" : "等待可用配置"
-                problem = event.message ?? "部分 Profile 不可用"
+                status = "部分配置运行中"
+                problem = nil
+            case "bundle_reconnecting":
+                running = true; busy = false
+                recoveryAttempt = 0; needsRecovery = false
+                status = "全部配置重连中"
+                problem = nil
             case "bundle_connecting":
                 status = event.message ?? "部分配置连接中"
             case "bundle_failed":
@@ -1117,7 +1136,7 @@ struct DesktopView: View {
                     HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
                 }
                 Spacer()
-                Text("0.10.4").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("0.10.5").font(.system(size: 11)).foregroundColor(.secondary)
             }
             Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2)}.pickerStyle(.segmented)
             HStack(spacing:12) {
@@ -1173,7 +1192,7 @@ struct DesktopView: View {
                                     }.buttonStyle(.plain).disabled(model.running || model.busy || model.provisioningSyncing)
                                 }
                                 if model.provisioningBundleMode == "parallel" {
-                                    Text("端口冲突时无法启动；单个配置连接失败不会影响其他可用配置。")
+                                    Text("端口冲突时无法启动；单个配置断线会独立自动重连，不影响其他可用配置。")
                                         .font(.system(size:10)).foregroundColor(.secondary)
                                 }
                             } else {

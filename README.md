@@ -4,19 +4,21 @@ MPTCP Userspace is an **application-layer multipath transport** for macOS and Li
 
 It is **not kernel MPTCP** and it is **not QUIC**. Relay nodes only forward ordinary TCP bytes; MPX/4 authentication, encryption, stream state, flow control and scheduling are end-to-end between the Client and Landing.
 
-**Current release: v0.10.4 · MPX/4 Draft 04**
+**Current release: v0.10.5 · MPX/4 Draft 04**
 
-- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.4)
+- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.5)
 - [MPX/4 specification](https://github.com/Dsd1001/MPX-4)
 - [中文说明](README.zh-CN.md)
 
-## v0.10.4: cache-first managed configuration
+## v0.10.5: self-healing parallel Profiles
 
-After the first successful Provisioning sync, the macOS client persists a Last Known Good Profile/Bundle response. Startup, app/system restart and sleep/wake recovery use the matching local cache immediately; they no longer wait for the Provisioning API timeout before MPX can start.
+Parallel Bundles now supervise every selected Profile independently. If one Profile cannot start, loses its transport, or its child runtime exits, only that Profile enters reconnecting state; healthy Profile listeners and MPX Sessions continue running unchanged.
 
-API refresh happens asynchronously. A successful refresh replaces the cache for the **next reconnect** and never forces the active Session to restart. The cache has no TTL. Every successful sync schedules another automatic check after 48 hours; failed background refreshes retry after 1 minute, 5 minutes, 30 minutes and then every 3 hours while the current runtime/cache remains usable.
+The retry cadence is **1s → 2s → 5s → 10s → 30s → every 30s** until the Profile returns or the user stops the Bundle. A successful listening state resets that Profile's retry backoff, so a later disconnect starts again at 1 second.
 
-The cache is bound to a SHA-256 fingerprint of the configured Provisioning URL, so a changed URL cannot consume the old cache. The full secret URL remains in Keychain. The cache file lives under the user's Application Support/MPTCPDesk directory with mode 0600 and stores the last validated response plus selected Profile IDs.
+If every selected Profile is temporarily down, the Bundle supervisor stays alive in a reconnecting state instead of exiting. Profiles can therefore recover without a manual Stop/Start cycle.
+
+The cache-first managed configuration introduced in v0.10.4 remains unchanged: matching Last Known Good configuration starts immediately, Provisioning refresh is asynchronous, the cache has no TTL, and successful API syncs are checked again after 48 hours.
 
 ## What is included
 
@@ -117,7 +119,7 @@ For a remote Bundle, every Profile keeps an independent diagnostic state. Expand
 
 ## Current implementation bounds
 
-The current v0.10.4 implementation uses:
+The current v0.10.5 implementation uses:
 
 - **2–8 configured Relays per Profile**;
 - **up to 8 MPX/4 Carriers per Session**;
@@ -141,9 +143,9 @@ download_mbps is required for Weighted. upload_mbps is optional; an omitted upli
 
 ## Compatibility
 
-The supported release suite is **0.10.4 Client + 0.10.4 Landing + 0.10.4 Provisioning**.
+The supported release suite is **0.10.5 Client + 0.10.5 Landing + 0.10.5 Provisioning**.
 
-v0.10.4 keeps the exact MPX/4 Draft 04 data plane, Carrier Generation/Error Scope, scheduler, flow-control and key-schedule semantics used by v0.10.3. This release changes managed-configuration persistence and recovery only. v0.10.4 clients also continue to accept legacy plaintext schema-1/schema-2 Provisioning responses for migration, while 0.10.2+ Provisioning normally returns the opaque encrypted envelope.
+v0.10.5 keeps the exact MPX/4 Draft 04 data plane, Carrier Generation/Error Scope, scheduler, flow-control and key-schedule semantics used by v0.10.3. This release changes managed-configuration persistence and recovery only. v0.10.5 clients also continue to accept legacy plaintext schema-1/schema-2 Provisioning responses for migration, while 0.10.2+ Provisioning normally returns the opaque encrypted envelope.
 
 Pre-MPX/4 releases are retained in the repository history and historical documents, but they are not the current deployment target.
 
@@ -192,6 +194,6 @@ See [Building from source](docs/guides/BUILDING.md) for the full build workflow.
 - [Scheduler modes](docs/userspace/SCHEDULER-MODES.md)
 - [Deployment and rollback](docs/userspace/DEPLOYMENT.zh-CN.md)
 - [Validation and release limits](docs/userspace/VALIDATION.md)
-- [v0.10.4 release notes](docs/userspace/RELEASE.zh-CN.md)
+- [v0.10.5 release notes](docs/userspace/RELEASE.zh-CN.md)
 
 Version-specific MPX/2 and MPX/3 documents are retained for historical/implementation archaeology and are not the current protocol guide.

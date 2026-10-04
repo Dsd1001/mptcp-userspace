@@ -1,47 +1,87 @@
-# MPTCP Userspace 0.10.4 / MPX/4 Draft 04
+# MPTCP Userspace 0.10.5 / MPX/4 Draft 04
 
-0.10.4 是远端配置持久化与睡眠/重启恢复版本。MPTCP Desk、Linux Client、Landing 与 Provisioning 套件版本统一为 0.10.4。
+0.10.5 是 Parallel Bundle 单 Profile 自动重连与运行时自愈版本。MPTCP Desk、Linux Client、Landing 与 Provisioning 套件版本统一为 0.10.5。
 
-**MPX/4 Draft 04 数据面保持 0.10.3 完全相同的 wire format、Carrier Generation/Error Scope、Scheduler、flow-control 与 key-schedule 语义。本版不升级 MPX Draft。**
+**MPX/4 Draft 04 数据面与 0.10.4 完全相同。本版不修改 Carrier、Frame、Generation/Error Scope、Scheduler、flow-control、key schedule 或 wire format。**
 
-## Managed Last Known Good 缓存
+## Parallel Profile 自动重连
 
-- 第一次 Provisioning API 成功后，macOS Client 会持久化最近一次验证通过的完整 Profile/Bundle 响应。
-- 缓存通过当前 Provisioning URL 的 SHA-256 指纹绑定来源；更换 URL 后旧缓存不会被使用。
-- 缓存文件位于用户的 Application Support/MPTCPDesk 目录，目录权限 0700、文件权限 0600。
-- 完整 secret API URL 继续保存在 Keychain；缓存文件不记录 URL。
-- 当前 0.10.2+ Provisioning 的加密 v/n/d 公网响应会按原始不透明 envelope 缓存，因此 Relay 与 Transport Key 不会因为新增缓存而直接明文落盘。
-- Bundle 缓存同时保存本机选择的 Profile ID；用户切换选择后会更新缓存元数据。
-- 缓存不设置 TTL；除非用户清除/更换 API URL 或成功同步到新配置，否则一直有效。
+Parallel Bundle 中，每一份已启用 Profile 现在都有独立 supervisor。
 
-## 启动、重启与睡眠恢复
+当某一份 Profile：
 
-有匹配缓存时，手动启动、App 重启、系统重启后的后台恢复以及 sleep/wake 恢复都会直接读取缓存并启动 engine，**不会先等待 Provisioning API 的 10–15 秒 timeout**。
+- child runtime 启动失败；
+- Relay / Landing 暂时不可达；
+- 认证/连接阶段失败并退出；
+- 已经 listening 后 runtime 意外退出；
 
-缓存启动后 API 在后台异步刷新：
+只停止并重建这一份 Profile。其他健康 Profile 不会被停止、重启或重新绑定端口。
 
-- 成功：写入新的 LKG 缓存；
-- 当前 Session 正在运行：不重启、不替换当前 engine stdin，新配置在下一次自然重连/启动时生效；
-- 失败：现有 Session 与旧缓存保持有效。
+## 重试节奏
 
-第一次使用，或者更换为一条没有匹配缓存的新 API URL 时，仍然必须先成功获取一次 API 配置。
+同一 Profile 连续失败时按以下节奏重试：
 
-## 48 小时自动同步
+~~~text
+1s → 2s → 5s → 10s → 30s → 30s → 30s → ...
+~~~
 
-- 每次成功同步后记录 fetched_at，48 小时后自动再同步；
-- App 重启时根据持久化 fetched_at 重新计算剩余周期，不依赖跨睡眠的固定 Timer；
-- 后台同步失败后按 1 分钟、5 分钟、30 分钟、3 小时退避；
-- 达到 3 小时档后持续按 3 小时重试；
-- 用户在运行期间手动点同步时同样只更新后台缓存，不强制重启当前 Session。
+达到 30 秒后无限期保持每 30 秒一次，直到恢复或用户主动停止。
+
+Profile 成功进入 listening 后会清零自己的失败计数。以后再次断线时重新从 1 秒开始。
+
+## 全部 Profile 暂时不可用
+
+0.10.4 及之前，如果 parallel Bundle 的所有 child 都退出，整个 run-bundle 会结束，需要用户或上层重新启动。
+
+0.10.5 改为：
+
+- Bundle supervisor 保持运行；
+- 状态进入 bundle_reconnecting / “全部配置重连中”；
+- 每份 Profile 继续自己的独立退避重试；
+- 任意 Profile 恢复 listening 后立即重新成为可用配置；
+- 不要求手动 Stop / Start。
+
+single_select 保持原有一次只运行一个 Profile 的失败语义，本次自动重连只针对 parallel Bundle。
+
+## UI / telemetry
+
+新增非 MPX 的本地 runtime telemetry：
+
+- reconnecting profile state；
+- retry_after_seconds；
+- retry_attempt；
+- reconnecting_profiles；
+- bundle_reconnecting。
+
+MPTCP Desk 的 Profile 卡片会显示“重连中 · Ns”，Bundle 全部断开时显示“全部配置重连中”。这些字段只用于 Client/engine 本地状态展示，不进入 MPX/4 wire protocol。
+
+## 0.10.4 Managed LKG 行为保持不变
+
+- 远端配置首次成功同步后持久化 Last Known Good；
+- 有匹配缓存时启动、App/系统重启、睡眠唤醒不等待 API timeout；
+- API 在后台异步刷新；
+- 缓存不设置 TTL；
+- 成功同步后 48 小时再次检查；
+- 后台更新不强制重启当前 Session。
 
 ## Compatibility
 
-- MPX/4 Draft 04 与 0.10.3 完全一致，本版没有 Carrier、Frame、Scheduler 或 wire 语义更新；
-- Provisioning Profile schema 1、Bundle schema 2 与 encrypted envelope v1 不变；
-- 0.10.4 Client 继续接受旧明文 schema 1/2 响应用于迁移；
-- 当前实现仍为每 Profile 2–8 Relay / 每 Session 最多 8 Carrier；
-- 本版不包含此前讨论的 96 Carrier 扩展。
+- MPX/4 Draft 04 与 0.10.4 完全一致；
+- Provisioning Profile schema 1、Bundle schema 2、encrypted envelope v1 不变；
+- 当前仍为每 Profile 2–8 Relay / 每 Session 最多 8 Carrier；
+- 本版不包含 96 Carrier 扩展；
+- 0.10.5 Client / Landing / Provisioning 作为统一发布套件。
 
 ## Validation
 
-发布门槛新增持久化缓存 round-trip、URL 指纹隔离、0600 权限、selected Profile ID 持久化、48 小时 due/retry policy、cache-first launch plan、运行中后台刷新不立即应用等回归；同时保留 Swift arm64/x86_64 typecheck、UI 离屏渲染、Go test/vet/race、Provisioning 加密回归、Parallel Bundle 故障隔离、Linux amd64/arm64 构建与 frozen-source provenance 验证。
+0.10.5 新增以下回归：
+
+- 精确重试序列 1s / 2s / 5s / 10s / 30s / 30s；
+- 一个 Profile 失败后恢复，健康 Profile 不重启；
+- listening 后 runtime crash 自动重连；
+- 所有 parallel Profile 同时失败后 supervisor 保持存活并可恢复；
+- 永久失败存在退避，不产生 busy loop；
+- 用户/上下文取消能终止 supervisor；
+- single_select 原有失败语义保持。
+
+同时继续执行 Go test/vet/race、Swift arm64/x86_64 typecheck、UI 离屏渲染、Provisioning 加密/LKG 回归、Linux 双架构构建与 frozen-source provenance 验证。

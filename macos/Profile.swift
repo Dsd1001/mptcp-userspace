@@ -202,7 +202,10 @@ struct EngineEvent: Decodable {
     var total_profiles: Int?
     var active_profiles: Int?
     var connecting_profiles: Int?
+    var reconnecting_profiles: Int?
     var failed_profiles: Int?
+    var retry_after_seconds: Int?
+    var retry_attempt: Int?
     var configured_scheduler_mode: String?
     var effective_scheduler_mode: String?
     var mode_switches: UInt64?

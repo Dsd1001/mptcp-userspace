@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -488,6 +489,10 @@ func TestBundleFakeChildProcess(t *testing.T) {
 	case "bad":
 		fmt.Println(`{"kind":"error","message":"synthetic relay unreachable"}`)
 		os.Exit(1)
+	case "flap":
+		fmt.Println(`{"kind":"listening","paths":1,"connections":0,"sent":0,"received":0}`)
+		time.Sleep(25 * time.Millisecond)
+		os.Exit(1)
 	default:
 		fmt.Println(`{"kind":"error","message":"unknown helper mode"}`)
 		os.Exit(2)
@@ -514,6 +519,85 @@ func fakeBundleLauncher(modes map[string]string) bundleChildLauncher {
 			return nil, nil, err
 		}
 		return cmd, stdout, nil
+	}
+}
+
+type scriptedBundleLauncherState struct {
+	mu      sync.Mutex
+	scripts map[string][]string
+	counts  map[string]int
+}
+
+func newScriptedBundleLauncher(scripts map[string][]string) (*scriptedBundleLauncherState, bundleChildLauncher) {
+	state := &scriptedBundleLauncherState{scripts: scripts, counts: map[string]int{}}
+	launcher := func(ctx context.Context, _ string, profile BundleProfile, _ []byte) (*exec.Cmd, io.ReadCloser, error) {
+		state.mu.Lock()
+		script := state.scripts[profile.ProfileID]
+		index := state.counts[profile.ProfileID]
+		state.counts[profile.ProfileID] = index + 1
+		state.mu.Unlock()
+		if len(script) == 0 {
+			return nil, nil, errors.New("no scripted fake mode for profile")
+		}
+		if index >= len(script) {
+			index = len(script) - 1
+		}
+		mode := script[index]
+		if mode == "START_ERROR" {
+			return nil, nil, errors.New("synthetic start failure")
+		}
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBundleFakeChildProcess$")
+		cmd.Env = append(os.Environ(), "MPTCP_BUNDLE_HELPER=1", "MPTCP_BUNDLE_HELPER_KIND="+mode)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return nil, nil, err
+		}
+		cmd.Stderr = io.Discard
+		if err := cmd.Start(); err != nil {
+			return nil, nil, err
+		}
+		return cmd, stdout, nil
+	}
+	return state, launcher
+}
+
+func (s *scriptedBundleLauncherState) count(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts[id]
+}
+
+func waitForBundleTest(t *testing.T, timeout time.Duration, condition func() bool, message string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(message)
+}
+
+func fastBundleRetryDelay(int) time.Duration { return 15 * time.Millisecond }
+
+func TestBundleProfileRetrySchedule(t *testing.T) {
+	want := []time.Duration{
+		1 * time.Second,
+		2 * time.Second,
+		5 * time.Second,
+		10 * time.Second,
+		30 * time.Second,
+		30 * time.Second,
+		30 * time.Second,
+	}
+	for i, expected := range want {
+		if got := bundleProfileRetryDelay(i); got != expected {
+			t.Fatalf("retry %d=%s want %s", i, got, expected)
+		}
+	}
+	if got := bundleProfileRetryDelay(-1); got != time.Second {
+		t.Fatalf("negative retry delay=%s", got)
 	}
 }
 
@@ -545,19 +629,93 @@ func TestParallelBundleKeepsHealthyProfileRunningWhenPeerFails(t *testing.T) {
 	}
 }
 
-func TestParallelBundleFailsOnlyWhenAllProfilesFail(t *testing.T) {
+func TestParallelBundleAllDownRecoversWithoutRestartingBundle(t *testing.T) {
 	p1 := bundleProfile("a", "A", freeTestPort(t))
 	p2 := bundleProfile("b", "B", freeTestPort(t))
-	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-all-bad", Revision: "r1", DisplayName: "All Bad", Mode: "parallel", Profiles: []BundleProfile{p1, p2}}
-	launcher := fakeBundleLauncher(map[string]string{
-		"a": "bad",
-		"b": "bad",
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-all-recover", Revision: "r1", DisplayName: "All Recover", Mode: "parallel", Profiles: []BundleProfile{p1, p2}}
+	state, launcher := newScriptedBundleLauncher(map[string][]string{
+		"a": {"bad", "good"},
+		"b": {"bad", "good"},
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	err := runBundleWithLauncher(ctx, b, nil, launcher)
-	if err == nil || !strings.Contains(err.Error(), "所有 2 个所选 Profile 均不可用") {
-		t.Fatalf("all-bad bundle err=%v", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runParallelBundleWithLauncherRetry(ctx, b, nil, launcher, fastBundleRetryDelay) }()
+	waitForBundleTest(t, 2*time.Second, func() bool {
+		return state.count("a") >= 2 && state.count("b") >= 2
+	}, "all-down Profiles did not retry and recover")
+	select {
+	case err := <-done:
+		t.Fatalf("parallel supervisor exited while recovered children should remain alive: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel result=%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("parallel supervisor did not stop after cancellation")
+	}
+}
+
+func TestParallelBundleFailedPeerRecoversWithoutRestartingHealthyPeer(t *testing.T) {
+	good := bundleProfile("good", "Good", freeTestPort(t))
+	recovering := bundleProfile("recover", "Recover", freeTestPort(t))
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-peer-recover", Revision: "r1", DisplayName: "Peer Recover", Mode: "parallel", Profiles: []BundleProfile{good, recovering}}
+	state, launcher := newScriptedBundleLauncher(map[string][]string{
+		"good":    {"good"},
+		"recover": {"bad", "good"},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runParallelBundleWithLauncherRetry(ctx, b, nil, launcher, fastBundleRetryDelay) }()
+	waitForBundleTest(t, 2*time.Second, func() bool { return state.count("recover") >= 2 }, "failed peer did not retry")
+	if got := state.count("good"); got != 1 {
+		t.Fatalf("healthy peer restarted %d times; want exactly 1 launch", got)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel result=%v", err)
+	}
+}
+
+func TestParallelBundleRuntimeCrashReconnects(t *testing.T) {
+	p := bundleProfile("flap", "Flap", freeTestPort(t))
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-flap", Revision: "r1", DisplayName: "Flap", Mode: "parallel", Profiles: []BundleProfile{p}}
+	state, launcher := newScriptedBundleLauncher(map[string][]string{
+		"flap": {"flap", "good"},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runParallelBundleWithLauncherRetry(ctx, b, nil, launcher, fastBundleRetryDelay) }()
+	waitForBundleTest(t, 2*time.Second, func() bool { return state.count("flap") >= 2 }, "runtime crash did not reconnect")
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel result=%v", err)
+	}
+}
+
+func TestParallelBundlePermanentFailureUsesBackoffNotBusyLoop(t *testing.T) {
+	p := bundleProfile("bad", "Bad", freeTestPort(t))
+	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-backoff", Revision: "r1", DisplayName: "Backoff", Mode: "parallel", Profiles: []BundleProfile{p}}
+	state, launcher := newScriptedBundleLauncher(map[string][]string{
+		"bad": {"START_ERROR"},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	const delay = 30 * time.Millisecond
+	go func() {
+		done <- runParallelBundleWithLauncherRetry(ctx, b, nil, launcher, func(int) time.Duration { return delay })
+	}()
+	time.Sleep(125 * time.Millisecond)
+	attempts := state.count("bad")
+	if attempts < 3 || attempts > 6 {
+		t.Fatalf("permanent failure attempts=%d; expected bounded retries around 30ms cadence", attempts)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel result=%v", err)
 	}
 }
 

@@ -131,16 +131,19 @@ func (c Config) weightedCapacities() ([]multipath.PathCapacity, error) {
 }
 
 type Event struct {
-	CapabilityRevision int    `json:"capability_revision,omitempty"`
-	ProfileID          string `json:"profile_id,omitempty"`
-	ProfileName        string `json:"profile_name,omitempty"`
-	BundleID           string `json:"bundle_id,omitempty"`
-	BundleName         string `json:"bundle_name,omitempty"`
-	ListenPort         int    `json:"listen_port,omitempty"`
-	TotalProfiles      int    `json:"total_profiles,omitempty"`
-	ActiveProfiles     int    `json:"active_profiles,omitempty"`
-	ConnectingProfiles int    `json:"connecting_profiles,omitempty"`
-	FailedProfiles     int    `json:"failed_profiles,omitempty"`
+	CapabilityRevision   int    `json:"capability_revision,omitempty"`
+	ProfileID            string `json:"profile_id,omitempty"`
+	ProfileName          string `json:"profile_name,omitempty"`
+	BundleID             string `json:"bundle_id,omitempty"`
+	BundleName           string `json:"bundle_name,omitempty"`
+	ListenPort           int    `json:"listen_port,omitempty"`
+	TotalProfiles        int    `json:"total_profiles,omitempty"`
+	ActiveProfiles       int    `json:"active_profiles,omitempty"`
+	ConnectingProfiles   int    `json:"connecting_profiles,omitempty"`
+	ReconnectingProfiles int    `json:"reconnecting_profiles,omitempty"`
+	FailedProfiles       int    `json:"failed_profiles,omitempty"`
+	RetryAfterSeconds    int    `json:"retry_after_seconds,omitempty"`
+	RetryAttempt         int    `json:"retry_attempt,omitempty"`
 	multipath.SchedulerStats
 	Kind             string                    `json:"kind"`
 	Message          string                    `json:"message,omitempty"`
@@ -598,9 +601,10 @@ func preflightBundlePorts(selected []BundleProfile) error {
 }
 
 type bundleChildEvent struct {
-	profile BundleProfile
-	event   Event
-	scanErr error
+	profile    BundleProfile
+	event      Event
+	scanErr    error
+	generation uint64
 }
 type bundleChildExit struct {
 	profile BundleProfile
@@ -627,7 +631,381 @@ func runBundle(ctx context.Context, b BundlePayload, ids []string) error {
 	return runBundleWithLauncher(ctx, b, ids, defaultBundleChildLauncher)
 }
 
+var bundleProfileRetrySchedule = [...]time.Duration{
+	1 * time.Second,
+	2 * time.Second,
+	5 * time.Second,
+	10 * time.Second,
+	30 * time.Second,
+}
+
+func bundleProfileRetryDelay(failures int) time.Duration {
+	if failures < 0 {
+		failures = 0
+	}
+	if failures >= len(bundleProfileRetrySchedule) {
+		return bundleProfileRetrySchedule[len(bundleProfileRetrySchedule)-1]
+	}
+	return bundleProfileRetrySchedule[failures]
+}
+
+type bundleProfileLifecycle struct {
+	profile    BundleProfile
+	generation uint64
+	kind       string
+	err        error
+	retryAfter time.Duration
+	attempt    int
+}
+
+func waitBundleRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func superviseParallelBundleProfile(
+	ctx context.Context,
+	exe string,
+	profile BundleProfile,
+	cfgData []byte,
+	launch bundleChildLauncher,
+	retryDelay func(int) time.Duration,
+	events chan<- bundleChildEvent,
+	lifecycle chan<- bundleProfileLifecycle,
+) {
+	failures := 0
+	var generation uint64
+	sendLifecycle := func(item bundleProfileLifecycle) bool {
+		select {
+		case lifecycle <- item:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	sendEvent := func(item bundleChildEvent) bool {
+		select {
+		case events <- item:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+
+	for ctx.Err() == nil {
+		generation++
+		cmd, stdout, err := launch(ctx, exe, profile, cfgData)
+		if err != nil {
+			delay := retryDelay(failures)
+			attempt := failures + 1
+			failures++
+			if !sendLifecycle(bundleProfileLifecycle{
+				profile: profile, generation: generation, kind: "retrying",
+				err: err, retryAfter: delay, attempt: attempt,
+			}) {
+				return
+			}
+			if !waitBundleRetry(ctx, delay) {
+				return
+			}
+			continue
+		}
+		if !sendLifecycle(bundleProfileLifecycle{profile: profile, generation: generation, kind: "started"}) {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			_ = cmd.Wait()
+			return
+		}
+
+		hadListening := false
+		var lastEventError error
+		scanner := bufio.NewScanner(stdout)
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, 256*1024)
+		for scanner.Scan() {
+			var e Event
+			if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+				lastEventError = fmt.Errorf("engine event JSON: %w", err)
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+				break
+			}
+			if e.Kind == "listening" {
+				hadListening = true
+				failures = 0
+			}
+			if e.Kind == "error" && e.Message != "" {
+				lastEventError = errors.New(e.Message)
+			}
+			if !sendEvent(bundleChildEvent{profile: profile, event: e, generation: generation}) {
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+				_ = cmd.Wait()
+				return
+			}
+		}
+		if scanErr := scanner.Err(); scanErr != nil {
+			lastEventError = scanErr
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		}
+		waitErr := cmd.Wait()
+		if ctx.Err() != nil {
+			return
+		}
+		if waitErr != nil {
+			lastEventError = waitErr
+		}
+		if lastEventError == nil {
+			lastEventError = errors.New("Profile runtime exited")
+		}
+		if hadListening {
+			failures = 0
+		}
+		delay := retryDelay(failures)
+		attempt := failures + 1
+		failures++
+		if !sendLifecycle(bundleProfileLifecycle{
+			profile: profile, generation: generation, kind: "retrying",
+			err: lastEventError, retryAfter: delay, attempt: attempt,
+		}) {
+			return
+		}
+		if !waitBundleRetry(ctx, delay) {
+			return
+		}
+	}
+}
+
+func runParallelBundleWithLauncherRetry(
+	ctx context.Context,
+	b BundlePayload,
+	ids []string,
+	launch bundleChildLauncher,
+	retryDelay func(int) time.Duration,
+) error {
+	selected, err := b.selected(ids)
+	if err != nil {
+		return err
+	}
+	if b.Mode != "parallel" {
+		return errors.New("parallel Bundle supervisor requires mode=parallel")
+	}
+	if err := validateSelectedForRuntime(selected); err != nil {
+		return err
+	}
+	if err := preflightBundlePorts(selected); err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+
+	cfgByID := make(map[string][]byte, len(selected))
+	for _, profile := range selected {
+		cfgData, err := json.Marshal(profile.config())
+		if err != nil {
+			return fmt.Errorf("Profile %s 配置编码失败: %w", profile.DisplayName, err)
+		}
+		cfgByID[profile.ProfileID] = cfgData
+	}
+
+	groupCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events := make(chan bundleChildEvent, 256)
+	lifecycle := make(chan bundleProfileLifecycle, 256)
+
+	for _, profile := range selected {
+		profile := profile
+		go superviseParallelBundleProfile(
+			groupCtx,
+			exe,
+			profile,
+			cfgByID[profile.ProfileID],
+			launch,
+			retryDelay,
+			events,
+			lifecycle,
+		)
+	}
+
+	currentGeneration := make(map[string]uint64, len(selected))
+	runtimeActive := make(map[string]bool, len(selected))
+	ready := make(map[string]bool, len(selected))
+	retrying := make(map[string]bool, len(selected))
+	tcpStats := make(map[string]Event, len(selected))
+	udpStats := make(map[string]Event, len(selected))
+
+	readyCount := func() int {
+		n := 0
+		for id := range ready {
+			if runtimeActive[id] {
+				n++
+			}
+		}
+		return n
+	}
+	connectingCount := func() int {
+		n := 0
+		for id, active := range runtimeActive {
+			if active && !ready[id] {
+				n++
+			}
+		}
+		return n
+	}
+	reconnectingCount := func() int {
+		n := 0
+		for _, value := range retrying {
+			if value {
+				n++
+			}
+		}
+		return n
+	}
+	emitBundleState := func(kind, message string) {
+		emit(Event{
+			Kind: kind, BundleID: b.BundleID, BundleName: b.DisplayName,
+			TotalProfiles: len(selected), ActiveProfiles: readyCount(),
+			ConnectingProfiles: connectingCount(), ReconnectingProfiles: reconnectingCount(),
+			Message: message,
+		})
+	}
+	emitAggregate := func(kind string, stats map[string]Event) {
+		agg := Event{
+			Kind: kind, BundleID: b.BundleID, BundleName: b.DisplayName,
+			TotalProfiles: len(selected), ActiveProfiles: readyCount(),
+			ConnectingProfiles: connectingCount(), ReconnectingProfiles: reconnectingCount(),
+		}
+		for id, event := range stats {
+			if !runtimeActive[id] {
+				continue
+			}
+			agg.Paths += event.Paths
+			agg.Connections += event.Connections
+			agg.Sent += event.Sent
+			agg.Received += event.Received
+			agg.Retransmits += event.Retransmits
+			agg.Dropped += event.Dropped
+		}
+		emit(agg)
+	}
+	emitCurrentBundleState := func() {
+		active := readyCount()
+		connecting := connectingCount()
+		reconnecting := reconnectingCount()
+		switch {
+		case active > 0 && reconnecting > 0:
+			emitBundleState("bundle_degraded", fmt.Sprintf("%d 个 Profile 正常运行，%d 个正在自动重连", active, reconnecting))
+		case active > 0:
+			message := fmt.Sprintf("%d/%d 个 Profile 已启动", active, len(selected))
+			if connecting > 0 {
+				message += fmt.Sprintf("，%d 个仍在连接", connecting)
+			}
+			emitBundleState("bundle_listening", message)
+		case reconnecting > 0:
+			emitBundleState("bundle_reconnecting", fmt.Sprintf("当前无可用 Profile；%d 个正在自动重连", reconnecting))
+		default:
+			emitBundleState("bundle_connecting", fmt.Sprintf("%d 个 Profile 正在连接", connecting))
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
+			return ctx.Err()
+
+		case state := <-lifecycle:
+			id := state.profile.ProfileID
+			if state.generation < currentGeneration[id] {
+				continue
+			}
+			currentGeneration[id] = state.generation
+			switch state.kind {
+			case "started":
+				runtimeActive[id] = true
+				retrying[id] = false
+				delete(ready, id)
+				emit(Event{
+					Kind: "reconnect_attempt", ProfileID: id, ProfileName: state.profile.DisplayName,
+					BundleID: b.BundleID, BundleName: b.DisplayName, ListenPort: state.profile.ListenPort,
+					Message: "Profile 正在重新连接",
+				})
+				emitCurrentBundleState()
+
+			case "retrying":
+				runtimeActive[id] = false
+				retrying[id] = true
+				delete(ready, id)
+				delete(tcpStats, id)
+				delete(udpStats, id)
+				seconds := int(state.retryAfter / time.Second)
+				if seconds < 1 {
+					seconds = 1
+				}
+				emit(Event{
+					Kind: "reconnecting", ProfileID: id, ProfileName: state.profile.DisplayName,
+					BundleID: b.BundleID, BundleName: b.DisplayName, ListenPort: state.profile.ListenPort,
+					Message:           fmt.Sprintf("%d 秒后自动重连", seconds),
+					RetryAfterSeconds: seconds, RetryAttempt: state.attempt,
+				})
+				emitAggregate("bundle_stats", tcpStats)
+				emitAggregate("bundle_udp_stats", udpStats)
+				emitCurrentBundleState()
+			}
+
+		case childEvent := <-events:
+			id := childEvent.profile.ProfileID
+			generation := childEvent.generation
+			if generation < currentGeneration[id] {
+				continue
+			}
+			if generation > currentGeneration[id] {
+				currentGeneration[id] = generation
+				runtimeActive[id] = true
+				retrying[id] = false
+			} else if !runtimeActive[id] {
+				continue
+			}
+			event := childEvent.event
+			event.ProfileID = id
+			event.ProfileName = childEvent.profile.DisplayName
+			event.BundleID = b.BundleID
+			event.BundleName = b.DisplayName
+			event.ListenPort = childEvent.profile.ListenPort
+			emit(event)
+			switch event.Kind {
+			case "listening":
+				ready[id] = true
+				retrying[id] = false
+				emitCurrentBundleState()
+			case "stats":
+				tcpStats[id] = event
+				emitAggregate("bundle_stats", tcpStats)
+			case "udp_stats":
+				udpStats[id] = event
+				emitAggregate("bundle_udp_stats", udpStats)
+			}
+		}
+	}
+}
+
 func runBundleWithLauncher(ctx context.Context, b BundlePayload, ids []string, launch bundleChildLauncher) error {
+	if b.Mode == "parallel" {
+		return runParallelBundleWithLauncherRetry(ctx, b, ids, launch, bundleProfileRetryDelay)
+	}
 	selected, err := b.selected(ids)
 	if err != nil {
 		return err

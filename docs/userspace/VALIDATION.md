@@ -1,6 +1,6 @@
-# v0.10.4 / MPX/4 Draft 04 validation and release limits
+# v0.10.5 / MPX/4 Draft 04 validation and release limits
 
-This document describes the current release gate. Historical version-specific validation files are not the source of truth for v0.10.4.
+This document describes the current release gate. Historical version-specific validation files are not the source of truth for v0.10.5.
 
 ## Required correctness gates
 
@@ -23,12 +23,16 @@ A release candidate must pass, at minimum:
 15. Remote Bundle per-Profile telemetry isolation and hidden Relay endpoint rendering.
 16. Default-collapsed and expanded Stream/Lifecycle and Window/Credit resource panels.
 17. Linux amd64 native runtime validation of managed encrypted Profile/Bundle configuration.
-18. Universal macOS DMG plus Linux amd64/arm64 Client, Landing and Provisioning builds.
-19. Frozen-source reproducibility and Source-ID binding for published artifacts.
+18. Parallel Profile supervisor retry schedule exactly 1s/2s/5s/10s/30s then 30s indefinitely.
+19. One failed/recovered parallel Profile must not restart a healthy peer.
+20. All-down parallel Bundle must remain alive and recover when child runtimes become available.
+21. Runtime crash reconnect, cancellation and permanent-failure no-busy-loop regressions.
+22. Universal macOS DMG plus Linux amd64/arm64 Client, Landing and Provisioning builds.
+23. Frozen-source reproducibility and Source-ID binding for published artifacts.
 
 ## Current implementation bounds
 
-Release validation assumes the v0.10.4 current bounds:
+Release validation assumes the v0.10.5 current bounds:
 
 - 2–8 configured Relays per Profile;
 - up to 8 MPX/4 Carriers per Session;

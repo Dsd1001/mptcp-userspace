@@ -2,19 +2,19 @@
 
 [中文版](QUICKSTART.zh-CN.md)
 
-This guide targets **MPTCP Userspace v0.10.4 / MPX/4 Draft 04**.
+This guide targets **MPTCP Userspace v0.10.5 / MPX/4 Draft 04**.
 
 ## 1. Download and verify
 
-Download the required artifacts from the [v0.10.4 release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.4).
+Download the required artifacts from the [v0.10.5 release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.5).
 
 Typical files:
 
-- MPTCP-Desk-0.10.4-universal.dmg
+- MPTCP-Desk-0.10.5-universal.dmg
 - mptcp-client-linux-amd64 or mptcp-client-linux-arm64
 - mptcp-landing or mptcp-landing-linux-arm64
 - mpx-provision or mpx-provision-linux-arm64 when managed configuration is needed
-- MPTCP-Userspace-0.10.4-SHA256SUMS
+- MPTCP-Userspace-0.10.5-SHA256SUMS
 
 Verify hashes before installing.
 
@@ -30,7 +30,7 @@ chmod 755 ./mptcp-landing
 
 Keep the Landing configuration, backend, transport key and Relay topology private. For an existing installation, back up the current binary/config before replacing the binary and restart the systemd service only after verifying the release hash.
 
-The recommended deployment pair is 0.10.4 Client + 0.10.4 Landing.
+The recommended deployment pair is 0.10.5 Client + 0.10.5 Landing.
 
 ## 3. Install the client
 
@@ -83,7 +83,7 @@ mptcp-client-linux-amd64 validate-managed < managed.json
 mptcp-client-linux-amd64 run-managed < managed.json
 ~~~
 
-Remote URLs require HTTPS. Public responses from 0.10.2+ Provisioning are opaque encrypted envelopes; the 0.10.4 client decrypts them automatically.
+Remote URLs require HTTPS. Public responses from 0.10.2+ Provisioning are opaque encrypted envelopes; the 0.10.5 client decrypts them automatically.
 
 ## 6. Parallel Bundles
 

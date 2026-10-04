@@ -1,16 +1,16 @@
-# 0.10.4 部署、升级与回滚
+# 0.10.5 部署、升级与回滚
 
-本文面向 **MPTCP Userspace v0.10.4 / MPX/4 Draft 04**。正式环境建议 Client、Landing、Provisioning 使用同一版本。
+本文面向 **MPTCP Userspace v0.10.5 / MPX/4 Draft 04**。正式环境建议 Client、Landing、Provisioning 使用同一版本。
 
 ## 1. 发布文件
 
-从 v0.10.4 Release 下载并校验：
+从 v0.10.5 Release 下载并校验：
 
-- MPTCP-Desk-0.10.4-universal.dmg
+- MPTCP-Desk-0.10.5-universal.dmg
 - mptcp-client-linux-amd64 / arm64
 - mptcp-landing / mptcp-landing-linux-arm64
 - mpx-provision / mpx-provision-linux-arm64
-- MPTCP-Userspace-0.10.4-SHA256SUMS
+- MPTCP-Userspace-0.10.5-SHA256SUMS
 - SOURCE_ID / PROVENANCE.json / TESTS.json
 
 任何二进制替换前先确认 SHA256 与 Source-ID。
@@ -53,7 +53,7 @@ Provisioning 建议只监听 loopback，例如 127.0.0.1:8088，再由 nginx/Cad
 - admin-password；
 - reverse proxy 配置。
 
-0.10.4 保持现有 Profile/Bundle 数据模型与 URL；不需要迁移数据。
+0.10.5 保持现有 Profile/Bundle 数据模型与 URL；不需要迁移数据。
 
 公网 /v1/config/ 与 /v1/bundle/ 响应是 v/n/d 加密 envelope。不要用“浏览器看不到明文”替代 HTTPS；完整 URL 本身仍是 bearer credential。
 
@@ -61,7 +61,7 @@ Provisioning 建议只监听 loopback，例如 127.0.0.1:8088，再由 nginx/Cad
 
 替换 App 前先停止旧 runtime。
 
-0.10.4 首页有：
+0.10.5 首页有：
 
 - 本地配置；
 - 远端配置。
@@ -70,7 +70,7 @@ Provisioning 建议只监听 loopback，例如 127.0.0.1:8088，再由 nginx/Cad
 
 后台常驻开启时，登录、睡眠唤醒、网络恢复或 engine 异常后会重建 runtime。用户手动“停止”后不会自动拉起。
 
-0.10.4 首次远端同步成功后会建立持久化 LKG 缓存。后续启动、App/系统重启、睡眠唤醒恢复都直接使用匹配缓存启动，不等待 Provisioning API timeout。API 在后台更新；拿到新配置只替换下一次重连使用的缓存，不强制中断当前 Session。
+0.10.5 首次远端同步成功后会建立持久化 LKG 缓存。后续启动、App/系统重启、睡眠唤醒恢复都直接使用匹配缓存启动，不等待 Provisioning API timeout。API 在后台更新；拿到新配置只替换下一次重连使用的缓存，不强制中断当前 Session。
 
 缓存不设置过期时间。成功同步 48 小时后自动再检查；失败后按 1 分钟、5 分钟、30 分钟、3 小时退避并持续重试。更换 API URL 后旧缓存因来源指纹不匹配而不会被使用。
 
@@ -97,7 +97,11 @@ parallel 模式分两层错误：
 
 **本地配置错误**：重复/占用 listen_port 等在启动前原子预检查，失败时整组不启动。
 
-**远端运行错误**：某个 Profile 无法连接/认证或运行中退出，只停止该 Profile；其他健康 Profile 继续运行。只有全部不可用或用户主动停止时 Bundle 才结束。
+**远端运行错误**：某个 Profile 无法连接/认证或运行中退出，只重建该 Profile；其他健康 Profile 继续运行。即使全部暂时不可用，parallel Bundle supervisor 也继续自动重连；用户主动停止才结束本轮 supervisor。
+
+## 6.1 0.10.5 Parallel 自愈
+
+parallel Bundle 的 child runtime 断开后会独立自动重建，退避为 1s / 2s / 5s / 10s / 30s，之后每 30s。全断时 run-bundle supervisor 仍保持运行。因此监控上不要把“0 个 active 但 supervisor 仍在 bundle_reconnecting”误判为主进程故障。
 
 ## 7. 回滚
 
