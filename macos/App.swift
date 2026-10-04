@@ -4,6 +4,16 @@ import AppKit
 import Network
 import ServiceManagement
 
+private struct ManagedLaunchPlan {
+    var action: String
+    var stdinData: Data
+    var extraArguments: [String]
+    var resident: Bool
+    var revision: String
+    var displayName: String
+    var selectedProfileIDs: Set<String>
+}
+
 struct ProfileDiagnosticState {
     var configuredSchedulerMode = ""
     var effectiveSchedulerMode = ""
@@ -54,7 +64,13 @@ final class Model: ObservableObject {
     @Published var provisioningTCPPaths: [String:[PathMetric]] = [:]
     @Published var provisioningUDPPaths: [String:[PathMetric]] = [:]
     @Published var provisioningDiagnostics: [String:ProfileDiagnosticState] = [:]
+    @Published var provisioningLastSync: Date?
+    @Published var provisioningUsingCache = false
+    @Published var provisioningBackgroundRefreshing = false
+    @Published var provisioningUpdatePending = false
     private var lastProvisioningBundle: RelayProvisioningBundlePayload?
+    private var provisioningRefreshWorkItem: DispatchWorkItem?
+    private var provisioningRefreshRetryAttempt = 0
     private static let bundleSelectionPrefix = "provisioning-bundle-selection-v1."
     private static let configurationSourceKey = "configuration-source-v1"
     var remoteConfigurationSelected: Bool { configurationSource == "remote" }
@@ -256,7 +272,7 @@ final class Model: ObservableObject {
         } else {
             configurationSource = provisioningURL.isEmpty ? "local" : "remote"
         }
-        provisioningStatus = provisioningManaged ? "远端配置 · 启动时同步" : (remoteConfigurationSelected ? "请填写 API 地址" : "本地配置")
+        provisioningStatus = provisioningManaged ? "远端配置 · 本地缓存优先" : (remoteConfigurationSelected ? "请填写 API 地址" : "本地配置")
         if let data = UserDefaults.standard.data(forKey: "multipath-profile-v2"),
            var profile = try? JSONDecoder().decode(Profile.self, from: data) {
             apply(profile)
@@ -273,7 +289,20 @@ final class Model: ObservableObject {
         backgroundResident = UserDefaults.standard.bool(forKey: Self.residentKey)
         wantsForwarding = UserDefaults.standard.bool(forKey: Self.wantsForwardingKey)
         if !backgroundResident { wantsForwarding = false }
+        if remoteConfigurationSelected, !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do {
+                if let cached = try ManagedProvisioningCacheStore.load(endpoint: provisioningURL) {
+                    provisioningLastSync = cached.fetchedAt
+                    _ = try applyManagedDocument(cached.document, preferredSelection: cached.selectedProfileIDs, updateResident: false)
+                    provisioningUsingCache = true
+                    provisioningStatus = managedStatus(prefix: "本地缓存")
+                }
+            } catch {
+                append("远端配置本地缓存不可用，将在需要时重新同步 API")
+            }
+        }
         startLifecycleObservers()
+        scheduleProvisioningRefreshFromCache()
         if backgroundResident {
             registerLoginItem()
             if wantsForwarding {
@@ -352,6 +381,230 @@ final class Model: ObservableObject {
         let resident = selected.contains { $0.background_resident ?? false }
         if updateResident && resident != backgroundResident { setBackgroundResident(resident) }
     }
+    private func managedStatus(prefix: String) -> String {
+        let title = provisioningDisplayName.isEmpty ? "远端配置" : provisioningDisplayName
+        if provisioningRevision.isEmpty { return "\(title) · \(prefix)" }
+        return "\(title) · \(prefix) · \(provisioningRevision)"
+    }
+
+    private func applyManagedDocument(
+        _ document: RelayProvisioningDocument,
+        preferredSelection: Set<String>? = nil,
+        updateResident: Bool = true
+    ) throws -> ManagedLaunchPlan {
+        switch document {
+        case .profile(let payload):
+            resetProvisioningBundleState()
+            let provisioned = try payload.validatedProfile()
+            if provisioned.userspace { try TransportKeyStore.save(provisioned.transport_key ?? "") }
+            try applyProvisionedSummary(payload)
+            UserDefaults.standard.set(try provisioned.preferenceData(), forKey: "multipath-profile-v2")
+            provisioningRevision = payload.revision ?? ""
+            provisioningDisplayName = payload.display_name ?? ""
+            let resident = payload.background_resident ?? false
+            if updateResident && resident != backgroundResident { setBackgroundResident(resident) }
+            return ManagedLaunchPlan(
+                action: "run",
+                stdinData: try JSONEncoder().encode(provisioned),
+                extraArguments: [],
+                resident: resident,
+                revision: provisioningRevision,
+                displayName: provisioningDisplayName,
+                selectedProfileIDs: []
+            )
+
+        case .bundle(let bundle):
+            try bundle.validate()
+            let available = Set(bundle.profiles.compactMap(\.profile_id))
+            var selection = (preferredSelection ?? savedBundleSelection(bundle.bundle_id)).intersection(available)
+            if bundle.mode == "single_select" {
+                if selection.count != 1 { selection = bundle.profiles.first?.profile_id.map { [$0] } ?? [] }
+            } else if selection.isEmpty {
+                selection = available
+            }
+            _ = try bundle.selectedProfiles(ids: selection)
+            saveBundleSelection(bundle.bundle_id, ids: selection)
+            lastProvisioningBundle = bundle
+            provisioningIsBundle = true
+            provisioningBundleMode = bundle.mode
+            provisioningBundleID = bundle.bundle_id
+            provisioningRevision = bundle.revision
+            provisioningDisplayName = bundle.display_name
+            provisioningRuntimeStatus = [:]
+            provisioningRuntimeError = [:]
+            provisioningTCPPaths = [:]
+            provisioningUDPPaths = [:]
+            provisioningDiagnostics = [:]
+            try applyBundleSelection(bundle, ids: selection, updateResident: updateResident)
+            let selected = try orderedSelectedPayloads(bundle, ids: selection)
+            let resident = selected.contains { $0.background_resident ?? false }
+            return ManagedLaunchPlan(
+                action: "run-bundle",
+                stdinData: try JSONEncoder().encode(bundle),
+                extraArguments: selected.compactMap(\.profile_id),
+                resident: resident,
+                revision: bundle.revision,
+                displayName: bundle.display_name,
+                selectedProfileIDs: selection
+            )
+        }
+    }
+
+    private func selectedIDsForFetchedDocument(_ document: RelayProvisioningDocument) throws -> Set<String> {
+        switch document {
+        case .profile:
+            return []
+        case .bundle(let bundle):
+            let available = Set(bundle.profiles.compactMap(\.profile_id))
+            var selected: Set<String>
+            if provisioningBundleID == bundle.bundle_id, !provisioningSelectedProfileIDs.isEmpty {
+                selected = provisioningSelectedProfileIDs.intersection(available)
+            } else {
+                selected = savedBundleSelection(bundle.bundle_id).intersection(available)
+            }
+            if bundle.mode == "single_select" {
+                if selected.count != 1 { selected = bundle.profiles.first?.profile_id.map { [$0] } ?? [] }
+            } else if selected.isEmpty {
+                selected = available
+            }
+            _ = try bundle.selectedProfiles(ids: selected)
+            saveBundleSelection(bundle.bundle_id, ids: selected)
+            return selected
+        }
+    }
+
+    private func managedLaunchPlanFromCache() throws -> (ManagedProvisioningCachedDocument, ManagedLaunchPlan)? {
+        let endpoint = provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpoint.isEmpty,
+              let cached = try ManagedProvisioningCacheStore.load(endpoint: endpoint) else { return nil }
+        provisioningLastSync = cached.fetchedAt
+        let plan = try applyManagedDocument(cached.document, preferredSelection: cached.selectedProfileIDs)
+        return (cached, plan)
+    }
+
+#if UI_TEST
+    func managedCacheLaunchSummaryForTests() throws -> (action: String, selectedCount: Int, fetchedAt: Date)? {
+        guard let (cached, plan) = try managedLaunchPlanFromCache() else { return nil }
+        return (plan.action, plan.selectedProfileIDs.count, cached.fetchedAt)
+    }
+#endif
+
+    @discardableResult
+    private func startManagedFromCache(automatic: Bool) -> Bool {
+        do {
+            guard let (_, plan) = try managedLaunchPlanFromCache() else { return false }
+            provisioningUsingCache = true
+            provisioningUpdatePending = false
+            provisioningStatus = managedStatus(prefix: "使用本地缓存")
+            problem = nil
+            if automatic && !plan.resident {
+                append("缓存配置已关闭后台常驻，本次自动恢复取消")
+                return true
+            }
+            append("使用最近一次成功同步的远端配置立即启动")
+            launch(plan.action, automatic: automatic, stdinData: plan.stdinData, extraArguments: plan.extraArguments)
+            scheduleProvisioningBackgroundRefresh(after: 0.5, reason: "启动后台同步")
+            return true
+        } catch {
+            append("远端配置本地缓存不可用，将重新同步 API")
+            return false
+        }
+    }
+
+    private func scheduleProvisioningBackgroundRefresh(after delay: TimeInterval, reason: String) {
+        guard remoteConfigurationSelected, !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        provisioningRefreshWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.beginProvisioningBackgroundRefresh(reason: reason) }
+        provisioningRefreshWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.1, delay), execute: item)
+    }
+
+    private func scheduleProvisioningRefreshFromCache() {
+        guard remoteConfigurationSelected, !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        do {
+            guard let cached = try ManagedProvisioningCacheStore.load(endpoint: provisioningURL) else { return }
+            provisioningLastSync = cached.fetchedAt
+            let delay = ManagedProvisioningCachePolicy.refreshDelay(fetchedAt: cached.fetchedAt)
+            scheduleProvisioningBackgroundRefresh(after: delay, reason: "48 小时自动同步")
+        } catch {
+            // A broken cache must never block the current runtime. First-use/manual sync can replace it.
+        }
+    }
+
+    private func beginProvisioningBackgroundRefresh(reason: String) {
+        guard remoteConfigurationSelected else { return }
+        if provisioningBackgroundRefreshing || provisioningSyncing {
+            scheduleProvisioningBackgroundRefresh(after: 60, reason: reason)
+            return
+        }
+        let endpoint = provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpoint.isEmpty else { return }
+        provisioningBackgroundRefreshing = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await RelayProvisioningClient.fetchWithResponse(endpoint: endpoint)
+                let selection = try self.selectedIDsForFetchedDocument(result.document)
+                let now = Date()
+                try ManagedProvisioningCacheStore.save(
+                    responseData: result.responseData,
+                    endpoint: endpoint,
+                    selectedProfileIDs: selection,
+                    fetchedAt: now
+                )
+                self.provisioningLastSync = now
+                self.provisioningRefreshRetryAttempt = 0
+                self.provisioningBackgroundRefreshing = false
+
+                if !ManagedProvisioningCachePolicy.shouldApplyRefreshImmediately(runtimeActive: self.running || self.busy) {
+                    let previousRevision = self.provisioningRevision
+                    let revision: String
+                    let name: String
+                    switch result.document {
+                    case .profile(let payload):
+                        revision = payload.revision ?? ""
+                        name = payload.display_name ?? ""
+                    case .bundle(let bundle):
+                        revision = bundle.revision
+                        name = bundle.display_name
+                    }
+                    self.provisioningUpdatePending = revision != previousRevision
+                    if self.provisioningUpdatePending {
+                        let title = name.isEmpty ? "远端配置" : name
+                        self.provisioningStatus = revision.isEmpty
+                            ? "\(title) · 已后台更新 · 下次重连生效"
+                            : "\(title) · 已后台更新 · \(revision) · 下次重连生效"
+                        self.append("Provisioning 后台同步到新配置；当前连接保持不变，下次重连生效")
+                    } else {
+                        self.provisioningUsingCache = false
+                        self.provisioningStatus = self.managedStatus(prefix: "后台同步正常")
+                    }
+                } else {
+                    _ = try self.applyManagedDocument(result.document, preferredSelection: selection)
+                    self.provisioningUsingCache = false
+                    self.provisioningUpdatePending = false
+                    self.provisioningStatus = self.managedStatus(prefix: "已同步")
+                    self.problem = nil
+                }
+                self.scheduleProvisioningBackgroundRefresh(
+                    after: ManagedProvisioningCachePolicy.refreshInterval,
+                    reason: "48 小时自动同步"
+                )
+            } catch {
+                self.provisioningBackgroundRefreshing = false
+                self.provisioningUsingCache = true
+                self.provisioningStatus = self.managedStatus(prefix: "使用本地缓存 · API 暂不可用")
+                self.append("Provisioning 后台同步失败；现有缓存与当前连接保持有效")
+                let delay = ManagedProvisioningCachePolicy.retryDelay(attempt: self.provisioningRefreshRetryAttempt)
+                self.provisioningRefreshRetryAttempt = min(
+                    self.provisioningRefreshRetryAttempt + 1,
+                    ManagedProvisioningCachePolicy.retryDelays.count - 1
+                )
+                self.scheduleProvisioningBackgroundRefresh(after: delay, reason: "API 后台重试")
+            }
+        }
+    }
+
     func setProvisioningProfileSelected(_ id: String, selected: Bool) {
         guard !configurationLocked, let bundle = lastProvisioningBundle else { return }
         do {
@@ -365,6 +618,7 @@ final class Model: ObservableObject {
             }
             _ = try bundle.selectedProfiles(ids: next)
             saveBundleSelection(bundle.bundle_id, ids: next)
+            try? ManagedProvisioningCacheStore.updateSelection(endpoint: provisioningURL, selectedProfileIDs: next)
             try applyBundleSelection(bundle, ids: next)
             provisioningRuntimeStatus = [:]
             provisioningRuntimeError = [:]
@@ -382,7 +636,7 @@ final class Model: ObservableObject {
         configurationSource = source
         UserDefaults.standard.set(source, forKey: Self.configurationSourceKey)
         problem = nil
-        provisioningStatus = source == "local" ? "本地配置" : (provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "请填写 API 地址" : "远端配置 · 启动时同步")
+        provisioningStatus = source == "local" ? "本地配置" : (provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "请填写 API 地址" : "远端配置 · 本地缓存优先")
     }
 
     func saveProvisioningURL() {
@@ -391,20 +645,37 @@ final class Model: ObservableObject {
             let cleaned = provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines)
             if cleaned.isEmpty {
                 try ProvisioningURLStore.delete()
+                try? ManagedProvisioningCacheStore.delete()
                 provisioningStatus = "请填写 API 地址"
                 provisioningRevision = ""
                 provisioningDisplayName = ""
+                provisioningLastSync = nil
+                provisioningUsingCache = false
+                provisioningUpdatePending = false
                 resetProvisioningBundleState()
                 append("远端配置 API 已清除")
                 return
             }
             _ = try RelayProvisioningClient.endpointURL(cleaned)
+            let previous = (try? ProvisioningURLStore.load()) ?? ""
+            if !previous.isEmpty && previous != cleaned { try? ManagedProvisioningCacheStore.delete() }
             try ProvisioningURLStore.save(cleaned)
             provisioningURL = cleaned
             configurationSource = "remote"
             UserDefaults.standard.set("remote", forKey: Self.configurationSourceKey)
             resetProvisioningBundleState()
-            provisioningStatus = "远端配置 · 启动时同步"
+            provisioningLastSync = nil
+            provisioningUsingCache = false
+            provisioningUpdatePending = false
+            if let cached = try ManagedProvisioningCacheStore.load(endpoint: cleaned) {
+                provisioningLastSync = cached.fetchedAt
+                _ = try applyManagedDocument(cached.document, preferredSelection: cached.selectedProfileIDs)
+                provisioningUsingCache = true
+                provisioningStatus = managedStatus(prefix: "本地缓存可用")
+                scheduleProvisioningRefreshFromCache()
+            } else {
+                provisioningStatus = "远端配置 · 首次同步后生成本地缓存"
+            }
             append("远端配置 API 已保存")
             problem = nil
         } catch { problem = error.localizedDescription }
@@ -414,18 +685,28 @@ final class Model: ObservableObject {
         guard !configurationLocked else { return }
         do {
             try ProvisioningURLStore.delete()
+            try? ManagedProvisioningCacheStore.delete()
+            provisioningRefreshWorkItem?.cancel()
+            provisioningRefreshWorkItem = nil
             provisioningURL = ""
             provisioningStatus = "请填写 API 地址"
             provisioningRevision = ""
             provisioningDisplayName = ""
+            provisioningLastSync = nil
+            provisioningUsingCache = false
+            provisioningUpdatePending = false
             resetProvisioningBundleState()
             problem = nil
-            append("远端配置 API 已清除")
+            append("远端配置 API 与本地缓存已清除")
         } catch { problem = error.localizedDescription }
     }
 
     func syncProvisioning(startAfterSync: Bool = false, automatic: Bool = false) {
-        guard !busy && !running && !provisioningSyncing else { return }
+        guard !provisioningSyncing else { return }
+        if busy || running {
+            scheduleProvisioningBackgroundRefresh(after: 0.1, reason: "手动后台同步")
+            return
+        }
         let endpoint = provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !endpoint.isEmpty else { problem = "请先填写 Provisioning API 地址"; return }
         do {
@@ -433,75 +714,59 @@ final class Model: ObservableObject {
             try ProvisioningURLStore.save(endpoint)
             provisioningURL = endpoint
         } catch { problem = error.localizedDescription; return }
+
         provisioningSyncing = true
         provisioningStatus = "正在获取完整配置…"
         problem = nil
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let document = try await RelayProvisioningClient.fetch(endpoint: endpoint)
-                switch document {
-                case .profile(let payload):
-                    self.resetProvisioningBundleState()
-                    let provisioned = try payload.validatedProfile()
-                    let preferenceData = try provisioned.preferenceData()
-                    if provisioned.userspace { try TransportKeyStore.save(provisioned.transport_key ?? "") }
-                    try self.applyProvisionedSummary(payload)
-                    UserDefaults.standard.set(preferenceData, forKey: "multipath-profile-v2")
-                    self.provisioningRevision = payload.revision ?? ""
-                    self.provisioningDisplayName = payload.display_name ?? ""
-                    let title = self.provisioningDisplayName.isEmpty ? "API 配置" : self.provisioningDisplayName
-                    self.provisioningStatus = payload.revision.map { "\(title) · 已同步 · \($0)" } ?? "\(title) · 已同步"
-                    self.append("Provisioning 同步成功：已应用单 Profile（\(payload.relays.count) 条 Relay）")
-                    self.provisioningSyncing = false
-                    if let resident = payload.background_resident, resident != self.backgroundResident { self.setBackgroundResident(resident) }
-                    self.problem = nil
-                    if startAfterSync {
-                        if automatic && payload.background_resident == false {
-                            self.append("Provisioning 已关闭后台常驻，本次自动恢复取消")
-                        } else {
-                            self.launch("run", automatic: automatic)
-                        }
-                    }
-
-                case .bundle(let bundle):
-                    try bundle.validate()
-                    let selection = try self.resolvedSelection(bundle)
-                    let selected = try self.orderedSelectedPayloads(bundle, ids: selection)
-                    self.lastProvisioningBundle = bundle
-                    self.provisioningIsBundle = true
-                    self.provisioningBundleMode = bundle.mode
-                    self.provisioningBundleID = bundle.bundle_id
-                    self.provisioningRevision = bundle.revision
-                    self.provisioningDisplayName = bundle.display_name
-                    self.provisioningRuntimeStatus = [:]
-                    self.provisioningRuntimeError = [:]
-                    self.provisioningTCPPaths = [:]
-                    self.provisioningUDPPaths = [:]
-                    self.provisioningDiagnostics = [:]
-                    try self.applyBundleSelection(bundle, ids: selection)
-                    self.provisioningStatus = bundle.mode == "parallel"
-                        ? "\(bundle.display_name) · 已同步 · \(selection.count) 个 Profile 启用"
-                        : "\(bundle.display_name) · 已同步 · 单配置选择"
-                    self.append("Provisioning Bundle 同步成功：包含 \(bundle.profiles.count) 个 Profile，本机启用 \(selection.count) 个")
-                    self.provisioningSyncing = false
-                    self.problem = nil
-                    let resident = selected.contains { $0.background_resident ?? false }
-                    if startAfterSync {
-                        if automatic && !resident {
-                            self.append("所选 Bundle Profile 均关闭后台常驻，本次自动恢复取消")
-                        } else {
-                            let bundleData = try JSONEncoder().encode(bundle)
-                            let orderedIDs = selected.compactMap(\.profile_id)
-                            self.launch("run-bundle", automatic: automatic, stdinData: bundleData, extraArguments: orderedIDs)
-                        }
+                let result = try await RelayProvisioningClient.fetchWithResponse(endpoint: endpoint)
+                let selection = try self.selectedIDsForFetchedDocument(result.document)
+                let now = Date()
+                try ManagedProvisioningCacheStore.save(
+                    responseData: result.responseData,
+                    endpoint: endpoint,
+                    selectedProfileIDs: selection,
+                    fetchedAt: now
+                )
+                let plan = try self.applyManagedDocument(result.document, preferredSelection: selection)
+                self.provisioningLastSync = now
+                self.provisioningUsingCache = false
+                self.provisioningUpdatePending = false
+                self.provisioningRefreshRetryAttempt = 0
+                self.provisioningSyncing = false
+                self.provisioningStatus = self.managedStatus(prefix: "已同步并缓存")
+                self.append("Provisioning 同步成功；最新配置已写入本地缓存")
+                self.problem = nil
+                self.scheduleProvisioningBackgroundRefresh(
+                    after: ManagedProvisioningCachePolicy.refreshInterval,
+                    reason: "48 小时自动同步"
+                )
+                if startAfterSync {
+                    if automatic && !plan.resident {
+                        self.append("Provisioning 已关闭后台常驻，本次自动恢复取消")
+                    } else {
+                        self.launch(plan.action, automatic: automatic, stdinData: plan.stdinData, extraArguments: plan.extraArguments)
                     }
                 }
             } catch {
                 self.provisioningSyncing = false
-                self.provisioningStatus = "同步失败 · 未启动"
-                self.problem = "Provisioning API 同步失败：\(error.localizedDescription)"
-                self.append("Provisioning API 同步失败；API 托管模式不会使用旧缓存配置启动")
+                if (try? ManagedProvisioningCacheStore.load(endpoint: endpoint)) != nil {
+                    self.provisioningUsingCache = true
+                    self.provisioningStatus = self.managedStatus(prefix: "同步失败 · 本地缓存可用")
+                    self.problem = "Provisioning API 同步失败；本地缓存仍可用于启动"
+                    let delay = ManagedProvisioningCachePolicy.retryDelay(attempt: self.provisioningRefreshRetryAttempt)
+                    self.provisioningRefreshRetryAttempt = min(
+                        self.provisioningRefreshRetryAttempt + 1,
+                        ManagedProvisioningCachePolicy.retryDelays.count - 1
+                    )
+                    self.scheduleProvisioningBackgroundRefresh(after: delay, reason: "API 后台重试")
+                } else {
+                    self.provisioningStatus = "同步失败 · 尚无本地缓存"
+                    self.problem = "Provisioning API 同步失败：\(error.localizedDescription)"
+                }
+                self.append("Provisioning API 同步失败；未覆盖最近一次成功缓存")
             }
         }
     }
@@ -510,6 +775,7 @@ final class Model: ObservableObject {
         guard !busy && !running && !provisioningSyncing else { return }
         if remoteConfigurationSelected {
             guard !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { problem = "请先填写远端配置 API 地址"; return }
+            if startManagedFromCache(automatic: automatic) { return }
             syncProvisioning(startAfterSync: true, automatic: automatic)
         } else {
             launch("run", automatic: automatic)
@@ -851,7 +1117,7 @@ struct DesktopView: View {
                     HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
                 }
                 Spacer()
-                Text("0.10.3").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("0.10.4").font(.system(size: 11)).foregroundColor(.secondary)
             }
             Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2)}.pickerStyle(.segmented)
             HStack(spacing:12) {

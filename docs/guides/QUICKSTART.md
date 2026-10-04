@@ -2,19 +2,19 @@
 
 [中文版](QUICKSTART.zh-CN.md)
 
-This guide targets **MPTCP Userspace v0.10.3 / MPX/4 Draft 04**.
+This guide targets **MPTCP Userspace v0.10.4 / MPX/4 Draft 04**.
 
 ## 1. Download and verify
 
-Download the required artifacts from the [v0.10.3 release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.3).
+Download the required artifacts from the [v0.10.4 release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.4).
 
 Typical files:
 
-- MPTCP-Desk-0.10.3-universal.dmg
+- MPTCP-Desk-0.10.4-universal.dmg
 - mptcp-client-linux-amd64 or mptcp-client-linux-arm64
 - mptcp-landing or mptcp-landing-linux-arm64
 - mpx-provision or mpx-provision-linux-arm64 when managed configuration is needed
-- MPTCP-Userspace-0.10.3-SHA256SUMS
+- MPTCP-Userspace-0.10.4-SHA256SUMS
 
 Verify hashes before installing.
 
@@ -30,7 +30,7 @@ chmod 755 ./mptcp-landing
 
 Keep the Landing configuration, backend, transport key and Relay topology private. For an existing installation, back up the current binary/config before replacing the binary and restart the systemd service only after verifying the release hash.
 
-The recommended deployment pair is 0.10.3 Client + 0.10.3 Landing.
+The recommended deployment pair is 0.10.4 Client + 0.10.4 Landing.
 
 ## 3. Install the client
 
@@ -70,7 +70,7 @@ The local listener is a transparent TCP entry, not a SOCKS5 server.
 
 Provisioning can issue either one Profile or a Bundle containing 1–32 Profiles.
 
-For macOS, paste the secret URL under **Remote configuration**, save it, sync, select the desired Profile(s), then start.
+For macOS, paste the secret URL under **Remote configuration**, save it and perform the first sync. That first successful sync creates a persistent Last Known Good cache. Later starts, app/system restarts and sleep/wake recovery launch immediately from the matching cache while the API refreshes in the background; the client does not wait for the API timeout.
 
 For Linux, keep the URL out of process arguments:
 
@@ -83,7 +83,7 @@ mptcp-client-linux-amd64 validate-managed < managed.json
 mptcp-client-linux-amd64 run-managed < managed.json
 ~~~
 
-Remote URLs require HTTPS. Public responses from 0.10.2+ Provisioning are opaque encrypted envelopes; the 0.10.3 client decrypts them automatically.
+Remote URLs require HTTPS. Public responses from 0.10.2+ Provisioning are opaque encrypted envelopes; the 0.10.4 client decrypts them automatically.
 
 ## 6. Parallel Bundles
 

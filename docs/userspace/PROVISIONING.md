@@ -1,4 +1,4 @@
-# MPX Provisioning 0.10.3
+# MPX Provisioning 0.10.4
 
 MPX Provisioning is the optional configuration/control plane for MPTCP Userspace. It is **not** a data proxy and does not change MPX/4 Draft 04 data-plane bytes.
 
@@ -67,7 +67,17 @@ This layer is intentionally lightweight: it prevents Relay endpoints and Transpo
 
 **Possession of the complete URL still grants decryption capability.** HTTPS remains mandatory for remote use.
 
-0.10.3 clients also accept legacy plaintext schema-1/schema-2 responses for migration.
+0.10.4 clients also accept legacy plaintext schema-1/schema-2 responses for migration.
+
+## 0.10.4 managed client cache
+
+After the first successful managed sync, MPTCP Desk persists the Last Known Good Profile/Bundle response under the user's Application Support/MPTCPDesk directory. The cache file is mode 0600 and contains the endpoint SHA-256 fingerprint, fetch time, selected Profile IDs and the last validated response bytes. The full Provisioning URL is not written to this file and remains in Keychain.
+
+A matching cache becomes the startup source. Normal start, app/system restart and sleep/wake recovery can launch immediately from it without waiting for the Provisioning request timeout. API refresh runs asynchronously.
+
+A successful refresh updates the cache for the next reconnect and does not restart the active runtime. The cache has no TTL. Each successful sync schedules another check 48 hours later; failures retain the old cache and retry after 1 minute, 5 minutes, 30 minutes and then every 3 hours. A changed Provisioning URL cannot consume a cache created for the previous URL.
+
+With current encrypted Provisioning responses, the cached response bytes remain the opaque v/n/d envelope. Legacy plaintext responses are still accepted for migration and are protected by the local 0600 file permission.
 
 ## macOS behavior
 
@@ -80,7 +90,7 @@ The home page explicitly separates:
 
 For a Bundle, the Client remembers the selected Profile IDs by non-secret bundle_id. Transport Keys are used from the authoritative response and engine stdin; they are not copied into ordinary preferences.
 
-If the authoritative fetch fails, managed startup fails rather than silently using a stale cached configuration.
+If a matching Last Known Good cache exists, managed startup uses it immediately and treats the API as an asynchronous update source. Only first use, or a newly changed URL with no matching cache, requires a successful authoritative fetch before startup.
 
 Remote Bundle diagnostics are shown per Profile. The customer UI hides Relay IP/port and raw endpoint errors while still showing scheduler, RTT, Goodput, queue, outstanding, retransmit, reorder and resource state.
 
@@ -132,8 +142,8 @@ Transport Keys and URLs are masked by default.
 
 ## Upgrade compatibility
 
-0.10.3 keeps the existing Profile/Bundle data model and URL format. Existing records and URLs remain valid unless explicitly edited/rotated.
+0.10.4 keeps the existing Profile/Bundle data model and URL format. Existing records and URLs remain valid unless explicitly edited/rotated.
 
 When upgrading from a Provisioning version before 0.10.2, upgrade clients to 0.10.2+ before switching the server to encrypted envelope responses.
 
-For the current release, use a matched **0.10.3 Client + 0.10.3 Landing + 0.10.3 Provisioning** suite.
+For the current release, use a matched **0.10.4 Client + 0.10.4 Landing + 0.10.4 Provisioning** suite.

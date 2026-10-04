@@ -12,6 +12,59 @@ import Foundation
         let output = URL(fileURLWithPath:CommandLine.arguments[1],isDirectory:true)
         try FileManager.default.createDirectory(at:output,withIntermediateDirectories:true)
         let relays = [RelayRow(host:"192.0.2.10",port:24001),RelayRow(host:"198.51.100.20",port:24001)]
+
+        let cacheDir = output.appendingPathComponent("managed-cache", isDirectory:true)
+        setenv("MPTCP_DESK_CACHE_DIR", cacheDir.path, 1)
+        let cacheEndpoint = "https://config.example.test/v1/bundle/" + String(repeating:"a",count:64)
+        let cacheA = RelayProvisioningPayload(
+            schema_version:1, profile_id:"cache-a", revision:"r1", display_name:"Cache A",
+            mode:"native_mptcp", listen_port:1181, scheduler_mode:nil,
+            tcp_enabled:true, udp_enabled:false, background_resident:false, transport_key:nil, relays:relays
+        )
+        var cacheB = cacheA
+        cacheB.profile_id = "cache-b"; cacheB.display_name = "Cache B"; cacheB.listen_port = 1182
+        let cacheBundle = RelayProvisioningBundlePayload(
+            schema_version:2, kind:"bundle", bundle_id:"cache-bundle", revision:"r1",
+            display_name:"Cached Bundle", mode:"parallel", profiles:[cacheA,cacheB]
+        )
+        let cacheResponse = try JSONEncoder().encode(cacheBundle)
+        let cacheFetchedAt = Date(timeIntervalSince1970:1_800_000_000)
+        try ManagedProvisioningCacheStore.save(
+            responseData: cacheResponse,
+            endpoint: cacheEndpoint,
+            selectedProfileIDs:["cache-a"],
+            fetchedAt: cacheFetchedAt
+        )
+        let cached = try ManagedProvisioningCacheStore.load(endpoint: cacheEndpoint)
+        precondition(cached != nil)
+        precondition(cached?.selectedProfileIDs == ["cache-a"])
+        precondition(cached?.fetchedAt == cacheFetchedAt)
+        try ManagedProvisioningCacheStore.updateSelection(endpoint: cacheEndpoint, selectedProfileIDs:["cache-b"])
+        let updatedCached = try ManagedProvisioningCacheStore.load(endpoint: cacheEndpoint)
+        precondition(updatedCached?.selectedProfileIDs == ["cache-b"])
+        try ManagedProvisioningCacheStore.updateSelection(endpoint: cacheEndpoint, selectedProfileIDs:["cache-a"])
+        if case .bundle(let loadedBundle)? = cached?.document {
+            precondition(loadedBundle.bundle_id == "cache-bundle")
+            precondition(loadedBundle.profiles.count == 2)
+        } else { fatalError("managed Bundle cache did not round-trip") }
+        let otherEndpoint = "https://config.example.test/v1/bundle/" + String(repeating:"b",count:64)
+        let otherCached = try ManagedProvisioningCacheStore.load(endpoint: otherEndpoint)
+        precondition(otherCached == nil)
+        precondition(!ManagedProvisioningCachePolicy.refreshDue(
+            fetchedAt: cacheFetchedAt,
+            now: cacheFetchedAt.addingTimeInterval(ManagedProvisioningCachePolicy.refreshInterval - 1)
+        ))
+        precondition(ManagedProvisioningCachePolicy.refreshDue(
+            fetchedAt: cacheFetchedAt,
+            now: cacheFetchedAt.addingTimeInterval(ManagedProvisioningCachePolicy.refreshInterval)
+        ))
+        precondition(ManagedProvisioningCachePolicy.retryDelay(attempt:0) == 60)
+        precondition(ManagedProvisioningCachePolicy.retryDelay(attempt:99) == 3 * 60 * 60)
+        precondition(ManagedProvisioningCachePolicy.shouldApplyRefreshImmediately(runtimeActive:false))
+        precondition(!ManagedProvisioningCachePolicy.shouldApplyRefreshImmediately(runtimeActive:true))
+        let cacheAttributes = try FileManager.default.attributesOfItem(atPath: ManagedProvisioningCacheStore.cacheURL().path)
+        precondition((cacheAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+
         let legacy = Profile(schema_version:2,mode:"tcp_forward",listen_port:1081,relays:relays,udp_enabled:nil,tcp_enabled:nil,transport_key:nil)
         try legacy.validate();precondition(!legacy.userspace)
         var modern = Profile(schema_version:3,mode:"userspace_multipath",listen_port:1081,relays:relays,udp_enabled:true,tcp_enabled:true,transport_key:String(repeating:"a",count:64))
@@ -23,6 +76,14 @@ import Foundation
         modern.transport_key=String(repeating:"a",count:64);modern.tcp_enabled=false;modern.udp_enabled=false
         do { try modern.validate();fatalError("both disabled accepted") } catch is ProfileError {}
         let model = Model.shared
+        model.configurationSource = "remote"
+        model.provisioningURL = cacheEndpoint
+        let cachePlan = try model.managedCacheLaunchSummaryForTests()
+        precondition(cachePlan?.action == "run-bundle")
+        precondition(cachePlan?.selectedCount == 1)
+        precondition(cachePlan?.fetchedAt == cacheFetchedAt)
+        model.configurationSource = "local"
+        model.provisioningURL = ""
         model.relays=relays;model.transportKey=String(repeating:"a",count:64)
         model.tcpPaths=[
             PathMetric(id:1,address:"192.0.2.10:24001",connected:true,sent:2000000,received:4000000,rtt_ms:23.4,goodput_bps:2097152,outstanding_bytes:65536,queue_bytes:32768,errors:0,last_error:nil),
@@ -99,6 +160,6 @@ import Foundation
             print("Rendered \(name): \(bitmap.pixelsWide)x\(bitmap.pixelsHigh), \(png.count) bytes")
             window.contentView=nil
         }
-        print("PASS: full per-Profile diagnostics isolation, hidden remote endpoints, default-collapsed/expanded resource panels, local diagnostics, and eight offscreen SwiftUI views")
+        print("PASS: persistent managed cache/fingerprint/48h policy/cache-first launch plan, full per-Profile diagnostics isolation, hidden remote endpoints, resource disclosures, and eight offscreen SwiftUI views")
     }
 }

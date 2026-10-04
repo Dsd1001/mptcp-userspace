@@ -1,10 +1,10 @@
 # 故障排查
 
-本文面向 **v0.10.3 / MPX/4 Draft 04**。
+本文面向 **v0.10.4 / MPX/4 Draft 04**。
 
 ## 1. 先确认版本与 Source-ID
 
-Client、Landing、Provisioning 最好使用同一正式版本。当前 0.10.3 Source-ID 为发布包中的 SOURCE_ID；不要只看文件名判断二进制来源。
+Client、Landing、Provisioning 最好使用同一正式版本。当前 0.10.4 Source-ID 为发布包中的 SOURCE_ID；不要只看文件名判断二进制来源。
 
 Landing：
 
@@ -41,7 +41,7 @@ mptcp-client-linux-amd64 doctor-userspace
 
 ## 4. Parallel Bundle 一份配置失败
 
-0.10.3 的正常行为是：
+0.10.4 的正常行为是：
 
 - 本地端口预检查失败：整组不启动；
 - 远端连接、认证或运行失败：只标记对应 Profile；
@@ -110,9 +110,9 @@ Weighted 容量高估也会放大这一现象。
 - macOS 登录项未处于 requires approval；
 - 用户不是刚刚手动点击了“停止”；
 - 网络已经恢复；
-- Provisioning URL 仍可获取权威配置。
+- 至少曾成功同步过一次远端配置，或者当前 API 可用以完成首次同步。
 
-后台恢复会重新建立 Session/Carrier，不会复用睡眠前的旧 socket。
+0.10.4 有匹配 LKG 缓存时，睡眠唤醒恢复不会等待 Provisioning API；它直接用缓存重建 Session/Carrier，同时在后台刷新 API。若 API 暂时不可用，现有缓存仍然有效。
 
 ## 11. 需要哪些日志
 

@@ -1,4 +1,4 @@
-# Linux client — MPTCP Userspace 0.10.3
+# Linux client — MPTCP Userspace 0.10.4
 
 The headless Linux Client reuses the same Go Userspace MPX/4 engine as MPTCP Desk. Published artifacts are available for linux/amd64 and linux/arm64.
 
@@ -74,7 +74,7 @@ The URL may refer to a Profile or Bundle.
 
 Remote URLs require HTTPS; loopback HTTP is permitted for development. Redirects are rejected. Single-Profile responses are bounded to 64 KiB and Bundle responses to 512 KiB.
 
-0.10.3 automatically decrypts the opaque v/n/d Provisioning envelope introduced in 0.10.2 and also accepts legacy plaintext schema-1/schema-2 responses for migration.
+0.10.4 automatically decrypts the opaque v/n/d Provisioning envelope introduced in 0.10.2 and also accepts legacy plaintext schema-1/schema-2 responses for migration.
 
 Treat the managed URL as a bearer credential. If persisted, protect the input file with restrictive permissions such as 0600.
 

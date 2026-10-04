@@ -1,4 +1,4 @@
-# Scheduler modes — v0.10.3 / MPX/4 Draft 04
+# Scheduler modes — v0.10.4 / MPX/4 Draft 04
 
 MPTCP Userspace currently exposes four configured scheduler policies: **Auto, Aggregate, Protect and Weighted**.
 
@@ -65,6 +65,6 @@ Remote Bundle diagnostics keep these values independently per Profile while hidi
 
 ## Limits and evidence
 
-The current v0.10.3 implementation supports up to 8 Carriers per MPX Session. Scheduler performance at higher path counts is not implied by the current release.
+The current v0.10.4 implementation supports up to 8 Carriers per MPX Session. Scheduler performance at higher path counts is not implied by the current release.
 
 Source-matched release evidence lives in SCHEDULER-MODES.json, TESTS.json, PROVENANCE.json, CAPACITY.json and RUNTIME.json inside the release package.

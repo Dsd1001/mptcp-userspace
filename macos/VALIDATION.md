@@ -1,12 +1,14 @@
-# MPTCP Desk 0.10.3 validation
+# MPTCP Desk 0.10.4 validation
 
-A 0.10.3 release candidate must cover:
+A 0.10.4 release candidate must cover:
 
 - engine/Landing go test, go vet and race suite;
 - MPX/4 Draft 04 protocol vectors and error/generation semantics;
 - Auto / Aggregate / Protect / Weighted regressions;
 - Provisioning Profile/Bundle CRUD and encrypted envelope behavior;
 - managed URL HTTPS/loopback rules, redirect rejection and response-size limits;
+- persistent LKG cache round-trip, URL-fingerprint isolation, 0600 permissions and selected Profile ID persistence;
+- cache-first launch planning, 48-hour refresh/retry policy and no immediate apply/restart while a runtime is active;
 - single_select and parallel Bundle validation;
 - atomic duplicate/occupied local-port preflight;
 - one-bad/one-good parallel runtime isolation;

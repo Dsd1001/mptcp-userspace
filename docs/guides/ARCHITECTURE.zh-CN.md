@@ -1,6 +1,6 @@
 # MPTCP Userspace 架构说明
 
-本文描述 **v0.10.3 / MPX/4 Draft 04** 的当前架构。历史 MPX/2、MPX/3 文档仅用于实现考古，不是当前部署说明。
+本文描述 **v0.10.4 / MPX/4 Draft 04** 的当前架构。历史 MPX/2、MPX/3 文档仅用于实现考古，不是当前部署说明。
 
 ## 1. 组件
 
@@ -29,7 +29,7 @@ Client
 
 ## 2. Session、Carrier 与 Stream
 
-一份 Userspace Profile 对应一个独立 MPX Session。当前 v0.10.3 每个 Profile 配置 2–8 条 Relay，每个 Session 最多 8 条 Carrier。
+一份 Userspace Profile 对应一个独立 MPX Session。当前 v0.10.4 每个 Profile 配置 2–8 条 Relay，每个 Session 最多 8 条 Carrier。
 
 Carrier 是普通 TCP 连接。每条 Carrier 都通过 MPX/4 CREATE/JOIN 完成认证，并有独立的 Generation、traffic key、IV、序号空间与路径统计。
 

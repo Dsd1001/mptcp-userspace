@@ -2,19 +2,19 @@
 
 [English](QUICKSTART.md)
 
-本文面向 **MPTCP Userspace v0.10.3 / MPX/4 Draft 04**。
+本文面向 **MPTCP Userspace v0.10.4 / MPX/4 Draft 04**。
 
 ## 1. 下载并校验
 
-从 [v0.10.3 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.3) 下载需要的文件。
+从 [v0.10.4 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.4) 下载需要的文件。
 
 常用产物：
 
-- MPTCP-Desk-0.10.3-universal.dmg
+- MPTCP-Desk-0.10.4-universal.dmg
 - mptcp-client-linux-amd64 / arm64
 - mptcp-landing / mptcp-landing-linux-arm64
 - 需要远端配置时下载 mpx-provision / arm64
-- MPTCP-Userspace-0.10.3-SHA256SUMS
+- MPTCP-Userspace-0.10.4-SHA256SUMS
 
 安装前先校验 SHA256。
 
@@ -30,7 +30,7 @@ chmod 755 ./mptcp-landing
 
 已有部署升级时，先备份当前二进制、systemd unit 与配置，再替换二进制并重启服务。不要把 Transport Key 写进公开仓库、Issue 或普通日志。
 
-推荐正式组合为 0.10.3 Client + 0.10.3 Landing。
+推荐正式组合为 0.10.4 Client + 0.10.4 Landing。
 
 ## 3. 安装 Client
 
@@ -70,7 +70,7 @@ Linux 只支持 Userspace MPX/4；Native MPTCP fallback 仍只在 macOS。
 
 Provisioning 可以下发单个 Profile，也可以下发包含 1–32 个 Profile 的 Bundle。
 
-macOS 在 **远端配置** 中粘贴 secret URL，保存、同步，选择需要运行的 Profile 后启动。
+macOS 在 **远端配置** 中粘贴 secret URL，保存并完成第一次同步。第一次成功同步会生成持久化 Last Known Good 缓存；之后正常启动、App/系统重启和睡眠唤醒恢复都直接从匹配缓存启动，API 在后台刷新，不再等待 API timeout。
 
 Linux 建议通过 stdin 传 URL，避免 bearer credential 出现在 ps：
 
@@ -83,7 +83,7 @@ mptcp-client-linux-amd64 validate-managed < managed.json
 mptcp-client-linux-amd64 run-managed < managed.json
 ~~~
 
-远端 URL 必须使用 HTTPS。0.10.2+ Provisioning 的公网响应是加密 envelope，0.10.3 Client 会自动解密。
+远端 URL 必须使用 HTTPS。0.10.2+ Provisioning 的公网响应是加密 envelope，0.10.4 Client 会自动解密。
 
 ## 6. Parallel Bundle
 

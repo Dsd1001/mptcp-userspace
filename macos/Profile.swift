@@ -348,6 +348,139 @@ enum RelayProvisioningDocument {
     case bundle(RelayProvisioningBundlePayload)
 }
 
+struct RelayProvisioningFetchResult {
+    var document: RelayProvisioningDocument
+    var responseData: Data
+}
+
+struct ManagedProvisioningCachedDocument {
+    var document: RelayProvisioningDocument
+    var fetchedAt: Date
+    var selectedProfileIDs: Set<String>
+}
+
+struct ManagedProvisioningCachePolicy {
+    static let refreshInterval: TimeInterval = 48 * 60 * 60
+    static let retryDelays: [TimeInterval] = [60, 5 * 60, 30 * 60, 3 * 60 * 60]
+
+    static func refreshDue(fetchedAt: Date, now: Date = Date()) -> Bool {
+        now.timeIntervalSince(fetchedAt) >= refreshInterval
+    }
+
+    static func refreshDelay(fetchedAt: Date, now: Date = Date()) -> TimeInterval {
+        max(0, refreshInterval - now.timeIntervalSince(fetchedAt))
+    }
+
+    static func retryDelay(attempt: Int) -> TimeInterval {
+        retryDelays[min(max(attempt, 0), retryDelays.count - 1)]
+    }
+
+    static func shouldApplyRefreshImmediately(runtimeActive: Bool) -> Bool {
+        !runtimeActive
+    }
+}
+
+private struct ManagedProvisioningCacheRecord: Codable {
+    var schema_version: Int
+    var endpoint_fingerprint: String
+    var fetched_at: Date
+    var selected_profile_ids: [String]
+    var response_data: Data
+}
+
+enum ManagedProvisioningCacheStore {
+    private static let filename = "managed-provisioning-cache.json"
+
+    private static func fingerprint(_ endpoint: String) throws -> String {
+        let url = try RelayProvisioningClient.endpointURL(endpoint)
+        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func cacheURL() throws -> URL {
+        if let override = ProcessInfo.processInfo.environment["MPTCP_DESK_CACHE_DIR"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true).appendingPathComponent(filename)
+        }
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw ProfileError("无法定位本地配置缓存目录")
+        }
+        return base.appendingPathComponent("MPTCPDesk", isDirectory: true).appendingPathComponent(filename)
+    }
+
+    static func save(
+        responseData: Data,
+        endpoint: String,
+        selectedProfileIDs: Set<String>,
+        fetchedAt: Date = Date()
+    ) throws {
+        guard !responseData.isEmpty, responseData.count <= RelayProvisioningClient.maximumResponseBytes else {
+            throw ProfileError("Provisioning 本地缓存大小无效")
+        }
+        _ = try RelayProvisioningClient.decodeResponse(responseData, endpoint: endpoint)
+        let record = ManagedProvisioningCacheRecord(
+            schema_version: 1,
+            endpoint_fingerprint: try fingerprint(endpoint),
+            fetched_at: fetchedAt,
+            selected_profile_ids: Array(selectedProfileIDs).sorted(),
+            response_data: responseData
+        )
+        let url = try cacheURL()
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(record)
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    static func load(endpoint: String) throws -> ManagedProvisioningCachedDocument? {
+        let url = try cacheURL()
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        guard !data.isEmpty, data.count <= 1024 * 1024 else {
+            throw ProfileError("Provisioning 本地缓存损坏或过大")
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let record = try decoder.decode(ManagedProvisioningCacheRecord.self, from: data)
+        guard record.schema_version == 1 else { throw ProfileError("Provisioning 本地缓存版本不受支持") }
+        guard record.endpoint_fingerprint == (try fingerprint(endpoint)) else { return nil }
+        let document = try RelayProvisioningClient.decodeResponse(record.response_data, endpoint: endpoint)
+        return ManagedProvisioningCachedDocument(
+            document: document,
+            fetchedAt: record.fetched_at,
+            selectedProfileIDs: Set(record.selected_profile_ids)
+        )
+    }
+
+    static func updateSelection(endpoint: String, selectedProfileIDs: Set<String>) throws {
+        let url = try cacheURL()
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var record = try decoder.decode(ManagedProvisioningCacheRecord.self, from: data)
+        guard record.endpoint_fingerprint == (try fingerprint(endpoint)) else { return }
+        record.selected_profile_ids = Array(selectedProfileIDs).sorted()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(record).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    static func delete() throws {
+        let url = try cacheURL()
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
+    }
+}
+
 struct ProvisioningProfileChoice: Identifiable {
     var id: String
     var name: String
@@ -439,7 +572,31 @@ enum RelayProvisioningClient {
         return url
     }
 
-    static func fetch(endpoint: String) async throws -> RelayProvisioningDocument {
+    static func decodeResponse(_ data: Data, endpoint: String) throws -> RelayProvisioningDocument {
+        let url = try endpointURL(endpoint)
+        guard !data.isEmpty, data.count <= maximumResponseBytes else { throw ProfileError("Provisioning API 响应为空或超过 512 KiB") }
+        let payloadData = try decryptEnvelope(data, url: url)
+        guard !payloadData.isEmpty, payloadData.count <= maximumResponseBytes else { throw ProfileError("Provisioning 解密配置为空或超过 512 KiB") }
+        struct Header: Decodable { var schema_version: Int; var kind: String? }
+        do {
+            let header = try JSONDecoder().decode(Header.self, from: payloadData)
+            if header.schema_version == 1 {
+                guard payloadData.count <= maximumProfileResponseBytes else { throw ProfileError("单 Profile Provisioning 响应超过 64 KiB") }
+                let payload = try JSONDecoder().decode(RelayProvisioningPayload.self, from: payloadData)
+                _ = try payload.validatedProfile()
+                return .profile(payload)
+            }
+            if header.schema_version == 2, header.kind == "bundle" {
+                let bundle = try JSONDecoder().decode(RelayProvisioningBundlePayload.self, from: payloadData)
+                try bundle.validate()
+                return .bundle(bundle)
+            }
+            throw ProfileError("Provisioning API schema/kind 不受支持")
+        } catch let error as ProfileError { throw error }
+        catch { throw ProfileError("Provisioning API JSON 无效：(error.localizedDescription)") }
+    }
+
+    static func fetchWithResponse(endpoint: String) async throws -> RelayProvisioningFetchResult {
         let url = try endpointURL(endpoint)
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
         request.httpMethod = "GET"
@@ -458,25 +615,13 @@ enum RelayProvisioningClient {
         defer { session.invalidateAndCancel() }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ProfileError("Provisioning API 返回的不是 HTTP 响应") }
-        guard http.statusCode == 200 else { throw ProfileError("Provisioning API HTTP \(http.statusCode)") }
-        guard !data.isEmpty, data.count <= maximumResponseBytes else { throw ProfileError("Provisioning API 响应为空或超过 512 KiB") }
-        let payloadData = try decryptEnvelope(data, url: url)
-        guard !payloadData.isEmpty, payloadData.count <= maximumResponseBytes else { throw ProfileError("Provisioning 解密配置为空或超过 512 KiB") }
-        struct Header: Decodable { var schema_version: Int; var kind: String? }
-        do {
-            let header = try JSONDecoder().decode(Header.self, from: payloadData)
-            if header.schema_version == 1 {
-                guard payloadData.count <= maximumProfileResponseBytes else { throw ProfileError("单 Profile Provisioning 响应超过 64 KiB") }
-                return .profile(try JSONDecoder().decode(RelayProvisioningPayload.self, from: payloadData))
-            }
-            if header.schema_version == 2, header.kind == "bundle" {
-                let bundle = try JSONDecoder().decode(RelayProvisioningBundlePayload.self, from: payloadData)
-                try bundle.validate()
-                return .bundle(bundle)
-            }
-            throw ProfileError("Provisioning API schema/kind 不受支持")
-        } catch let error as ProfileError { throw error }
-        catch { throw ProfileError("Provisioning API JSON 无效：\(error.localizedDescription)") }
+        guard http.statusCode == 200 else { throw ProfileError("Provisioning API HTTP (http.statusCode)") }
+        let document = try decodeResponse(data, endpoint: endpoint)
+        return RelayProvisioningFetchResult(document: document, responseData: data)
+    }
+
+    static func fetch(endpoint: String) async throws -> RelayProvisioningDocument {
+        try await fetchWithResponse(endpoint: endpoint).document
     }
 }
 

@@ -1,21 +1,47 @@
-# MPTCP Userspace 0.10.3 / MPX/4 Draft 04
+# MPTCP Userspace 0.10.4 / MPX/4 Draft 04
 
-0.10.3 是整套发布版本：MPTCP Desk、Linux Client、Landing 与 Provisioning 统一为 0.10.3。MPX/4 Draft 04 数据面 wire format、Generation/Error Scope、Scheduler、key schedule 以及 0.10.2 Provisioning 加密封装均不变。
+0.10.4 是远端配置持久化与睡眠/重启恢复版本。MPTCP Desk、Linux Client、Landing 与 Provisioning 套件版本统一为 0.10.4。
 
-## 路径诊断
+**MPX/4 Draft 04 数据面保持 0.10.3 完全相同的 wire format、Carrier Generation/Error Scope、Scheduler、flow-control 与 key-schedule 语义。本版不升级 MPX Draft。**
 
-- 远端 Provisioning Bundle 不再只显示路径卡片；每个选中的 Profile 现在独立保存并展示完整 Session 诊断。
-- 每个远端 Profile 可查看配置/当前 Scheduler、自动切换次数、发送方向原因、TCP 载路、连接、上传/下载、当前/峰值重排、等待确认、TCP 重传、UDP 丢弃以及完整路径统计。
-- 远端路径仍只显示“路径 1 / 路径 2 …”，不会在客户 UI 暴露 Relay IP、端口或原始 dial endpoint 错误。
-- 不同 Profile 的资源、路径与 Scheduler 数据严格分开，不做跨 Session 混合。
+## Managed Last Known Good 缓存
 
-## 可折叠资源窗口
+- 第一次 Provisioning API 成功后，macOS Client 会持久化最近一次验证通过的完整 Profile/Bundle 响应。
+- 缓存通过当前 Provisioning URL 的 SHA-256 指纹绑定来源；更换 URL 后旧缓存不会被使用。
+- 缓存文件位于用户的 Application Support/MPTCPDesk 目录，目录权限 0700、文件权限 0600。
+- 完整 secret API URL 继续保存在 Keychain；缓存文件不记录 URL。
+- 当前 0.10.2+ Provisioning 的加密 v/n/d 公网响应会按原始不透明 envelope 缓存，因此 Relay 与 Transport Key 不会因为新增缓存而直接明文落盘。
+- Bundle 缓存同时保存本机选择的 Profile ID；用户切换选择后会更新缓存元数据。
+- 缓存不设置 TTL；除非用户清除/更换 API URL 或成功同步到新配置，否则一直有效。
 
-- 原来的深度资源信息拆成两组：`Stream / 生命周期资源` 与 `Window / Credit 资源`。
-- 两组默认收起，减少路径诊断页纵向占用；标题行仍显示“活跃/Closing”或“分页/待确认”的简要摘要。
-- 点击标题即可展开原有完整字段，包括 Stream 生命周期、DATA 静默、待结算、发送未消费、接收 Credit、实际分页、基础/增长占用、DATA/控制帧、窗口阻塞、idle/small/bulk 与 OPEN Credit 等待。
-- 本地/单 Profile 使用一组折叠状态；远端 Bundle 中每个 Profile 各自独立。状态只保留在当前 App 会话，不写入 UserDefaults/Keychain。
+## 启动、重启与睡眠恢复
+
+有匹配缓存时，手动启动、App 重启、系统重启后的后台恢复以及 sleep/wake 恢复都会直接读取缓存并启动 engine，**不会先等待 Provisioning API 的 10–15 秒 timeout**。
+
+缓存启动后 API 在后台异步刷新：
+
+- 成功：写入新的 LKG 缓存；
+- 当前 Session 正在运行：不重启、不替换当前 engine stdin，新配置在下一次自然重连/启动时生效；
+- 失败：现有 Session 与旧缓存保持有效。
+
+第一次使用，或者更换为一条没有匹配缓存的新 API URL 时，仍然必须先成功获取一次 API 配置。
+
+## 48 小时自动同步
+
+- 每次成功同步后记录 fetched_at，48 小时后自动再同步；
+- App 重启时根据持久化 fetched_at 重新计算剩余周期，不依赖跨睡眠的固定 Timer；
+- 后台同步失败后按 1 分钟、5 分钟、30 分钟、3 小时退避；
+- 达到 3 小时档后持续按 3 小时重试；
+- 用户在运行期间手动点同步时同样只更新后台缓存，不强制重启当前 Session。
+
+## Compatibility
+
+- MPX/4 Draft 04 与 0.10.3 完全一致，本版没有 Carrier、Frame、Scheduler 或 wire 语义更新；
+- Provisioning Profile schema 1、Bundle schema 2 与 encrypted envelope v1 不变；
+- 0.10.4 Client 继续接受旧明文 schema 1/2 响应用于迁移；
+- 当前实现仍为每 Profile 2–8 Relay / 每 Session 最多 8 Carrier；
+- 本版不包含此前讨论的 96 Carrier 扩展。
 
 ## Validation
 
-发布门槛包括 Go test/vet/race、Provisioning 加密兼容回归、Swift arm64/x86_64 typecheck、逐 Profile 遥测隔离断言、默认收起/展开 UI 离屏渲染、隐藏远端 endpoint 回归、Parallel Bundle 故障隔离，以及冻结源码的 Linux amd64/arm64 可复现构建与 Mac Universal DMG 验证。
+发布门槛新增持久化缓存 round-trip、URL 指纹隔离、0600 权限、selected Profile ID 持久化、48 小时 due/retry policy、cache-first launch plan、运行中后台刷新不立即应用等回归；同时保留 Swift arm64/x86_64 typecheck、UI 离屏渲染、Go test/vet/race、Provisioning 加密回归、Parallel Bundle 故障隔离、Linux amd64/arm64 构建与 frozen-source provenance 验证。

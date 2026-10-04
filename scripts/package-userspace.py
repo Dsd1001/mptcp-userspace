@@ -34,10 +34,10 @@ def local_test_secrets() -> list[bytes]:
 
 def acceptance_text(identity: str, capacity: dict, runtime: dict, complete: bool, scheduler: dict, *, version: str, untested: bool=False, preview: bool=False, background_release: bool=False, feature_release: bool=False) -> str:
     text=f'# {version} / MPX/4 Draft 04 acceptance\n\n'
-    stage='multi-profile-feature-release' if feature_release else ('background-resident-feature-release' if background_release else ('preview-with-known-limitations' if preview else ('untested-by-request release' if untested else ('short-capacity-and-physical-validated' if complete else 'candidate; required acceptance pending'))))
+    stage='control-plane-feature-release' if feature_release else ('background-resident-feature-release' if background_release else ('preview-with-known-limitations' if preview else ('untested-by-request release' if untested else ('short-capacity-and-physical-validated' if complete else 'candidate; required acceptance pending'))))
     text+=f'Source-ID: `{identity}`. Stage: **{stage}**.\n\n'
     if feature_release:
-        text+='This 0.10.x feature/patch release changes control-plane/client behavior above the unchanged MPX/4 Draft 04 transport. Current-source correctness/build evidence is recorded in TESTS.json and PROVENANCE.json. Scheduler/capacity/WAN performance promotion is intentionally not claimed for this Source-ID because the transport wire and multipath scheduler semantics are not changed by the Bundle feature.\n\n'
+        text+='This 0.10.x feature/patch release changes control-plane/client behavior above the unchanged MPX/4 Draft 04 transport. Current-source correctness/build evidence is recorded in TESTS.json and PROVENANCE.json. Scheduler/capacity/WAN performance promotion is intentionally not claimed for this Source-ID because the transport wire and multipath scheduler semantics are unchanged.\n\n'
     if background_release:
         text+='Formal 0.9.8 release candidate. Current-source correctness includes login-item API compilation, sleep/wake recovery policy, bounded restart backoff, Swift UI/Profile checks, the unchanged Rev5/Weighted protocol regression and source-matched Weighted laboratory throughput. Full 30-second capacity matrices and physical App+Surge/WAN acceptance are not claimed unless separately verified.\n\n'
     if preview:
@@ -114,7 +114,7 @@ def main() -> None:
     args=parser.parse_args()
     gates.require(sum(bool(x) for x in [args.engineering,args.require_live,args.untested_release,args.preview_release,args.background_release,args.feature_release]) <= 1,'Select at most one packaging mode')
     version=(ROOT/'macos/VERSION').read_text().strip()
-    gates.require(version in {'0.9.8','0.10.0','0.10.1','0.10.2','0.10.3'},'Unsupported release version for this packaging script')
+    gates.require(version in {'0.9.8','0.10.0','0.10.1','0.10.2','0.10.3','0.10.4'},'Unsupported release version for this packaging script')
     if args.feature_release: gates.require(version.startswith('0.10.'),'--feature-release is defined for 0.10.x')
     out=ROOT/'dist'/('userspace-'+version)
     files=source.collect();sums=source.manifest(files);identity=source.sha(sums)
@@ -136,10 +136,10 @@ def main() -> None:
         gates.require(source.sha((out/name).read_bytes())==digest,'Recorded artifact changed: '+name)
     scheduler_path=out/'SCHEDULER-MODES.json'
     if args.feature_release and not scheduler_path.exists():
-        scheduler_path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'scheduler_capability_revision':5,'verified':False,'status':'not-rerun-for-multi-profile-feature-release','reason':version+' changes Provisioning/client control-plane or UI behavior; MPX/4 Draft 04 scheduler semantics are unchanged and no performance-promotion claim is made'},indent=2)+'\n')
+        scheduler_path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'scheduler_capability_revision':5,'verified':False,'status':'not-rerun-for-control-plane-feature-release','reason':version+' changes Provisioning/client control-plane or UI behavior; MPX/4 Draft 04 scheduler semantics are unchanged and no performance-promotion claim is made'},indent=2)+'\n')
     scheduler=json.loads(scheduler_path.read_text())
     if args.feature_release:
-        gates.require(scheduler.get('source_id')==identity and scheduler.get('version')==version and scheduler.get('wire_protocol')==4 and scheduler.get('verified') is False and scheduler.get('status')=='not-rerun-for-multi-profile-feature-release','Feature release scheduler record must explicitly avoid a performance-promotion claim')
+        gates.require(scheduler.get('source_id')==identity and scheduler.get('version')==version and scheduler.get('wire_protocol')==4 and scheduler.get('verified') is False and scheduler.get('status')=='not-rerun-for-control-plane-feature-release','Feature release scheduler record must explicitly avoid a performance-promotion claim')
         tests=json.loads((out/'TESTS.json').read_text()); check_feature_release(tests,identity,version)
     elif args.untested_release:
         gates.require(scheduler.get('source_id')==identity and scheduler.get('version')==version and scheduler.get('verified') is False and scheduler.get('status')=='untested-by-request','Untested scheduler record must be explicit')
@@ -162,7 +162,7 @@ def main() -> None:
     capacity,runtime=records
     if args.feature_release:
         for path,label in [(out/'CAPACITY.json','capacity'),(out/'RUNTIME.json','runtime')]:
-            path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'verified':False,'status':'not-rerun-for-multi-profile-feature-release','reason':version+' changes control-plane/client behavior only; no new transport performance/WAN promotion is claimed'},indent=2)+'\n')
+            path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'verified':False,'status':'not-rerun-for-control-plane-feature-release','reason':version+' changes control-plane/client behavior only; no new transport performance/WAN promotion is claimed'},indent=2)+'\n')
         capacity=json.loads((out/'CAPACITY.json').read_text());runtime=json.loads((out/'RUNTIME.json').read_text())
         complete=False
     elif args.preview_release:
@@ -210,7 +210,7 @@ def main() -> None:
     external={name:(out/name).read_bytes() for name in names+[bundle.name]}
     (out/f'MPTCP-Userspace-{version}-SHA256SUMS').write_bytes(source.manifest(external))
     print(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,
-        'release_stage':'multi-profile-feature-release' if args.feature_release else ('background-resident-feature-release' if args.background_release else ('preview-with-known-limitations' if args.preview_release else 'untested-by-request' if args.untested_release else ('engineering-not-release-gated' if args.engineering else ('short-capacity-and-physical-validated' if complete else 'candidate-pending-required-acceptance')))),
+        'release_stage':'control-plane-feature-release' if args.feature_release else ('background-resident-feature-release' if args.background_release else ('preview-with-known-limitations' if args.preview_release else 'untested-by-request' if args.untested_release else ('engineering-not-release-gated' if args.engineering else ('short-capacity-and-physical-validated' if complete else 'candidate-pending-required-acceptance')))),
         'scheduler_verified':scheduler.get('verified') is True,'capacity_verified':capacity.get('verified') is True,'runtime_verified':runtime.get('verified') is True,
         'source_files':len(files),'release_files':len(release),'archive':bundle.name,
         'archive_bytes':bundle.stat().st_size,'archive_sha256':source.sha(bundle.read_bytes()),

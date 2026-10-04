@@ -1,6 +1,6 @@
-# v0.10.3 / MPX/4 Draft 04 validation and release limits
+# v0.10.4 / MPX/4 Draft 04 validation and release limits
 
-This document describes the current release gate. Historical version-specific validation files are not the source of truth for v0.10.3.
+This document describes the current release gate. Historical version-specific validation files are not the source of truth for v0.10.4.
 
 ## Required correctness gates
 
@@ -14,19 +14,21 @@ A release candidate must pass, at minimum:
 6. Provisioning full test/vet, including Profile/Bundle validation and encrypted response envelope.
 7. Wrong-secret/tamper rejection and fresh nonce behavior for Provisioning encryption.
 8. Legacy plaintext managed-response compatibility.
-9. Bundle single_select/parallel selection and local-port conflict tests.
-10. Parallel runtime fault isolation: one failed Profile must not cancel healthy Profile runtimes.
-11. Swift arm64 and x86_64 typecheck.
-12. macOS offscreen UI rendering for local/remote configuration and path diagnostics.
-13. Remote Bundle per-Profile telemetry isolation and hidden Relay endpoint rendering.
-14. Default-collapsed and expanded Stream/Lifecycle and Window/Credit resource panels.
-15. Linux amd64 native runtime validation of managed encrypted Profile/Bundle configuration.
-16. Universal macOS DMG plus Linux amd64/arm64 Client, Landing and Provisioning builds.
-17. Frozen-source reproducibility and Source-ID binding for published artifacts.
+9. Persistent managed LKG cache round-trip, URL-fingerprint isolation, 0600 file mode, selected-ID persistence and cache-first launch planning.
+10. 48-hour refresh due/retry policy and proof that a successful refresh is not applied immediately while a runtime is active.
+11. Bundle single_select/parallel selection and local-port conflict tests.
+12. Parallel runtime fault isolation: one failed Profile must not cancel healthy Profile runtimes.
+13. Swift arm64 and x86_64 typecheck.
+14. macOS offscreen UI rendering for local/remote configuration and path diagnostics.
+15. Remote Bundle per-Profile telemetry isolation and hidden Relay endpoint rendering.
+16. Default-collapsed and expanded Stream/Lifecycle and Window/Credit resource panels.
+17. Linux amd64 native runtime validation of managed encrypted Profile/Bundle configuration.
+18. Universal macOS DMG plus Linux amd64/arm64 Client, Landing and Provisioning builds.
+19. Frozen-source reproducibility and Source-ID binding for published artifacts.
 
 ## Current implementation bounds
 
-Release validation assumes the v0.10.3 current bounds:
+Release validation assumes the v0.10.4 current bounds:
 
 - 2–8 configured Relays per Profile;
 - up to 8 MPX/4 Carriers per Session;
