@@ -1,6 +1,6 @@
-# MPTCP Desk 0.10.6 validation
+# MPTCP Desk 0.10.7 validation
 
-A 0.10.6 release candidate must cover:
+A 0.10.7 release candidate must cover:
 
 - remote management is default-off and desired control is ignored while locally disabled;
 - HTTPS-only control-server validation, with loopback HTTP allowed only for development;

@@ -1,6 +1,6 @@
 # MPX/4 Draft 04 implementation profile
 
-MPTCP Userspace **0.10.6** implements MPX/4 Draft 04 over ordinary TCP Carriers. The normative protocol source tracked by this implementation is Dsd1001/MPX-4 commit 5854899b63676eb8bb43048678ef99b4589170c3. **0.10.6 intentionally keeps the exact MPX/4 Draft 04 wire/state/scheduler semantics shipped in 0.10.5. This release adds macOS distribution/update and remote device-control behavior above the transport and does not advance the protocol draft.**
+MPTCP Userspace **0.10.7** implements MPX/4 Draft 04 over ordinary TCP Carriers. The normative protocol source tracked by this implementation is Dsd1001/MPX-4 commit 5854899b63676eb8bb43048678ef99b4589170c3. **0.10.7 intentionally keeps the exact MPX/4 Draft 04 wire/state/scheduler semantics shipped in 0.10.5. This patch release refreshes the macOS and Provisioning interfaces; signed updates and remote device control remain as shipped in 0.10.6. The protocol draft does not advance.**
 
 Provisioning is a separate configuration/control plane and does not alter MPX/4 data-plane bytes. Every active Profile owns an independent MPX Session and Carrier set.
 
@@ -64,7 +64,7 @@ CARRIER_CLOSE and SESSION_CLOSE carry the registered Error Code, Trigger Frame T
 
 Application DATA requires both Stream and Session credit. Credit is absolute and monotonic. Retransmission/reinjection of already committed logical bytes consumes no new logical credit.
 
-Current v0.10.6 bounds:
+Current v0.10.7 bounds:
 
 - active peer-initiated Streams: 2048;
 - STREAM_DATA payload: 32 KiB;

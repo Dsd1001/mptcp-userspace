@@ -1,6 +1,6 @@
 # MPTCP Userspace 架构说明
 
-本文描述 **v0.10.6 / MPX/4 Draft 04** 的当前架构。历史 MPX/2、MPX/3 文档仅用于实现考古，不是当前部署说明。
+本文描述 **v0.10.7 / MPX/4 Draft 04** 的当前架构。历史 MPX/2、MPX/3 文档仅用于实现考古，不是当前部署说明。
 
 ## 1. 组件
 
@@ -29,7 +29,7 @@ Client
 
 ## 2. Session、Carrier 与 Stream
 
-一份 Userspace Profile 对应一个独立 MPX Session。当前 v0.10.6 每个 Profile 配置 2–8 条 Relay，每个 Session 最多 8 条 Carrier。
+一份 Userspace Profile 对应一个独立 MPX Session。当前 v0.10.7 每个 Profile 配置 2–8 条 Relay，每个 Session 最多 8 条 Carrier。
 
 Carrier 是普通 TCP 连接。每条 Carrier 都通过 MPX/4 CREATE/JOIN 完成认证，并有独立的 Generation、traffic key、IV、序号空间与路径统计。
 
@@ -55,7 +55,7 @@ parallel 模式下不同 Profile 仍然是独立 Session，不会合并 Relay。
 
 ## 3.1 Parallel runtime supervisor
 
-0.10.6 的 parallel Bundle 为每个已选择 Profile 维护独立 runtime supervisor。单个 Profile 退出后按 1s / 2s / 5s / 10s / 30s、随后每 30s 自动重试；进入 listening 后清零退避。其他健康 Profile 不重启。即使全部 Profile 暂时断开，Bundle supervisor 仍保持运行等待恢复。
+0.10.7 的 parallel Bundle 为每个已选择 Profile 维护独立 runtime supervisor。单个 Profile 退出后按 1s / 2s / 5s / 10s / 30s、随后每 30s 自动重试；进入 listening 后清零退避。其他健康 Profile 不重启。即使全部 Profile 暂时断开，Bundle supervisor 仍保持运行等待恢复。
 
 ## 4. Scheduler
 

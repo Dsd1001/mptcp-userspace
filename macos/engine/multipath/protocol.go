@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Version             = "0.10.6"
+	Version             = "0.10.7"
 	CapabilityRevision  = 4 // MPX/4 Draft 04
 	MaxPayload          = 32768
 	MaxRecordSize       = 65536

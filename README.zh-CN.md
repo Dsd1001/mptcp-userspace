@@ -4,21 +4,17 @@ MPTCP Userspace 是一个面向 macOS 与 Linux 的**应用层多路径传输系
 
 它**不是内核 MPTCP，也不是 QUIC**。Relay 只需要转发普通 TCP 字节；MPX/4 的认证、加密、Stream 状态、流控和调度都由 Client 与 Landing 端到端完成。
 
-**当前正式版本：v0.10.6 · MPX/4 Draft 04**
+**当前正式版本：v0.10.7 · MPX/4 Draft 04**
 
-- [最新 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.6)
+- [最新 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.7)
 - [MPX/4 规范仓库](https://github.com/Dsd1001/MPX-4)
 - [English README](README.md)
 
-## 0.10.6：内置签名更新 + 可选远程设备管理
+## 0.10.7：Mac 与 Provisioning 前端界面更新
 
-MPTCP Desk 现在内置 Sparkle 2 更新通道，可以手动检查更新，也可以每 24 小时后台检查。远程后台发出的“更新客户端”同样只能触发这条 EdDSA 签名更新通道，不能指定任意下载 URL，更不能远程执行任意程序。
+0.10.7 正式带入新版 **MPTCP Desk** 界面与重新设计的 **Provisioning** 管理后台。导航、状态展示、配置编辑和设备管理视图都重新整理，但底层 Profile/Bundle 与 Device Control API 语义不变。
 
-Provisioning 管理后台新增 **Devices**。远程管理在 Mac 上默认关闭；必须由用户在本机手动开启、本机填写 HTTPS 控制服务器、本机输入一次性配对码。Provisioning / Control API **不能**远程打开这个开关，也不能改写控制服务器地址。
-
-配对后 MPTCP Desk 只主动发起 HTTPS long polling，因此 Mac 不需要公网 IP，处于 NAT / CGNAT 后也能使用。后台可以分配 Profile/Bundle、持久保存 running/stopped Desired State、请求同步配置、重启转发、请求签名客户端更新，并查看版本、运行状态和逐 Profile 状态。系统明确不提供 Shell / 任意命令执行能力。
-
-0.10.5 的 Parallel Profile 自动重连和 0.10.4 的 LKG 本地缓存机制全部保留。**MPX/4 继续使用 Draft 04 / WireProtocol 4 / CapabilityRevision 4。**
+0.10.6 的 Sparkle 2 签名更新与可选远程设备管理、0.10.5 的 Parallel Profile 自动重连、0.10.4 的 LKG 本地缓存机制全部保留。**MPX/4 继续使用 Draft 04 / WireProtocol 4 / CapabilityRevision 4**，本次 patch release 不修改 Scheduler、flow-control 或 key schedule。
 
 ## 项目包含什么
 
@@ -118,7 +114,7 @@ MPTCP Desk 展示的是 Session 与路径运行状态，而不是单一“测速
 
 ## 当前实现边界
 
-v0.10.6 当前实现限制为：
+v0.10.7 当前实现限制为：
 
 - 每个 Profile **2–8 条 Relay**；
 - 每个 MPX/4 Session **最多 8 条 Carrier**；
@@ -142,9 +138,9 @@ Weighted 的 download_mbps 必填，upload_mbps 可选；未填上行容量时�
 
 ## 兼容性
 
-当前正式支持组合是 **0.10.6 Client + 0.10.6 Landing + 0.10.6 Provisioning**。
+当前正式支持组合是 **0.10.7 Client + 0.10.7 Landing + 0.10.7 Provisioning**。
 
-0.10.6 完整沿用 0.10.5 的 MPX/4 Draft 04 数据面、Carrier Generation/Error Scope、Scheduler、flow-control 与 key schedule 语义；本版只在传输协议之上新增 macOS 签名更新与远程设备控制能力。0.10.6 Client 继续接受旧的明文 schema-1/schema-2 Provisioning 响应用于迁移；0.10.2 及之后的 Provisioning 默认返回不透明加密封装。
+0.10.7 完整沿用 0.10.5 的 MPX/4 Draft 04 数据面、Carrier Generation/Error Scope、Scheduler、flow-control 与 key schedule 语义；本次 patch release 只更新 macOS 与 Provisioning 前端界面，0.10.6 引入的签名更新和远程设备控制语义保持不变。0.10.7 Client 继续接受旧的明文 schema-1/schema-2 Provisioning 响应用于迁移；0.10.2 及之后的 Provisioning 默认返回不透明加密封装。
 
 MPX/4 之前的版本和相关设计文档仍保留在仓库历史中，但不应再作为当前部署说明。
 
@@ -185,6 +181,6 @@ MPTCP_GO=/path/to/go ./scripts/build-provisioning.sh
 - [调度模式](docs/userspace/SCHEDULER-MODES.md)
 - [部署与回滚](docs/userspace/DEPLOYMENT.zh-CN.md)
 - [验证与发布边界](docs/userspace/VALIDATION.md)
-- [v0.10.6 Release Notes](docs/userspace/RELEASE.zh-CN.md)
+- [v0.10.7 Release Notes](docs/userspace/RELEASE.zh-CN.md)
 
 仓库中带有 MPX/2、MPX/3 或旧版本号的文档保留用于历史与实现考古，不是当前协议/部署指南。

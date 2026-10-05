@@ -1,16 +1,16 @@
-# 0.10.6 部署、升级与回滚
+# 0.10.7 部署、升级与回滚
 
-本文面向 **MPTCP Userspace v0.10.6 / MPX/4 Draft 04**。正式环境建议 Client、Landing、Provisioning 使用同一版本。
+本文面向 **MPTCP Userspace v0.10.7 / MPX/4 Draft 04**。正式环境建议 Client、Landing、Provisioning 使用同一版本。
 
 ## 1. 发布文件
 
-从 v0.10.6 Release 下载并校验：
+从 v0.10.7 Release 下载并校验：
 
-- MPTCP-Desk-0.10.6-universal.dmg
+- MPTCP-Desk-0.10.7-universal.dmg
 - mptcp-client-linux-amd64 / arm64
 - mptcp-landing / mptcp-landing-linux-arm64
 - mpx-provision / mpx-provision-linux-arm64
-- MPTCP-Userspace-0.10.6-SHA256SUMS
+- MPTCP-Userspace-0.10.7-SHA256SUMS
 - SOURCE_ID / PROVENANCE.json / TESTS.json
 
 任何二进制替换前先确认 SHA256 与 Source-ID。
@@ -54,13 +54,13 @@ Provisioning 建议只监听 loopback，例如 127.0.0.1:8088，再由 nginx/Cad
 - admin-password；
 - reverse proxy 配置。
 
-0.10.6 保持现有 Profile/Bundle 数据模型与 URL；不需要迁移数据。
+0.10.7 保持现有 Profile/Bundle 数据模型与 URL；不需要迁移数据。
 
 公网 /v1/config/ 与 /v1/bundle/ 响应是 v/n/d 加密 envelope。不要用“浏览器看不到明文”替代 HTTPS；完整 URL 本身仍是 bearer credential。
 
 ### 3.1 Device Control
 
-0.10.6 的远程设备控制复用同一个 Provisioning HTTPS 站点，不需要额外开放 Client 端口。Mac 主动访问 /v1/device/*，因此 NAT / CGNAT 后的设备可以正常使用。
+0.10.7 的远程设备控制复用同一个 Provisioning HTTPS 站点，不需要额外开放 Client 端口。Mac 主动访问 /v1/device/*，因此 NAT / CGNAT 后的设备可以正常使用。
 
 若 nginx/Caddy 对 upstream 设置了较短超时，请保证 Device long poll 的响应写超时至少大于 25 秒，建议 35–60 秒。不要记录 Authorization header，也建议对 /v1/device/ 路径关闭敏感 header/body 日志。
 
@@ -70,7 +70,7 @@ Provisioning 建议只监听 loopback，例如 127.0.0.1:8088，再由 nginx/Cad
 
 替换 App 前先停止旧 runtime。
 
-0.10.6 首页有：
+0.10.7 首页有：
 
 - 本地配置；
 - 远端配置。
@@ -79,7 +79,7 @@ Provisioning 建议只监听 loopback，例如 127.0.0.1:8088，再由 nginx/Cad
 
 后台常驻开启时，登录、睡眠唤醒、网络恢复或 engine 异常后会重建 runtime。用户手动“停止”后不会自动拉起。
 
-0.10.6 首次远端同步成功后会建立持久化 LKG 缓存。后续启动、App/系统重启、睡眠唤醒恢复都直接使用匹配缓存启动，不等待 Provisioning API timeout。API 在后台更新；拿到新配置只替换下一次重连使用的缓存，不强制中断当前 Session。
+首次远端同步成功后会建立持久化 LKG 缓存。后续启动、App/系统重启、睡眠唤醒恢复都直接使用匹配缓存启动，不等待 Provisioning API timeout。API 在后台更新；拿到新配置只替换下一次重连使用的缓存，不强制中断当前 Session。
 
 缓存不设置过期时间。成功同步 48 小时后自动再检查；失败后按 1 分钟、5 分钟、30 分钟、3 小时退避并持续重试。更换 API URL 后旧缓存因来源指纹不匹配而不会被使用。
 
@@ -94,7 +94,7 @@ MPTCP Desk 的“设置”页包含：
 
 远程管理的本地开关与控制服务器地址不接受 API 下发。关闭开关后 Client 立即停止 long polling；解除配对还会删除本机 Keychain 设备凭据并请求服务端撤销。
 
-App 更新使用 Sparkle EdDSA 签名 Feed。0.10.6 仍为 ad-hoc codesign / 未 notarize，更新真实性由独立 EdDSA 签名校验；后续若切换 Developer ID / notarization，不改变控制协议。
+App 更新使用 Sparkle EdDSA 签名 Feed。0.10.7 仍为 ad-hoc codesign / 未 notarize，更新真实性由独立 EdDSA 签名校验；后续若切换 Developer ID / notarization，不改变控制协议。
 
 ## 5. Linux Client
 

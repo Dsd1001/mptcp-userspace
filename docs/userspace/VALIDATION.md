@@ -1,6 +1,6 @@
-# v0.10.6 / MPX/4 Draft 04 validation and release limits
+# v0.10.7 / MPX/4 Draft 04 validation and release limits
 
-This document describes the current release gate. Historical version-specific validation files are not the source of truth for v0.10.6.
+This document describes the current release gate. Historical version-specific validation files are not the source of truth for v0.10.7.
 
 ## Required correctness gates
 
@@ -32,7 +32,7 @@ A release candidate must pass, at minimum:
 
 ## Current implementation bounds
 
-Release validation assumes the v0.10.6 current bounds:
+Release validation assumes the v0.10.7 current bounds:
 
 - 2–8 configured Relays per Profile;
 - up to 8 MPX/4 Carriers per Session;
@@ -50,7 +50,7 @@ Correctness, laboratory performance, capacity, build provenance and production/A
 
 A passing unit/race/offscreen test suite does not by itself prove WAN throughput or a specific production deployment. Performance claims must be tied to source-matched CAPACITY/RUNTIME evidence.
 
-## 0.10.6 control/update gates
+## 0.10.7 control/update gates
 
 - Device pairing secret isolation, revocation, observed-state report and offline desired-state persistence.
 - Exact whitelist of start/stop/config-sync/restart/signed-update behavior; unknown command fields rejected.

@@ -2,19 +2,19 @@
 
 [English](QUICKSTART.md)
 
-本文面向 **MPTCP Userspace v0.10.6 / MPX/4 Draft 04**。
+本文面向 **MPTCP Userspace v0.10.7 / MPX/4 Draft 04**。
 
 ## 1. 下载并校验
 
-从 [v0.10.6 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.6) 下载需要的文件。
+从 [v0.10.7 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.7) 下载需要的文件。
 
 常用产物：
 
-- MPTCP-Desk-0.10.6-universal.dmg
+- MPTCP-Desk-0.10.7-universal.dmg
 - mptcp-client-linux-amd64 / arm64
 - mptcp-landing / mptcp-landing-linux-arm64
 - 需要远端配置时下载 mpx-provision / arm64
-- MPTCP-Userspace-0.10.6-SHA256SUMS
+- MPTCP-Userspace-0.10.7-SHA256SUMS
 
 安装前先校验 SHA256。
 
@@ -30,7 +30,7 @@ chmod 755 ./mptcp-landing
 
 已有部署升级时，先备份当前二进制、systemd unit 与配置，再替换二进制并重启服务。不要把 Transport Key 写进公开仓库、Issue 或普通日志。
 
-推荐正式组合为 0.10.6 Client + 0.10.6 Landing。
+推荐正式组合为 0.10.7 Client + 0.10.7 Landing。
 
 ## 3. 安装 Client
 
@@ -83,7 +83,7 @@ mptcp-client-linux-amd64 validate-managed < managed.json
 mptcp-client-linux-amd64 run-managed < managed.json
 ~~~
 
-远端 URL 必须使用 HTTPS。0.10.2+ Provisioning 的公网响应是加密 envelope，0.10.6 Client 会自动解密。
+远端 URL 必须使用 HTTPS。0.10.2+ Provisioning 的公网响应是加密 envelope，0.10.7 Client 会自动解密。
 
 ## 6. Parallel Bundle
 

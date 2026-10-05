@@ -1,4 +1,4 @@
-# MPX Provisioning 0.10.6
+# MPX Provisioning 0.10.7
 
 MPX Provisioning is the optional configuration/control plane for MPTCP Userspace. It is **not** a data proxy and does not change MPX/4 Draft 04 data-plane bytes.
 
@@ -67,7 +67,7 @@ This layer is intentionally lightweight: Profile/Bundle decryption still needs n
 
 **Possession of the complete URL still grants decryption capability.** HTTPS remains mandatory for remote use.
 
-0.10.6 clients also accept legacy plaintext schema-1/schema-2 responses for migration.
+0.10.7 clients also accept legacy plaintext schema-1/schema-2 responses for migration.
 
 ## 0.10.6 managed client cache
 
@@ -176,8 +176,8 @@ The public device endpoints use a per-device Bearer secret plus X-MPX-Device-ID.
 
 ## Upgrade compatibility
 
-0.10.6 keeps the existing Profile/Bundle data model and URL format. Existing records and URLs remain valid unless explicitly edited/rotated.
+0.10.7 keeps the existing Profile/Bundle data model and URL format. Existing records and URLs remain valid unless explicitly edited/rotated.
 
 When upgrading from a Provisioning version before 0.10.2, upgrade clients to 0.10.2+ before switching the server to encrypted envelope responses.
 
-For the current release, use a matched **0.10.6 Client + 0.10.6 Landing + 0.10.6 Provisioning** suite.
+For the current release, use a matched **0.10.7 Client + 0.10.7 Landing + 0.10.7 Provisioning** suite.
