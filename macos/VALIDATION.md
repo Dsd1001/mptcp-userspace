@@ -1,6 +1,6 @@
-# MPTCP Desk 0.10.11 validation
+# MPTCP Desk 0.10.12 validation
 
-A 0.10.11 release candidate must cover:
+A 0.10.12 release candidate must cover:
 
 - remote management is default-off and desired control is ignored while locally disabled;
 - HTTPS-only control-server validation, with loopback HTTP allowed only for development;
@@ -8,6 +8,8 @@ A 0.10.11 release candidate must cover:
 - signed Sparkle appcast / DMG metadata, pinned public key and embedded framework;
 - no direct main-App SecItem access for the three MPTCP Desk secrets;
 - frozen Keychain Broker v1 resource hash, Universal architectures, code signature and parent Designated Requirement enforcement;
+- the Broker v1 Base64 resource is byte-identical to the v0.10.11 tag and still decodes to SHA-256 `5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9` / cdhash `b74dfc856d47e78d221e6f08bd1fe8c359ef8f96`;
+- the 0.10.12 App cdhash differs from the installed 0.10.11 App while the App Designated Requirement remains identical;
 - two changed parent-App cdhash values successfully use the same Broker-backed validation Keychain partition;
 - untrusted direct Broker invocation is rejected;
 - remote update cannot specify an arbitrary URL or executable;

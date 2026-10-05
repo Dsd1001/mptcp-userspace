@@ -4,11 +4,17 @@ MPTCP Userspace is an **application-layer multipath transport** for macOS and Li
 
 It is **not kernel MPTCP** and it is **not QUIC**. Relay nodes only forward ordinary TCP bytes; MPX/4 authentication, encryption, stream state, flow control and scheduling are end-to-end between the Client and Landing.
 
-**Current macOS release: v0.10.11 · MPX/4 Draft 04**
+**Current macOS release: v0.10.12 · MPX/4 Draft 04**
 
-- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.11)
+- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.12)
 - [MPX/4 specification](https://github.com/Dsd1001/MPX-4)
 - [中文说明](README.zh-CN.md)
+
+## v0.10.12: frozen Broker continuity validation
+
+0.10.12 is the first update that deliberately reuses the **exact same MPTCPKeychainBroker v1 bytes** introduced in 0.10.11. The main App is rebuilt as 0.10.12 / build 31, so its code-signing cdhash changes, while the Broker SHA-256, Broker cdhash and signing requirement remain unchanged.
+
+This release exists to validate the separation boundary in a real Sparkle update: after the one-time 0.10.10 → 0.10.11 Broker authorization, upgrading 0.10.11 → 0.10.12 should not require the three MPTCP Desk Keychain permissions again. MPX/4, scheduler, flow control and runtime semantics are unchanged.
 
 ## v0.10.11: frozen Keychain Broker
 
