@@ -4,11 +4,17 @@ MPTCP Userspace is an **application-layer multipath transport** for macOS and Li
 
 It is **not kernel MPTCP** and it is **not QUIC**. Relay nodes only forward ordinary TCP bytes; MPX/4 authentication, encryption, stream state, flow control and scheduling are end-to-end between the Client and Landing.
 
-**Current release: v0.10.7 · MPX/4 Draft 04**
+**Current macOS release: v0.10.9 · MPX/4 Draft 04**
 
-- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.7)
+- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.9)
 - [MPX/4 specification](https://github.com/Dsd1001/MPX-4)
 - [中文说明](README.zh-CN.md)
+
+## v0.10.9: stable macOS signing identity
+
+0.10.9 is a macOS-only signing-continuity update for MPTCP Desk. The app keeps the same `org.mptcp.desktop` bundle identifier and is signed with the long-lived `MPTCP Desk Stable Local Code Signing` identity so Keychain can recognize successive updater builds as the same application. MPX/4, scheduler behavior, Linux Client, Landing and Provisioning behavior are unchanged.
+
+The first migration from an older ad-hoc-signed build can still require Keychain authorization for existing secrets. Updates between releases signed by this same identity are the continuity path being validated by 0.10.9.
 
 ## v0.10.7: refreshed macOS and Provisioning interfaces
 

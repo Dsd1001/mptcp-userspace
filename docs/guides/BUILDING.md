@@ -1,39 +1,23 @@
 # Building from source
 
-[中文版](BUILDING.zh-CN.md)
-
-For reproducible v0.9.5 work, check out the release tag first:
-
-~~~sh
-git checkout v0.9.5
-~~~
-
-The release source identity is:
-
-~~~text
-3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
-~~~
-
-Verify it with:
-
-~~~sh
-python3 scripts/source-manifest.py --id
-~~~
-
 ## Toolchain
 
-The Go module declares Go 1.23.0.
+The release build uses:
 
-The full macOS DMG build also uses Apple command-line tools including:
+- Go for the engine, Linux Client, Landing and Provisioning;
+- Swift / Xcode Command Line Tools for the macOS UI;
+- Sparkle 2.10.0, pinned by SHA-256;
+- standard macOS signing and disk-image tools.
 
-- xcrun / macOS SDK
-- swiftc
-- lipo
-- iconutil
-- codesign
-- hdiutil
+Set `MPTCP_GO` when the required Go toolchain is not the default `go`.
 
-The build targets macOS 13+ and produces arm64/x86_64 Universal application binaries.
+## Build Linux Client
+
+~~~sh
+./scripts/build-linux-client.sh
+~~~
+
+The script emits amd64 and arm64 binaries plus BUILDINFO and SHA256 files.
 
 ## Build Linux Landing
 
@@ -41,29 +25,44 @@ The build targets macOS 13+ and produces arm64/x86_64 Universal application bina
 ./scripts/build-userspace-landing.sh
 ~~~
 
-You may select a Go binary explicitly:
+The Landing build uses CGO_ENABLED=0, GOOS=linux and GOARCH=amd64/arm64.
+
+## Build Provisioning
 
 ~~~sh
-MPTCP_GO=/path/to/go ./scripts/build-userspace-landing.sh
+./scripts/build-provisioning.sh
 ~~~
-
-Output is written under the versioned dist/userspace-<version>/ directory and includes:
-
-- mptcp-landing
-- mptcp-landing.sha256
-- mptcp-landing.BUILDINFO
-
-The Landing build uses CGO_ENABLED=0, GOOS=linux and GOARCH=amd64.
 
 ## Build the macOS DMG
 
-On macOS with the required Apple toolchain:
+Official updater builds use the pinned long-lived local signing identity:
 
 ~~~sh
 ./macos/build.sh
 ~~~
 
-The script builds both arm64 and x86_64 Swift/Go components, combines them into a Universal app, signs the app, verifies the signature, and creates the DMG. By default it keeps the local ad-hoc signing behavior. For a distributable updater build, set `MPTCP_CODESIGN_IDENTITY` to a Developer ID Application identity; the script then signs the app and embedded Sparkle helpers with runtime hardening and a secure timestamp.
+The default identity is `MPTCP Desk Stable Local Code Signing`. Its public certificate is pinned at
+`macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt`; the private key stays only in the release
+machine's login Keychain and must never be committed. The build verifies that the Keychain certificate
+fingerprint matches the repository pin and records the resulting Designated Requirement in
+`MPTCP-Desk.BUILDINFO`.
+
+For a contributor-only ad-hoc build:
+
+~~~sh
+MPTCP_CODESIGN_IDENTITY=- ./macos/build.sh
+~~~
+
+For a Developer ID build, explicitly select that mode:
+
+~~~sh
+MPTCP_CODESIGN_STYLE=developer-id \
+MPTCP_CODESIGN_IDENTITY='Developer ID Application: ...' \
+./macos/build.sh
+~~~
+
+The Developer ID mode enables hardened runtime and timestamping. Notarization remains available through
+`MPTCP_NOTARY_PROFILE`, and is only accepted with `MPTCP_CODESIGN_STYLE=developer-id`.
 
 Expected output includes:
 
@@ -71,27 +70,45 @@ Expected output includes:
 - MPTCP-Desk-<version>-SHA256SUMS
 - MPTCP-Desk.BUILDINFO
 
-The default app is ad-hoc signed and the DMG is not notarized. To notarize a release, store App Store Connect credentials in a notarytool keychain profile and pass `MPTCP_NOTARY_PROFILE`; this requires a non-ad-hoc `MPTCP_CODESIGN_IDENTITY`. Signing and notarization do not guarantee an unattended update:
+### Why the stable local certificate exists
 
-- **Keychain access:** the app stores the provisioning URL, transport key, and remote-management credential as three separate Keychain items. The current ad-hoc signature has a designated requirement based on code hashes, which change when the app is rebuilt. Existing Keychain permissions may therefore prompt again after an update, potentially for multiple items. Release builds should preserve the bundle identifier and a compatible Developer ID signing requirement across versions. Migration from existing ad-hoc builds may still require local authorization for the existing items; a locked Keychain can also require interaction. The app must not grant all applications access or fall back to plaintext storage to suppress these prompts.
-- **Installation authorization:** replacing an app depends on ownership and write permissions for the installed app and its location. A Developer ID signature does not grant administrator privileges or remove a required installation authorization prompt.
-- **Notarization and update signatures:** Apple notarization addresses Gatekeeper distribution checks. Sparkle's EdDSA signature verifies update authenticity. Neither grants access to Keychain items or protected installation locations.
+MPTCP Desk stores three independent secrets in Keychain: the transport key, Provisioning URL and
+remote-management credential. An ad-hoc signature has a content-hash-based Designated Requirement, so a
+rebuilt App is a different Keychain client and macOS may ask for authorization again for each item.
 
-The Developer ID/notarization build path requires a usable signing identity on the build machine. Its presence in the script alone does not mean a release was built with it or that unattended updates have been verified.
+The long-lived self-signed code-signing certificate gives successive releases a stable certificate anchor,
+bundle identifier and Designated Requirement. This follows Apple's code-signing guidance for Keychain ACL
+tracking; Developer ID is not required for this specific identity-continuity property.
+
+Migration from an already-installed ad-hoc build is intentionally one-time: the first stable-signed build may
+still require authorization for existing Keychain items because those items were created for the old ad-hoc
+requirement. After that authorization, validate with two consecutively built versions signed by the same
+certificate. The second update is the important regression test: it should not ask again for the three
+Keychain items.
+
+Do not weaken Keychain ACLs, grant all applications access, or move secrets to plaintext storage to avoid
+prompts.
+
+The stable certificate is a local identity, not Apple trust/notarization. Gatekeeper distribution and
+installation-directory write authorization are separate concerns. Sparkle EdDSA still authenticates the update
+payload independently.
+
+### Release key custody
+
+The private key is the continuity identity for all future local-signed releases. Export it once as a
+password-protected PKCS#12 backup, store that backup offline, and do not rotate the certificate during ordinary
+updates. Losing or replacing this key creates another Keychain identity migration.
 
 ## Source identity behavior
 
-The build scripts compute Source-ID before producing binaries and verify that the reviewed source did not change during the build.
+The build scripts compute Source-ID before producing binaries and verify that reviewed source does not change
+during the build. The pinned public local-signing certificate is part of the source manifest; the private key is
+not.
 
-The v0.9.5 Git tag is the authoritative source snapshot for the published release assets. Documentation-only files under docs/guides and the top-level README files are intentionally outside the release source manifest, so improving public usage documentation does not change the frozen release Source-ID.
+The Git tag for each published version is the authoritative source snapshot for that release. Documentation-only
+files under docs/guides and the top-level README files are intentionally outside the release source manifest.
 
 ## Validation
 
-Building successfully is not equivalent to release acceptance.
-
-The repository contains release-gate and scheduler-gate scripts, but the published v0.9.5 evidence in the GitHub Release is the authoritative record of which gates passed and which higher-level runtime tests were not rerun.
-
-See:
-
-- [Validation](../userspace/VALIDATION.md)
-- [v0.9.5 release notes](../userspace/RELEASE.zh-CN.md)
+Building successfully is not equivalent to release acceptance. A release candidate must also pass the gates in
+[Validation](../userspace/VALIDATION.md) and publish source-matched evidence.

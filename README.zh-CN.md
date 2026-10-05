@@ -4,11 +4,17 @@ MPTCP Userspace 是一个面向 macOS 与 Linux 的**应用层多路径传输系
 
 它**不是内核 MPTCP，也不是 QUIC**。Relay 只需要转发普通 TCP 字节；MPX/4 的认证、加密、Stream 状态、流控和调度都由 Client 与 Landing 端到端完成。
 
-**当前正式版本：v0.10.7 · MPX/4 Draft 04**
+**当前 macOS 正式版本：v0.10.9 · MPX/4 Draft 04**
 
-- [最新 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.7)
+- [最新 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.9)
 - [MPX/4 规范仓库](https://github.com/Dsd1001/MPX-4)
 - [English README](README.md)
+
+## 0.10.9：稳定 macOS 代码签名身份
+
+0.10.9 是 MPTCP Desk 的 macOS 单独更新，用于固定后续版本的代码签名身份。App 继续使用 `org.mptcp.desktop` Bundle ID，并统一由长期保存的 `MPTCP Desk Stable Local Code Signing` 身份签名，让 Keychain 可以把连续更新识别为同一个应用。MPX/4、调度器、Linux Client、Landing 与 Provisioning 行为均不变。
+
+从旧 ad-hoc 版本首次迁移到稳定签名版本时，已有 Keychain 凭据仍可能要求一次重新授权；0.10.9 用于验证此后使用同一签名身份的连续更新不再重复请求这些授权。
 
 ## 0.10.7：Mac 与 Provisioning 前端界面更新
 

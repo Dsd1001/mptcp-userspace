@@ -158,12 +158,34 @@ def main() -> None:
         for info in buildinfos:
             if 'Source-ID: '+identity not in (out/info).read_text():
                 raise ValueError('Buildinfo does not bind source: '+info)
+        desktop_buildinfo=(out/'MPTCP-Desk.BUILDINFO').read_text()
+        recorded_dr=next((line.split(': ',1)[1] for line in desktop_buildinfo.splitlines()
+                          if line.startswith('Designated-Requirement: ')), '')
+        if not recorded_dr:
+            raise ValueError('MPTCP-Desk.BUILDINFO missing Designated Requirement')
         run(['hdiutil','verify',str(out/dmg_name)])
         mounted=plistlib.loads(run(['hdiutil','attach','-readonly','-nobrowse','-plist',str(out/dmg_name)]))
         mount=next(pathlib.Path(e['mount-point']) for e in mounted['system-entities'] if 'mount-point' in e)
         try:
             app=mount/'MPTCP Desk.app'
             run(['codesign','--verify','--deep','--strict',str(app)])
+            dr_process=subprocess.run(['codesign','-d','-r-',str(app)],capture_output=True,timeout=30)
+            if dr_process.returncode:
+                raise RuntimeError('Unable to read packaged App designated requirement')
+            actual_dr=''
+            for line in dr_process.stderr.decode(errors='replace').splitlines():
+                normalized=line.lstrip('#').strip()
+                if normalized.startswith('designated => '):
+                    actual_dr=normalized[len('designated => '):]
+                    break
+            if not actual_dr or actual_dr!=recorded_dr:
+                raise ValueError('Packaged App designated requirement differs from BUILDINFO')
+            if 'Signing: stable-local self-signed (' in desktop_buildinfo:
+                cert=ROOT/'macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.pem'
+                cert_sha1=run(['openssl','x509','-in',str(cert),'-noout','-fingerprint','-sha1']).decode().split('=',1)[1].replace(':','').strip().lower()
+                cert_sha256=run(['openssl','x509','-in',str(cert),'-noout','-fingerprint','-sha256']).decode().split('=',1)[1].replace(':','').strip().upper()
+                if cert_sha1 not in actual_dr.lower() or ('cert-sha256='+cert_sha256) not in desktop_buildinfo:
+                    raise ValueError('Stable local signing identity does not match the pinned certificate')
             info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
             if info['CFBundleShortVersionString']!=version or info.get('MPTCPSourceID')!=identity or info.get('LSUIElement') is not True:
                 raise ValueError('App version/source/menu-bar metadata differs')
@@ -220,7 +242,7 @@ def main() -> None:
                 raise ValueError('Placeholder transport key accepted')
             profile=json.loads(files['macos/userspace-profile.example.json']);profile['transport_key']='0a'*32
             run([str(engine),'validate'],input=json.dumps(profile).encode())
-            checks.extend(['read-only DMG and strict ad-hoc signature','embedded Sparkle framework and pinned public update key',
+            checks.extend(['read-only DMG and strict code signature with BUILDINFO-matched designated requirement','embedded Sparkle framework and pinned public update key',
                 'ARM and x86_64 packaged engine execution','App and engine section-identical rebuilds from frozen source','schema2/3 compatibility and placeholder rejection',
                 'packaged documentation equals frozen source'])
         finally:
@@ -236,7 +258,7 @@ def main() -> None:
         'mpx-provision-linux-arm64','mpx-provision-linux-arm64.BUILDINFO']
     receipt={'version':version,'source_id':identity,'verified':True,'checks':checks,'reproduced':reproduced,
              'artifact_sha256':{name:source.sha((out/name).read_bytes()) for name in artifacts},
-             'limitations':['Not a reproducible DMG filesystem container','No Developer ID notarization',
+             'limitations':['Not a reproducible DMG filesystem container','Stable local signing is not Apple Developer ID/notarization',
                             'Intel execution is Rosetta, not physical Intel hardware','No GUI/keychain authorization interaction']}
     (out/'PROVENANCE.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps({k:v for k,v in receipt.items() if k!='reproduced'},indent=2))

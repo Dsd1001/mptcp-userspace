@@ -1,95 +1,63 @@
 # 从源码构建
 
-[English](BUILDING.md)
-
-如果要复现正式 v0.9.5，先切到发布 Tag：
-
-~~~sh
-git checkout v0.9.5
-~~~
-
-v0.9.5 冻结 Source-ID：
-
-~~~text
-3e2b06db8bc7d5ef3580c825e3cb16ac7f76b99c093706ce52ee17c51f05225f
-~~~
-
-可以用以下命令核对：
-
-~~~sh
-python3 scripts/source-manifest.py --id
-~~~
-
 ## 工具链
 
-Go module 声明：
+发布构建使用：
 
-~~~text
-go 1.23.0
+- Go：Engine、Linux Client、Landing、Provisioning；
+- Swift / Xcode Command Line Tools：macOS UI；
+- Sparkle 2.10.0，并固定 SHA-256；
+- macOS 自带 codesign、hdiutil 等工具。
+
+如果所需 Go 不是默认 `go`，使用 `MPTCP_GO` 指定。
+
+## Linux Client
+
+~~~sh
+./scripts/build-linux-client.sh
 ~~~
 
-完整 macOS DMG 构建还需要 Apple 命令行工具，包括：
-
-- xcrun / macOS SDK
-- swiftc
-- lipo
-- iconutil
-- codesign
-- hdiutil
-
-macOS 目标版本为 13+，最终 App 同时包含 arm64 和 x86_64。
-
-## 构建 Linux Landing
+## Linux Landing
 
 ~~~sh
 ./scripts/build-userspace-landing.sh
 ~~~
 
-如果系统默认 Go 不是需要的版本，可以显式指定：
+## Provisioning
 
 ~~~sh
-MPTCP_GO=/path/to/go ./scripts/build-userspace-landing.sh
+./scripts/build-provisioning.sh
 ~~~
-
-输出位于：
-
-~~~text
-dist/userspace-<version>/
-~~~
-
-主要文件：
-
-- mptcp-landing
-- mptcp-landing.sha256
-- mptcp-landing.BUILDINFO
-
-Landing 使用：
-
-- CGO_ENABLED=0
-- GOOS=linux
-- GOARCH=amd64
-
-因此得到 Linux amd64 静态二进制。
 
 ## 构建 macOS DMG
 
-在具备 Apple 工具链的 macOS 上：
+正式 App 内更新版本默认使用固定的长期本地签名身份：
 
 ~~~sh
 ./macos/build.sh
 ~~~
 
-脚本会：
+固定身份名称为 `MPTCP Desk Stable Local Code Signing`。其**公开证书**固定保存在
+`macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt`；**私钥只保存在发布机器的登录钥匙串中，
+绝不能提交到仓库**。构建脚本会核对钥匙串中的证书指纹与仓库 pin 是否一致，并把最终
+Designated Requirement 写入 `MPTCP-Desk.BUILDINFO`。
 
-1. 分别构建 arm64 / x86_64 Swift UI；
-2. 分别构建 arm64 / x86_64 Go Engine；
-3. 使用 lipo 合并 Universal binary；
-4. 生成 App Icon；
-5. 写入 Source-ID；
-6. 默认使用 ad-hoc codesign；也可以通过 `MPTCP_CODESIGN_IDENTITY` 使用 Developer ID Application 签名，并自动为 Sparkle 辅助进程启用 hardened runtime 和安全时间戳；
-7. 校验签名和双架构；
-8. 生成 DMG；
-9. 生成 SHA256 与 BUILDINFO。
+仅用于开发的 ad-hoc 构建要显式指定：
+
+~~~sh
+MPTCP_CODESIGN_IDENTITY=- ./macos/build.sh
+~~~
+
+如果以后使用 Developer ID，则显式切换：
+
+~~~sh
+MPTCP_CODESIGN_STYLE=developer-id \
+MPTCP_CODESIGN_IDENTITY='Developer ID Application: ...' \
+./macos/build.sh
+~~~
+
+Developer ID 模式会开启 hardened runtime 和 timestamp。只有该模式允许再配置
+`MPTCP_NOTARY_PROFILE` 做 Apple notarization。
 
 主要输出：
 
@@ -97,47 +65,43 @@ Landing 使用：
 - MPTCP-Desk-<version>-SHA256SUMS
 - MPTCP-Desk.BUILDINFO
 
-默认 App 使用 ad-hoc 签名，DMG 未公证。配置 `MPTCP_NOTARY_PROFILE` 后，脚本会提交 DMG 公证并附加公证票据；该选项必须同时提供非 ad-hoc 的 `MPTCP_CODESIGN_IDENTITY`。签名和公证并不保证更新全程无需授权，需要区分以下情况：
+### 为什么要使用稳定的自签名身份
 
-- **钥匙串访问：** App 将配置地址、传输密钥和远程管理凭据分为三个钥匙串条目保存。当前 ad-hoc 签名的身份要求绑定程序哈希，重新构建后哈希会变化，因此更新后可能重新请求一个或多个条目的访问授权。正式版本应保持 Bundle ID 和兼容的 Developer ID 签名身份；从已有 ad-hoc 版本迁移时，旧条目仍可能需要在本机重新授权。钥匙串锁定时也可能要求交互。不能通过允许所有应用访问或退回明文存储来消除弹窗。
-- **安装授权：** 是否能替换 App 取决于已安装应用及其目录的所有权和写权限。Developer ID 签名不会授予管理员权限，也不能取消系统确实需要的安装授权。
-- **公证与更新签名：** Apple 公证用于 Gatekeeper 的分发检查；Sparkle EdDSA 签名用于验证更新包来源。两者都不会直接授予钥匙串或受保护安装目录的访问权限。
+MPTCP Desk 当前有三类独立的 Keychain 凭据：
 
-Developer ID / 公证构建路径需要构建机器上有可用证书。脚本支持这些选项，不代表已发布的包已经使用它们，也不代表已验证无人值守更新。
+- MPX Transport Key；
+- Provisioning URL；
+- Remote Management credential。
 
-## Source-ID 与文档提交
+ad-hoc 签名的 Designated Requirement 绑定程序内容哈希；每次重新构建以后哈希变化，Keychain
+可能把新版 App 视为新的访问者，于是三个条目分别要求授权，这正好对应更新后连续出现多次密码提示。
 
-正式 Release 的 Source-ID 来自受控源码清单。
+长期保存的自签名代码签名证书提供稳定的证书锚点、Bundle ID 与 Designated Requirement。
+按照 Apple 的代码签名/Keychain ACL 规则，这一“身份连续性”并不要求 Developer ID。
 
-构建脚本会在构建前后重新计算 Source-ID，避免构建过程中源码漂移。
+从已有 ad-hoc 版本切换到稳定签名版本时属于一次性迁移：旧 Keychain 项目仍可能要求重新授权。
+完成第一次授权后，必须连续构建两个不同版本、使用**同一张证书**签名并完成一次真实更新测试。
+第二次更新才是关键回归：三个 Keychain 项目不应再次请求授权。
 
-GitHub 上的 v0.9.5 Tag 是正式 Release 二进制对应的权威源码快照。
+不能为了消除提示而给所有应用开放 Keychain、修改为明文保存或降低凭据保护。
 
-为了允许继续改进公开说明而不改变正式发布源码身份：
+稳定自签证书只解决本机代码身份连续性；它不等于 Apple notarization，也不会自动获得
+`/Applications` 的写权限。Sparkle 的 EdDSA 更新签名仍然独立负责更新包真实性。
 
-- 顶层 README；
-- docs/README；
-- docs/guides/
+### 私钥保管
 
-这些使用说明不进入 release source manifest。
+这张私钥就是后续版本的连续身份。必须导出一份带强密码的 PKCS#12 离线备份，不能随普通版本
+轮换证书。私钥丢失或换证书都会造成下一次 Keychain 身份迁移。
 
-因此 main 可以继续完善使用文档，而 v0.9.5 的 Source-ID 仍保持不变。
+## Source-ID
+
+构建脚本会在构建前后计算 Source-ID，防止构建过程中源码漂移。固定的**公开**签名证书进入
+source manifest；私钥不进入。
+
+每个正式版本对应的 Git tag 是该 Release 的权威源码快照。顶层 README 与 docs/guides 下的
+使用说明不进入 release source manifest。
 
 ## 测试与 Release Gate
 
-“成功编译”不等于“完整验收通过”。
-
-仓库包含 release/scheduler gate 脚本，但公开 v0.9.5 Release 中的验收文件才是该版本的权威记录。
-
-尤其不要因为本地 build 成功，就宣称已经完成：
-
-- 完整 30 秒 capacity matrix；
-- 真实 App+Surge 180 秒现场验收；
-- 任意公网速度保证；
-- 多日稳定性；
-- 独立安全审计。
-
-详见：
-
-- [验证边界](../userspace/VALIDATION.md)
-- [0.9.5 Release Notes](../userspace/RELEASE.zh-CN.md)
+“成功编译”不等于“完整验收通过”。正式发布还必须通过
+[验证边界](../userspace/VALIDATION.md) 中的 gates，并发布与 Source-ID 匹配的证据。
