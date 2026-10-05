@@ -71,7 +71,13 @@ Expected output includes:
 - MPTCP-Desk-<version>-SHA256SUMS
 - MPTCP-Desk.BUILDINFO
 
-The default DMG is ad-hoc signed and not notarized. Ad-hoc packages are suitable for local testing, but Sparkle may require macOS authorization when replacing an app in a protected location. A Developer ID signed app installed by the user can update remotely without repeated administrator prompts. To notarize a release, store App Store Connect credentials in a notarytool keychain profile and pass `MPTCP_NOTARY_PROFILE`; this requires a non-ad-hoc `MPTCP_CODESIGN_IDENTITY`.
+The default app is ad-hoc signed and the DMG is not notarized. To notarize a release, store App Store Connect credentials in a notarytool keychain profile and pass `MPTCP_NOTARY_PROFILE`; this requires a non-ad-hoc `MPTCP_CODESIGN_IDENTITY`. Signing and notarization do not guarantee an unattended update:
+
+- **Keychain access:** the app stores the provisioning URL, transport key, and remote-management credential as three separate Keychain items. The current ad-hoc signature has a designated requirement based on code hashes, which change when the app is rebuilt. Existing Keychain permissions may therefore prompt again after an update, potentially for multiple items. Release builds should preserve the bundle identifier and a compatible Developer ID signing requirement across versions. Migration from existing ad-hoc builds may still require local authorization for the existing items; a locked Keychain can also require interaction. The app must not grant all applications access or fall back to plaintext storage to suppress these prompts.
+- **Installation authorization:** replacing an app depends on ownership and write permissions for the installed app and its location. A Developer ID signature does not grant administrator privileges or remove a required installation authorization prompt.
+- **Notarization and update signatures:** Apple notarization addresses Gatekeeper distribution checks. Sparkle's EdDSA signature verifies update authenticity. Neither grants access to Keychain items or protected installation locations.
+
+The Developer ID/notarization build path requires a usable signing identity on the build machine. Its presence in the script alone does not mean a release was built with it or that unattended updates have been verified.
 
 ## Source identity behavior
 

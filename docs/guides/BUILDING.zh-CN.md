@@ -97,7 +97,13 @@ Landing 使用：
 - MPTCP-Desk-<version>-SHA256SUMS
 - MPTCP-Desk.BUILDINFO
 
-默认 DMG 为 ad-hoc 签名，未 notarize，适合本地测试。ad-hoc 包在替换 `/Applications` 下的 App 时可能触发 macOS 授权。正式远程更新应使用 Developer ID Application 签名；这样 Sparkle 可以在用户拥有 App 的情况下后台替换并重启，避免重复管理员密码提示。配置 `MPTCP_NOTARY_PROFILE` 后，脚本还会提交并 stapler notarize DMG；该选项必须同时提供非 ad-hoc 的 `MPTCP_CODESIGN_IDENTITY`。
+默认 App 使用 ad-hoc 签名，DMG 未公证。配置 `MPTCP_NOTARY_PROFILE` 后，脚本会提交 DMG 公证并附加公证票据；该选项必须同时提供非 ad-hoc 的 `MPTCP_CODESIGN_IDENTITY`。签名和公证并不保证更新全程无需授权，需要区分以下情况：
+
+- **钥匙串访问：** App 将配置地址、传输密钥和远程管理凭据分为三个钥匙串条目保存。当前 ad-hoc 签名的身份要求绑定程序哈希，重新构建后哈希会变化，因此更新后可能重新请求一个或多个条目的访问授权。正式版本应保持 Bundle ID 和兼容的 Developer ID 签名身份；从已有 ad-hoc 版本迁移时，旧条目仍可能需要在本机重新授权。钥匙串锁定时也可能要求交互。不能通过允许所有应用访问或退回明文存储来消除弹窗。
+- **安装授权：** 是否能替换 App 取决于已安装应用及其目录的所有权和写权限。Developer ID 签名不会授予管理员权限，也不能取消系统确实需要的安装授权。
+- **公证与更新签名：** Apple 公证用于 Gatekeeper 的分发检查；Sparkle EdDSA 签名用于验证更新包来源。两者都不会直接授予钥匙串或受保护安装目录的访问权限。
+
+Developer ID / 公证构建路径需要构建机器上有可用证书。脚本支持这些选项，不代表已发布的包已经使用它们，也不代表已验证无人值守更新。
 
 ## Source-ID 与文档提交
 
