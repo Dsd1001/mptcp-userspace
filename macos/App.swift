@@ -1172,417 +1172,441 @@ final class Model: ObservableObject {
     }
 }
 
+private struct DeskCard<Content: View>: View {
+    let content: Content
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) { content }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct DeskMetricTile: View {
+    let label: String
+    let value: String
+    let detail: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.system(size: 11, weight: .medium)).foregroundColor(.secondary)
+            Text(value).font(.system(size: 19, weight: .semibold, design: .rounded)).lineLimit(1)
+            Text(detail).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct DeskStatusPill: View {
+    let running: Bool
+    let text: String
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle().fill(running ? Color.green : Color.gray.opacity(0.65)).frame(width: 8, height: 8)
+            Text(text).font(.system(size: 11, weight: .semibold))
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background((running ? Color.green : Color.gray).opacity(0.12))
+        .foregroundColor(running ? .green : .secondary)
+        .clipShape(Capsule())
+    }
+}
+
+private struct DeskSidebarItem: View {
+    let title: String
+    let icon: String
+    let selected: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).frame(width: 17)
+                Text(title)
+                Spacer()
+            }
+            .font(.system(size: 12, weight: selected ? .semibold : .regular))
+            .foregroundColor(selected ? .primary : .secondary)
+            .padding(.horizontal, 10).padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Color.accentColor.opacity(0.12) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 struct DesktopView: View {
     @ObservedObject var model = Model.shared
     @ObservedObject var updater = AppUpdater.shared
-    var locked: Bool {model.configurationLocked}
+    var locked: Bool { model.configurationLocked }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                Image(systemName: "network").font(.system(size: 30)).foregroundColor(.teal)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("MPTCP Desk").font(.system(size: 23, weight: .semibold))
-                    HStack {Circle().fill(model.running ? Color.green : Color.secondary).frame(width: 7, height: 7);Text(model.status).font(.system(size: 12)).foregroundColor(.secondary)}
-                }
-                Spacer()
-                Text("0.10.6").font(.system(size: 11)).foregroundColor(.secondary)
-            }
-            Picker("视图", selection: $model.tab) {Text("连接").tag(0);Text("日志").tag(1);Text("路径诊断").tag(2);Text("设置").tag(3)}.pickerStyle(.segmented)
-            HStack(spacing:12) {
-                Text("配置").font(.system(size:12,weight:.medium))
-                Picker("配置", selection: Binding(get:{model.configurationSource}, set:{model.setConfigurationSource($0)})) {
-                    Text("本地配置").tag("local")
-                    Text("远端配置").tag("remote")
-                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth:320).disabled(locked)
-                Spacer()
-            }
-            if model.tab == 0 {
-                VStack(alignment: .leading, spacing: 12) {
-                    if model.remoteConfigurationSelected {
-                        VStack(alignment:.leading,spacing:8) {
-                            SecureField("请输入 Provisioning API 地址", text:$model.provisioningURL)
-                                .textFieldStyle(.roundedBorder)
-                            HStack(spacing:8) {
-                                Button("保存") { model.saveProvisioningURL() }.disabled(model.provisioningSyncing)
-                                Button { model.syncProvisioning() } label: {
-                                    if model.provisioningSyncing { ProgressView().controlSize(.small) } else { Label("同步配置",systemImage:"arrow.clockwise") }
-                                }.disabled(model.provisioningSyncing || model.provisioningURL.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
-                                if !model.provisioningURL.isEmpty { Button("清除") { model.clearProvisioningURL() }.disabled(model.provisioningSyncing) }
-                                Spacer()
-                                Text(model.provisioningStatus).font(.system(size:11)).foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                    if model.remoteConfigurationSelected && model.provisioningManaged {
-                        VStack(alignment:.leading,spacing:8) {
-                            Text(model.provisioningIsBundle ? "远端配置组" : "远端配置").font(.headline)
-                            if !model.provisioningDisplayName.isEmpty { Text(model.provisioningDisplayName).font(.system(size:12,weight:.medium)) }
-                            if !model.provisioningRevision.isEmpty { Text("Revision：\(model.provisioningRevision)").font(.system(size:11,design:.monospaced)).foregroundColor(.secondary) }
-                            if model.provisioningIsBundle {
-                                Text(model.provisioningBundleMode == "parallel" ? "多配置并行" : "单配置选择")
-                                    .font(.system(size:11,weight:.medium)).foregroundColor(.secondary)
-                                ForEach(model.provisioningProfiles) { choice in
-                                    let selected = model.provisioningSelectedProfileIDs.contains(choice.id)
-                                    Button { model.setProvisioningProfileSelected(choice.id, selected: !selected) } label: {
-                                        HStack(spacing:9) {
-                                            Image(systemName: model.provisioningBundleMode == "parallel" ? (selected ? "checkmark.square.fill" : "square") : (selected ? "largecircle.fill.circle" : "circle"))
-                                                .foregroundColor(selected ? .accentColor : .secondary)
-                                            VStack(alignment:.leading,spacing:2) {
-                                                Text(choice.name).font(.system(size:12,weight:.medium)).foregroundColor(.primary)
-                                                Text("127.0.0.1:\(choice.listenPort) · \(choice.mode == "userspace_multipath" ? "MPX/4" : "Native") · \(choice.relayCount) Relays")
-                                                    .font(.system(size:10,design:.monospaced)).foregroundColor(.secondary)
-                                                if let detail = model.provisioningRuntimeError[choice.id], !detail.isEmpty {
-                                                    Text(detail).font(.system(size:10)).foregroundColor(.red).lineLimit(2).help(detail)
-                                                }
-                                            }
-                                            Spacer()
-                                            if let state = model.provisioningRuntimeStatus[choice.id] { Text(state).font(.system(size:10)).foregroundColor(state == "错误" ? .red : .secondary) }
-                                        }.contentShape(Rectangle())
-                                    }.buttonStyle(.plain).disabled(model.running || model.busy || model.provisioningSyncing)
-                                }
-                                if model.provisioningBundleMode == "parallel" {
-                                    Text("端口冲突时无法启动；单个配置断线会独立自动重连，不影响其他可用配置。")
-                                        .font(.system(size:10)).foregroundColor(.secondary)
-                                }
-                            } else {
-                                Text("\(model.userspace ? "Userspace Multipath" : "Native MPTCP") · 127.0.0.1:\(model.listenPort) · \(model.userspace ? Model.schedulerTitle(model.schedulerMode) : "Native") · TCP \(model.tcpEnabled ? "开" : "关") · UDP \(model.udpEnabled ? "开" : "关") · \(model.relays.count) 条 Relay")
-                                    .font(.system(size:11)).foregroundColor(.secondary)
-                            }
-                        }.padding(10).background(Color.secondary.opacity(0.06)).cornerRadius(8)
-                    } else if !model.remoteConfigurationSelected {
-                        Picker("传输模式", selection: $model.mode) {
-                            Text("Userspace Multipath").tag("userspace_multipath")
-                            Text("Native MPTCP（兼容）").tag("native_mptcp")
-                        }.pickerStyle(.segmented).onChange(of: model.mode) { value in
-                            if value == "native_mptcp" { model.tcpEnabled = true }
-                        }
-                        if model.userspace {
-                            VStack(alignment:.leading,spacing:5) {
-                                Picker("调度策略", selection:$model.schedulerMode) {
-                                    ForEach(SchedulerPolicy.allCases) { policy in Text(policy.title).tag(policy.rawValue) }
-                                }.pickerStyle(.segmented).accessibilityIdentifier("scheduler-policy")
-                            }
-                            SecureField("Transport Key", text: $model.transportKey)
-                        }
-                        HStack {Text("本地转发入口").frame(width: 120, alignment: .leading);Text("127.0.0.1").foregroundColor(.secondary);TextField("端口", text: $model.listenPort).frame(width: 85);Spacer();Button {let p = NSPasteboard.general;p.clearContents();p.setString("127.0.0.1:\(model.listenPort)",forType:.string)} label:{Image(systemName:"doc.on.doc")}.help("复制本地 TCP 入口")}
-                        HStack {
-                            Toggle("TCP", isOn:$model.tcpEnabled).toggleStyle(.switch).disabled(!model.userspace)
-                            Toggle(model.userspace ? "UDP 独立多路径" : "UDP 逐包轮询（旧版）", isOn:$model.udpEnabled).toggleStyle(.switch)
-                            Spacer();Text("127.0.0.1:\(model.listenPort)").font(.system(size:12,design:.monospaced)).foregroundColor(.secondary)
-                        }
-                        Divider()
-                        HStack {Text("Relay 路径").font(.headline);Spacer();Button{model.relays.append(RelayRow(host:"",port:21001))}label:{Image(systemName:"plus")}.help("添加 Relay").disabled(locked || model.relays.count >= 8)}
-                        if model.userspace && model.schedulerMode == SchedulerPolicy.weighted.rawValue {
-                            Text("Weighted 模式需填写每条 Relay 的下行带宽。")
-                                .font(.system(size:10)).foregroundColor(.secondary)
-                        }
-                        ScrollView {
-                            VStack(spacing: 8) {
-                                ForEach($model.relays) { $relay in
-                                    HStack {
-                                        Image(systemName:"server.rack").foregroundColor(.secondary)
-                                        TextField("Relay IPv4",text:$relay.host)
-                                        TextField("端口",value:$relay.port,formatter: Self.portFormatter).frame(width:85)
-                                        if model.userspace && model.schedulerMode == SchedulerPolicy.weighted.rawValue {
-                                            TextField("下行 Mbps*",value:$relay.download_mbps,formatter: Self.bandwidthFormatter).frame(width:95)
-                                            TextField("上行 Mbps",value:$relay.upload_mbps,formatter: Self.bandwidthFormatter).frame(width:95)
-                                        }
-                                        Button{model.relays.removeAll{$0.id == relay.id}}label:{Image(systemName:"minus.circle")}.help("移除 Relay").disabled(model.relays.count <= 2)
-                                    }.disabled(locked)
-                                }
-                            }
-                        }.frame(height: 150)
-                    }
+        ZStack {
+            Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
+            HStack(spacing: 0) {
+                sidebar
+                Divider()
+                VStack(spacing: 0) {
+                    topbar
                     Divider()
-                }.disabled(locked)
-                HStack {
-                    Toggle("后台常驻", isOn: Binding(get:{model.backgroundResident}, set:{model.setBackgroundResident($0)})).toggleStyle(.switch).disabled(model.remoteConfigurationSelected)
-                    Spacer()
-                    Text(model.backgroundResidentStatus).font(.system(size:11)).foregroundColor(.secondary)
-                }
-                HStack(spacing:20) {
-                    metric(model.userspace ? "TCP 载路" : "Native 子流",model.paths < 0 ? "未知" : String(model.paths));metric("连接",String(model.connections))
-                    metric("上传",ByteCountFormatter.string(fromByteCount:model.sent,countStyle:.binary))
-                    metric("下载",ByteCountFormatter.string(fromByteCount:model.received,countStyle:.binary))
-                }.padding(.vertical,5)
-                if model.udpEnabled {
-                    HStack(spacing:20) {
-                        metric(model.userspace ? "UDP 载路 / 映射" : "UDP 映射",model.userspace ? "\(model.udpHealthyPaths) / \(model.udpConnections)" : String(model.udpConnections))
-                        metric("UDP 上传",ByteCountFormatter.string(fromByteCount:model.udpSent,countStyle:.binary))
-                        metric("UDP 下载",ByteCountFormatter.string(fromByteCount:model.udpReceived,countStyle:.binary))
+                    ScrollView {
+                        pageContent
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 20)
                     }
                 }
-            } else if model.tab == 1 {
-                ScrollView {Text(model.logs.joined(separator:"\n")).font(.system(size:11,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.topLeading)}
-                    .frame(maxWidth:.infinity,maxHeight:.infinity)
-            } else if model.tab == 2 {
-                VStack(alignment:.leading,spacing:12) {
-                    if model.remoteConfigurationSelected && model.provisioningIsBundle {
-                        HStack(spacing:16) {
-                            metric("配置", String(model.provisioningSelectedProfileIDs.count))
-                            metric("TCP 路径", String(model.paths))
-                            metric("连接", String(model.connections))
-                        }
-                        ScrollView {
-                            VStack(alignment:.leading,spacing:14) {
-                                ForEach(model.provisioningProfiles.filter { model.provisioningSelectedProfileIDs.contains($0.id) }) { choice in
-                                    let diagnostic = model.provisioningDiagnostics[choice.id] ?? ProfileDiagnosticState()
-                                    VStack(alignment:.leading,spacing:10) {
-                                        HStack {
-                                            VStack(alignment:.leading,spacing:2) {
-                                                Text(choice.name).font(.headline)
-                                                Text("127.0.0.1:\(choice.listenPort)").font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                                            }
-                                            Spacer()
-                                            let state = model.provisioningRuntimeStatus[choice.id] ?? "等待启动"
-                                            Text(state).font(.system(size:11,weight:.medium)).foregroundColor(state == "错误" ? .red : .secondary)
-                                        }
-                                        if let detail = model.provisioningRuntimeError[choice.id], !detail.isEmpty {
-                                            Text(detail).font(.system(size:11)).foregroundColor(.red)
-                                        }
-                                        Text("配置策略：\(Model.schedulerTitle(diagnostic.configuredSchedulerMode)) · 当前策略：\(Model.schedulerTitle(diagnostic.effectiveSchedulerMode)) · 自动切换：\(diagnostic.schedulerModeSwitches)")
-                                            .font(.system(size:12,weight:.medium))
-                                        Text("本端发送方向 · \(diagnostic.lastSchedulerModeReason.isEmpty ? "等待引擎诊断" : diagnostic.lastSchedulerModeReason)")
-                                            .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
-                                        HStack(spacing:16) {
-                                            metric("TCP 载路", String(diagnostic.paths))
-                                            metric("连接", String(diagnostic.connections))
-                                            metric("上传", ByteCountFormatter.string(fromByteCount:diagnostic.sent,countStyle:.binary))
-                                            metric("下载", ByteCountFormatter.string(fromByteCount:diagnostic.received,countStyle:.binary))
-                                        }
-                                        HStack(spacing:16) {
-                                            metric("当前重排",Self.bytes(diagnostic.reorderBytes))
-                                            metric("重排峰值",Self.bytes(diagnostic.reorderPeak))
-                                            metric("等待确认",Self.bytes(diagnostic.pendingBytes))
-                                        }
-                                        resourcePanels(
-                                            diagnostic.resources,
-                                            streamExpanded: profileStreamBinding(choice.id),
-                                            windowExpanded: profileWindowBinding(choice.id)
-                                        )
-                                        Text("TCP 重传：\(diagnostic.retransmits) · UDP 丢弃/超时事件：\(diagnostic.udpDropped)")
-                                            .font(.system(size:12)).foregroundColor(.secondary)
-                                        pathSection("TCP 路径", diagnostic.tcpPaths, hideEndpoint:true)
-                                        if !diagnostic.udpPaths.isEmpty { pathSection("UDP 路径", diagnostic.udpPaths, hideEndpoint:true) }
-                                    }.padding(12).background(Color.secondary.opacity(0.04)).cornerRadius(8)
-                                }
-                            }.frame(maxWidth:.infinity,alignment:.leading)
-                        }
-                    } else if model.userspace {
-                        Text("配置策略：\(Model.schedulerTitle(model.configuredSchedulerMode)) · 当前策略：\(Model.schedulerTitle(model.effectiveSchedulerMode)) · 自动切换：\(model.schedulerModeSwitches)")
-                            .font(.system(size:12,weight:.medium)).accessibilityIdentifier("scheduler-status")
-                        Text("本端发送方向 · \(model.lastSchedulerModeReason.isEmpty ? "等待引擎诊断" : model.lastSchedulerModeReason)")
-                            .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
-                        HStack(spacing:16) {
-                            metric("当前重排",Self.bytes(model.reorderBytes))
-                            metric("重排峰值",Self.bytes(model.reorderPeak))
-                            metric("等待确认",Self.bytes(model.pendingBytes))
-                        }
-                        resourcePanels(
-                            model.resources,
-                            streamExpanded: Binding(get:{model.localStreamResourceExpanded},set:{model.localStreamResourceExpanded=$0}),
-                            windowExpanded: Binding(get:{model.localWindowResourceExpanded},set:{model.localWindowResourceExpanded=$0})
-                        )
-                        Text("TCP 重传：\(model.retransmits) · UDP 丢弃/超时事件：\(model.udpDropped)")
-                            .font(.system(size:12)).foregroundColor(.secondary)
-                        ScrollView {
-                            VStack(alignment:.leading,spacing:14) {
-                                pathSection("TCP 路径", model.tcpPaths, hideEndpoint:model.remoteConfigurationSelected)
-                                if model.udpEnabled { pathSection("UDP 路径", model.udpPaths, hideEndpoint:model.remoteConfigurationSelected) }
-                            }.frame(maxWidth:.infinity,alignment:.leading)
-                        }
-                    } else {
-                        Text("Native MPTCP 路径统计由系统提供。")
-                            .font(.system(size:12)).foregroundColor(.secondary)
-                    }
-                }.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-            } else {
-                ScrollView {
-                    VStack(alignment:.leading,spacing:16) {
-                        VStack(alignment:.leading,spacing:10) {
-                            HStack {
-                                Text("远程管理").font(.headline)
-                                Spacer()
-                                Toggle("", isOn: Binding(get:{model.remoteManagementEnabled}, set:{model.setRemoteManagementEnabled($0)}))
-                                    .toggleStyle(.switch)
-                            }
-                            Text("默认关闭。只能在这台 Mac 上手动开启、配置服务器和完成配对；Provisioning / Control API 无权打开此开关或修改控制服务器。")
-                                .font(.system(size:11)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
-                            TextField("控制服务器，例如 https://control.example.com", text:$model.remoteControlServer)
-                                .textFieldStyle(.roundedBorder)
-                                .disabled(model.remoteManagementEnabled && !model.remoteDeviceID.isEmpty)
-                            HStack {
-                                Button("保存服务器") { model.saveRemoteControlServer() }
-                                    .disabled(model.remoteManagementEnabled && !model.remoteDeviceID.isEmpty)
-                                Spacer()
-                                Circle().fill(model.remoteControlConnected ? Color.green : Color.secondary).frame(width:7,height:7)
-                                Text(model.remoteControlStatus).font(.system(size:11)).foregroundColor(.secondary)
-                            }
-                            if model.remoteDeviceID.isEmpty {
-                                SecureField("一次性配对码", text:$model.remotePairingCode).textFieldStyle(.roundedBorder)
-                                Button("配对并启用") { model.pairRemoteManagement() }
-                                    .disabled(model.remoteControlServer.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || model.remotePairingCode.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
-                            } else {
-                                HStack {
-                                    Text("Device ID").font(.system(size:11)).foregroundColor(.secondary)
-                                    Text(model.remoteDeviceID).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
-                                    Spacer()
-                                    Button("解除配对…") { model.unpairRemoteManagement() }
-                                }
-                            }
-                            if let seen = model.remoteControlLastSeen {
-                                Text("最近控制连接：\(DateFormatter.localizedString(from: seen, dateStyle: .none, timeStyle: .medium))")
-                                    .font(.system(size:10)).foregroundColor(.secondary)
-                            }
-                        }.padding(12).background(Color.secondary.opacity(0.05)).cornerRadius(8)
+            }
+        }
+        .frame(minWidth: 700, minHeight: 620)
+    }
 
-                        VStack(alignment:.leading,spacing:10) {
-                            HStack {
-                                Text("客户端更新").font(.headline)
-                                Spacer()
-                                Button("检查更新…") { updater.checkForUpdates() }
-                            }
-                            Toggle("自动检查更新", isOn: Binding(
-                                get:{updater.automaticChecks},
-                                set:{updater.setAutomaticChecks($0)}
-                            )).toggleStyle(.switch)
-                            Text(updater.status).font(.system(size:11)).foregroundColor(.secondary)
-                            Text("更新由 Sparkle 2 验证 EdDSA 签名；远程“更新”也只能触发这一签名更新通道，不能下载或执行任意程序。")
-                                .font(.system(size:10)).foregroundColor(.secondary).fixedSize(horizontal:false,vertical:true)
-                        }.padding(12).background(Color.secondary.opacity(0.05)).cornerRadius(8)
-                    }.frame(maxWidth:.infinity,alignment:.topLeading)
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 17) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10).fill(LinearGradient(colors: [.indigo, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Image(systemName: "point.3.connected.trianglepath.dotted").foregroundColor(.white).font(.system(size: 17, weight: .semibold))
+                }.frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("MPTCP Desk").font(.system(size: 14, weight: .semibold))
+                    Text("MPX/4 Client").font(.system(size: 10)).foregroundColor(.secondary)
                 }
             }
-            if let problem = model.problem {
-                Label(problem,systemImage:"exclamationmark.triangle.fill").font(.system(size:12)).foregroundColor(.red).fixedSize(horizontal:false,vertical:true)
-            }
-            Spacer(minLength:0)
             Divider()
-            HStack {
-                Button{model.importProfile()}label:{Image(systemName:"square.and.arrow.down")}.help("导入配置").disabled(locked || model.remoteConfigurationSelected)
-                Button{model.save()}label:{Image(systemName:"square.and.arrow.down.on.square")}.help("保存配置").disabled(locked || model.remoteConfigurationSelected)
-                Menu {Button("开启系统聚合…"){model.changeAggregation(enabled:true)};Button("关闭系统聚合…"){model.changeAggregation(enabled:false)}} label:{Image(systemName:"gearshape")}.frame(width:42).help("仅 Native 模式需要系统聚合设置").disabled(locked || model.userspace)
-                Spacer()
-                Button("检查环境"){model.launch("doctor")}.disabled(locked)
-                if model.running || model.busy {
-                    Button{model.stop()}label:{Label("停止",systemImage:"stop.fill")}
-                } else {
-                    Button{model.startForwarding()}label:{Label("启动",systemImage:"play.fill")}.buttonStyle(.borderedProminent)
+            Text("WORKSPACE").font(.system(size: 10, weight: .bold)).foregroundColor(.secondary)
+            DeskSidebarItem(title: "连接概览", icon: "bolt.horizontal.circle", selected: model.tab == 0) { model.tab = 0 }
+            DeskSidebarItem(title: "路径诊断", icon: "waveform.path.ecg", selected: model.tab == 2) { model.tab = 2 }
+            DeskSidebarItem(title: "运行日志", icon: "doc.text.magnifyingglass", selected: model.tab == 1) { model.tab = 1 }
+            DeskSidebarItem(title: "设置", icon: "slider.horizontal.3", selected: model.tab == 3) { model.tab = 3 }
+            Spacer(minLength: 12)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("CURRENT STATE").font(.system(size: 10, weight: .bold)).foregroundColor(.secondary)
+                DeskStatusPill(running: model.running, text: model.status)
+                Text(model.remoteConfigurationSelected ? "远端配置" : "本地配置")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                if model.remoteManagementEnabled {
+                    Label(model.remoteControlConnected ? "设备已连接" : model.remoteControlStatus, systemImage: "lock.shield")
+                        .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
                 }
             }
-        }.padding(22).frame(minWidth:650,idealWidth:710,maxWidth:900,minHeight:800,idealHeight:850)
-    }
-    private func profileStreamBinding(_ id: String) -> Binding<Bool> {
-        Binding(
-            get: { model.profileStreamResourceExpanded.contains(id) },
-            set: { expanded in
-                var next = model.profileStreamResourceExpanded
-                if expanded { next.insert(id) } else { next.remove(id) }
-                model.profileStreamResourceExpanded = next
-            }
-        )
-    }
-    private func profileWindowBinding(_ id: String) -> Binding<Bool> {
-        Binding(
-            get: { model.profileWindowResourceExpanded.contains(id) },
-            set: { expanded in
-                var next = model.profileWindowResourceExpanded
-                if expanded { next.insert(id) } else { next.remove(id) }
-                model.profileWindowResourceExpanded = next
-            }
-        )
-    }
-    @ViewBuilder
-    func resourcePanels(_ resource: ResourceMetric?, streamExpanded: Binding<Bool>, windowExpanded: Binding<Bool>) -> some View {
-        DisclosureGroup(isExpanded: streamExpanded) {
-            if let resource {
-                VStack(alignment:.leading,spacing:5) {
-                    Text("入口 TCP \(resource.local_connections ?? 0) · MPX 占槽 \(resource.occupied_stream_slots ?? resource.active_streams)/\(resource.stream_limit) · 活跃身份 \(resource.active_streams) · closing \(resource.closing_streams ?? 0)")
-                        .font(.system(size:11,design:.monospaced))
-                    Text("双向开放 \(resource.lifecycle_open_bidirectional ?? 0) · 建流中 \(resource.lifecycle_opening ?? 0) · 半关闭 \(resource.lifecycle_half_closed ?? 0) · 等本端终态 ACK \(resource.lifecycle_wait_local_final_ack ?? 0)")
-                        .font(.system(size:11,design:.monospaced))
-                    Text("等对端终态 \(resource.lifecycle_wait_peer_final ?? 0) · 双向终态待 Close \(resource.lifecycle_both_final_wait_close ?? 0) · 等 FINAL_CONSUMED \(resource.lifecycle_wait_final_consumed ?? 0) · 其他 closing \(resource.lifecycle_closing_other ?? 0)")
-                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                    Text("DATA 静默 >30s / >1m / >5m / >10m：\(resource.data_idle_over_30s ?? 0) / \(resource.data_idle_over_1m ?? 0) / \(resource.data_idle_over_5m ?? 0) / \(resource.data_idle_over_10m ?? 0) · 最老静默 \(resource.oldest_data_idle_seconds ?? 0)s")
-                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                    if let rev = resource.capability_revision, rev >= 2 {
-                        Text("Rev\(rev) · 待结算 \(resource.closing_streams ?? 0) 流 · 发送未消费 \(Self.bytes(resource.session_tx_unconsumed_bytes ?? 0)) · 空闲 DATA \(Self.bytes(resource.idle_actual_data_bytes ?? 0))")
-                            .font(.system(size:10,design:.monospaced)).foregroundColor(.secondary)
-                    }
-                }.padding(.top,6)
-            } else {
-                Text("暂无 Stream / 生命周期资源数据").font(.system(size:11)).foregroundColor(.secondary).padding(.top,6)
-            }
-        } label: {
-            HStack {
-                Text("Stream / 生命周期资源").font(.system(size:12,weight:.medium))
-                Spacer()
-                if let resource { Text("活跃 \(resource.active_streams) · Closing \(resource.closing_streams ?? 0)").font(.system(size:10,design:.monospaced)).foregroundColor(.secondary) }
-                else { Text("等待数据").font(.system(size:10)).foregroundColor(.secondary) }
-            }
         }
-        .padding(9).background(Color.secondary.opacity(0.05)).cornerRadius(7)
-        .accessibilityIdentifier("stream-resource-disclosure")
+        .padding(16)
+        .frame(width: 168)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+    }
 
-        DisclosureGroup(isExpanded: windowExpanded) {
-            if let resource {
-                VStack(alignment:.leading,spacing:5) {
-                    Text("待确认帧 \(resource.pending_frames)/\(resource.pending_frame_limit) · 建流中 \(resource.waiting_opens)")
-                        .font(.system(size:11,design:.monospaced))
-                    Text("接收未消费 DATA \(Self.bytes(resource.receive_credit_bytes))/\(Self.bytes(resource.receive_credit_limit_bytes)) · 实际分页 \(Self.bytes(resource.receive_allocated_bytes))/\(Self.bytes(resource.receive_allocated_limit_bytes))")
-                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                    Text("实际基础占用 \(Self.bytes(resource.bootstrap_credit_bytes ?? 0))/\(Self.bytes(resource.bootstrap_credit_limit_bytes ?? 0)) · 实际增长占用 \(Self.bytes(resource.growth_credit_bytes ?? 0))/\(Self.bytes(resource.growth_credit_limit_bytes ?? 0))")
-                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                    Text("DATA 帧 \(resource.data_pending_frames ?? 0)/\(resource.data_pending_frame_limit ?? 0) · 控制帧 \(resource.control_pending_frames ?? 0)/\(resource.control_pending_frame_limit ?? 0) · 等窗口写入 \(resource.window_blocked_writers ?? 0)")
-                        .font(.system(size:11,design:.monospaced))
-                    Text("窗口需求 idle / small / bulk：\(resource.idle_streams ?? 0) / \(resource.small_streams ?? 0) / \(resource.bulk_streams ?? 0) · OPEN 信用等待：\(resource.open_receive_credit_waits ?? 0)")
-                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                    if let reason = resource.last_reason {
-                        Text("最近资源事件：\(reason) · \(resource.last_limit_at ?? "")")
-                            .font(.system(size:10)).foregroundColor(.secondary).textSelection(.enabled)
-                    }
-                }.padding(.top,6)
+    private var topbar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(pageTitle).font(.system(size: 19, weight: .semibold))
+                Text(pageSubtitle).font(.system(size: 11)).foregroundColor(.secondary)
+            }
+            Spacer()
+            DeskStatusPill(running: model.running, text: model.status)
+            if model.running || model.busy {
+                Button { model.stop() } label: { Label("停止", systemImage: "stop.fill") }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .disabled(model.status == "停止中")
             } else {
-                Text("暂无 Window / Credit 资源数据").font(.system(size:11)).foregroundColor(.secondary).padding(.top,6)
+                Button { model.startForwarding() } label: { Label("启动转发", systemImage: "play.fill") }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.indigo)
+                    .disabled(locked)
             }
-        } label: {
-            HStack {
-                Text("Window / Credit 资源").font(.system(size:12,weight:.medium))
+        }
+        .padding(.horizontal, 22).padding(.vertical, 14)
+    }
+
+    private var pageTitle: String {
+        switch model.tab { case 0: return "连接概览"; case 1: return "运行日志"; case 2: return "路径诊断"; default: return "设置" }
+    }
+    private var pageSubtitle: String {
+        switch model.tab { case 0: return "配置入口、数据源与当前传输状态"; case 1: return "引擎事件和恢复记录"; case 2: return "Carrier、Scheduler 与资源窗口"; default: return "远程管理、后台常驻和更新" }
+    }
+    @ViewBuilder private var pageContent: some View {
+        switch model.tab {
+        case 0: overview
+        case 1: logPage
+        case 2: diagnosticsPage
+        default: settingsPage
+        }
+    }
+
+    private var overview: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            DeskCard {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(model.remoteConfigurationSelected ? "远端配置源" : "本地配置源").font(.system(size: 15, weight: .semibold))
+                        Text(model.remoteConfigurationSelected ? "从 Provisioning API 获取 Profile 或 Bundle" : "直接在此编辑当前 Profile，并保存到本机")
+                            .font(.system(size: 11)).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Picker("配置来源", selection: Binding(get: { model.configurationSource }, set: { model.setConfigurationSource($0) })) {
+                        Text("本地").tag("local")
+                        Text("远端").tag("remote")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 150).disabled(locked)
+                }
+                if model.remoteConfigurationSelected { remoteSourceEditor.padding(.top, 13) }
+            }
+            if model.remoteConfigurationSelected && model.provisioningManaged {
+                remoteProfileCard
+            } else if !model.remoteConfigurationSelected {
+                localEditor
+            }
+            connectionMetrics
+            if let problem = model.problem, !problem.isEmpty {
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11)).foregroundColor(.red)
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
+    private var remoteSourceEditor: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            SecureField("Provisioning API URL", text: $model.provisioningURL).textFieldStyle(.roundedBorder).disabled(locked)
+            HStack(spacing: 8) {
+                Button("保存地址") { model.saveProvisioningURL() }.disabled(model.provisioningSyncing || locked)
+                Button { model.syncProvisioning() } label: {
+                    if model.provisioningSyncing { ProgressView().controlSize(.small) } else { Label("同步", systemImage: "arrow.clockwise") }
+                }.disabled(model.provisioningSyncing || model.provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || locked)
+                if !model.provisioningURL.isEmpty { Button("清除") { model.clearProvisioningURL() }.disabled(model.provisioningSyncing || locked) }
                 Spacer()
-                if let resource {
-                    Text("分页 \(Self.bytes(resource.receive_allocated_bytes))/\(Self.bytes(resource.receive_allocated_limit_bytes)) · 待确认 \(resource.pending_frames)")
-                        .font(.system(size:10,design:.monospaced)).foregroundColor(.secondary)
-                } else { Text("等待数据").font(.system(size:10)).foregroundColor(.secondary) }
+                Text(model.provisioningStatus).font(.system(size: 10)).foregroundColor(.secondary)
             }
+            if model.provisioningUsingCache { Label("使用最近一次成功缓存，API 在后台刷新", systemImage: "clock.arrow.circlepath").font(.system(size: 10)).foregroundColor(.secondary) }
         }
-        .padding(9).background(Color.secondary.opacity(0.05)).cornerRadius(7)
-        .accessibilityIdentifier("window-resource-disclosure")
     }
-    func metric(_ label:String,_ value:String)->some View {VStack(alignment:.leading,spacing:4){Text(label).font(.system(size:11)).foregroundColor(.secondary);Text(value).font(.system(size:16,weight:.medium,design:.monospaced))}.frame(maxWidth:.infinity,alignment:.leading)}
-    static func bytes(_ count:Int)->String { ByteCountFormatter.string(fromByteCount:Int64(count),countStyle:.binary) }
-    func pathSection(_ title:String,_ paths:[PathMetric],hideEndpoint:Bool=false)->some View {
-        VStack(alignment:.leading,spacing:8) {
-            Text(title).font(.headline)
-            if paths.isEmpty { Text("尚无路径数据；启动后自动更新").font(.system(size:12)).foregroundColor(.secondary) }
-            ForEach(paths) { path in
-                VStack(alignment:.leading,spacing:4) {
+
+    private var localEditor: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            DeskCard {
+                VStack(alignment: .leading, spacing: 13) {
                     HStack {
-                        Circle().fill(path.connected ? Color.green : Color.secondary).frame(width:7,height:7)
-                        Text((hideEndpoint ? "路径 \(path.id + 1)" : "\(path.id) · \(path.address)") + (path.role.map { " · " + $0.uppercased() } ?? "")).font(.system(size:12,design:.monospaced))
-                        Spacer();Text(path.connected ? "在线" : "离线/重连中").font(.system(size:11)).foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("运行配置").font(.system(size: 15, weight: .semibold))
+                            Text("编辑本机 Profile；敏感 Transport Key 只保存在钥匙串").font(.system(size: 10)).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button { model.importProfile() } label: { Label("导入", systemImage: "square.and.arrow.down") }.buttonStyle(.borderless).disabled(locked)
+                        Button { model.save() } label: { Label("保存", systemImage: "square.and.arrow.down.on.square") }.buttonStyle(.bordered).disabled(locked)
                     }
-                    Text(String(format:"RTT %.1f ms · Goodput %.2f MiB/s%@ · 队列 %@ · 在途 %@ · 错误 %llu",path.rtt_ms,path.goodput_bps/1048576,(path.configured_rate_bps ?? 0) > 0 ? String(format:" · Weighted %.1f Mbps",(path.configured_rate_bps ?? 0)*8/1000000) : "",Self.bytes(path.queue_bytes),Self.bytes(path.outstanding_bytes),path.errors))
-                        .font(.system(size:11,design:.monospaced)).foregroundColor(.secondary)
-                    if let error = path.last_error, !error.isEmpty {
-                        if hideEndpoint { Text("路径连接异常").font(.system(size:10)).foregroundColor(.secondary) }
-                        else { Text(error).font(.system(size:10)).foregroundColor(.secondary).lineLimit(2).help(error) }
+                    Picker("传输模式", selection: $model.mode) {
+                        Text("Userspace Multipath").tag("userspace_multipath")
+                        Text("Native MPTCP（兼容）").tag("native_mptcp")
+                    }.pickerStyle(.segmented).onChange(of: model.mode) { value in if value == "native_mptcp" { model.tcpEnabled = true } }.disabled(locked)
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 5) { Text("本地入口").font(.system(size: 10)).foregroundColor(.secondary); HStack { Text("127.0.0.1").foregroundColor(.secondary); TextField("端口", text: $model.listenPort).frame(width: 76); Button { copy("127.0.0.1:\(model.listenPort)") } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless) } }
+                        if model.userspace { VStack(alignment: .leading, spacing: 5) { Text("Scheduler").font(.system(size: 10)).foregroundColor(.secondary); Picker("Scheduler", selection: $model.schedulerMode) { ForEach(SchedulerPolicy.allCases) { Text($0.title).tag($0.rawValue) } }.labelsHidden().frame(width: 140).accessibilityIdentifier("scheduler-policy") } }
+                        Spacer()
                     }
-                }.padding(8).background(Color.secondary.opacity(0.06)).cornerRadius(6)
+                    HStack(spacing: 18) {
+                        Toggle("TCP", isOn: $model.tcpEnabled).toggleStyle(.switch).disabled(!model.userspace || locked)
+                        Toggle(model.userspace ? "UDP 独立多路径" : "UDP 逐包轮询", isOn: $model.udpEnabled).toggleStyle(.switch).disabled(locked)
+                        if model.userspace { Text(model.schedulerExplanation).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2) }
+                    }
+                    if model.userspace {
+                        SecureField("Transport Key（64 位十六进制）", text: $model.transportKey).textFieldStyle(.roundedBorder).disabled(locked)
+                    }
+                }
+            }
+            relayEditor
+        }
+        .disabled(locked)
+    }
+
+    private var relayEditor: some View {
+        DeskCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack { VStack(alignment: .leading, spacing: 3) { Text("Relay 路径").font(.system(size: 15, weight: .semibold)); Text("每条路径都会建立独立 Carrier").font(.system(size: 10)).foregroundColor(.secondary) }; Spacer(); Button { model.relays.append(RelayRow(host: "", port: 21001)) } label: { Label("添加路径", systemImage: "plus") }.buttonStyle(.bordered).disabled(model.relays.count >= 8 || locked) }
+                if model.userspace && model.schedulerMode == SchedulerPolicy.weighted.rawValue { Text("Weighted 模式需要每条 Relay 的下行容量。上行可留空自动估算。").font(.system(size: 10)).foregroundColor(.secondary) }
+                ForEach(Array(model.relays.enumerated()), id: \.element.id) { index, relay in
+                    HStack(spacing: 8) {
+                        Text("\(index + 1)").font(.system(size: 11, weight: .semibold, design: .rounded)).frame(width: 22, height: 22).background(Color.indigo.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+                        TextField("Relay IPv4", text: Binding(get: { model.relays[index].host }, set: { model.relays[index].host = $0 })).textFieldStyle(.roundedBorder)
+                        TextField("端口", value: Binding(get: { model.relays[index].port }, set: { model.relays[index].port = $0 }), formatter: Self.portFormatter).frame(width: 72).textFieldStyle(.roundedBorder)
+                        if model.userspace && model.schedulerMode == SchedulerPolicy.weighted.rawValue {
+                            TextField("↓ Mbps", value: Binding(get: { model.relays[index].download_mbps }, set: { model.relays[index].download_mbps = $0 }), formatter: Self.bandwidthFormatter).frame(width: 82).textFieldStyle(.roundedBorder)
+                            TextField("↑ Mbps", value: Binding(get: { model.relays[index].upload_mbps }, set: { model.relays[index].upload_mbps = $0 }), formatter: Self.bandwidthFormatter).frame(width: 82).textFieldStyle(.roundedBorder)
+                        }
+                        Button { model.relays.removeAll { $0.id == relay.id } } label: { Image(systemName: "trash") }.buttonStyle(.borderless).foregroundColor(.red).disabled(model.relays.count <= 2 || locked)
+                    }
+                }
             }
         }
     }
-    static let portFormatter: NumberFormatter = {let f=NumberFormatter();f.numberStyle = .none;f.minimum=1;f.maximum=65535;f.allowsFloats=false;return f}()
-    static let bandwidthFormatter: NumberFormatter = {let f=NumberFormatter();f.numberStyle = .decimal;f.minimum=0.1;f.maximum=6553.5;f.minimumFractionDigits=0;f.maximumFractionDigits=1;f.allowsFloats=true;return f}()
+
+    private var remoteProfileCard: some View {
+        DeskCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack { VStack(alignment: .leading, spacing: 4) { Text(model.provisioningIsBundle ? "远端 Bundle" : "远端 Profile").font(.system(size: 15, weight: .semibold)); Text(model.provisioningDisplayName.isEmpty ? "已同步配置" : model.provisioningDisplayName).font(.system(size: 11)).foregroundColor(.secondary) }; Spacer(); Text(model.provisioningRevision).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary) }
+                if model.provisioningIsBundle {
+                    Text(model.provisioningBundleMode == "parallel" ? "并行模式 · 可同时运行多个入口" : "单选模式 · 每次运行一个入口").font(.system(size: 11)).foregroundColor(.secondary)
+                    ForEach(model.provisioningProfiles) { choice in remoteProfileRow(choice) }
+                    if model.provisioningBundleMode == "parallel" { Text("各 Profile 独立重连；本地端口冲突会在启动前阻止整组。\n").font(.system(size: 10)).foregroundColor(.secondary) }
+                } else {
+                    Text("\(model.userspace ? "MPX/4 Userspace" : "Native MPTCP") · 127.0.0.1:\(model.listenPort) · \(model.relays.count) 条 Relay").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+                }
+            }
+        }
+    }
+
+    private func remoteProfileRow(_ choice: ProvisioningProfileChoice) -> some View {
+        let selected = model.provisioningSelectedProfileIDs.contains(choice.id)
+        let state = model.provisioningRuntimeStatus[choice.id] ?? "等待启动"
+        let bad = state == "错误" || model.provisioningRuntimeError[choice.id] != nil
+        return Button { model.setProvisioningProfileSelected(choice.id, selected: !selected) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: model.provisioningBundleMode == "parallel" ? (selected ? "checkmark.square.fill" : "square") : (selected ? "circle.inset.filled" : "circle"))
+                    .foregroundColor(selected ? .indigo : .secondary)
+                VStack(alignment: .leading, spacing: 3) { Text(choice.name).font(.system(size: 12, weight: .semibold)).foregroundColor(.primary); Text("127.0.0.1:\(String(choice.listenPort)) · \(choice.relayCount) Relays · \(choice.mode == "userspace_multipath" ? "MPX/4" : "Native")").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary); if let error = model.provisioningRuntimeError[choice.id] { Text(error).font(.system(size: 10)).foregroundColor(.red).lineLimit(1) } }
+                Spacer(); Text(state).font(.system(size: 10, weight: .medium)).foregroundColor(bad ? .red : .secondary)
+            }.padding(10).background(selected ? Color.indigo.opacity(0.07) : Color.black.opacity(0.025)).clipShape(RoundedRectangle(cornerRadius: 10))
+        }.buttonStyle(.plain).disabled(model.running || model.busy || model.provisioningSyncing)
+    }
+
+    private var connectionMetrics: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("实时状态").font(.system(size: 13, weight: .semibold))
+            HStack(spacing: 9) {
+                DeskMetricTile(label: model.userspace ? "TCP Carrier" : "Native 子流", value: model.paths < 0 ? "—" : String(model.paths), detail: model.userspace ? "可用路径" : "系统状态")
+                DeskMetricTile(label: "连接", value: String(model.connections), detail: "逻辑连接")
+                DeskMetricTile(label: "上传", value: Self.bytes(model.sent), detail: "累计发送")
+                DeskMetricTile(label: "下载", value: Self.bytes(model.received), detail: "累计接收")
+            }
+            if model.udpEnabled {
+                HStack(spacing: 9) { DeskMetricTile(label: "UDP 路径", value: model.userspace ? "\(model.udpHealthyPaths) / \(model.udpConnections)" : String(model.udpConnections), detail: "健康 / 映射"); DeskMetricTile(label: "UDP 上传", value: Self.bytes(model.udpSent), detail: "累计发送"); DeskMetricTile(label: "UDP 下载", value: Self.bytes(model.udpReceived), detail: "累计接收"); Spacer() }
+            }
+        }
+    }
+
+    private var diagnosticsPage: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if model.remoteConfigurationSelected && model.provisioningIsBundle {
+                HStack(spacing: 9) { DeskMetricTile(label: "活跃 Profile", value: String(model.provisioningSelectedProfileIDs.count), detail: "Bundle 选择"); DeskMetricTile(label: "TCP 路径", value: String(model.paths), detail: "当前汇总"); DeskMetricTile(label: "连接", value: String(model.connections), detail: "当前汇总"); Spacer() }
+                ForEach(model.provisioningProfiles.filter { model.provisioningSelectedProfileIDs.contains($0.id) }) { choice in
+                    profileDiagnostic(choice: choice, diagnostic: model.provisioningDiagnostics[choice.id] ?? ProfileDiagnosticState())
+                }
+            } else if model.userspace {
+                schedulerSummary(configured: model.configuredSchedulerMode, effective: model.effectiveSchedulerMode, switches: model.schedulerModeSwitches, reason: model.lastSchedulerModeReason)
+                HStack(spacing: 9) { DeskMetricTile(label: "当前重排", value: Self.bytes(model.reorderBytes), detail: "正在等待有序数据"); DeskMetricTile(label: "重排峰值", value: Self.bytes(model.reorderPeak), detail: "会话峰值"); DeskMetricTile(label: "等待确认", value: Self.bytes(model.pendingBytes), detail: "可靠数据"); Spacer() }
+                resourcePanels(model.resources, streamExpanded: $model.localStreamResourceExpanded, windowExpanded: $model.localWindowResourceExpanded)
+                pathSection("TCP 路径", model.tcpPaths, hideEndpoint: model.remoteConfigurationSelected)
+                if model.udpEnabled { pathSection("UDP 路径", model.udpPaths, hideEndpoint: model.remoteConfigurationSelected) }
+            } else {
+                DeskCard { Label("Native MPTCP 路径统计由系统提供。", systemImage: "info.circle").font(.system(size: 12)).foregroundColor(.secondary) }
+            }
+        }
+    }
+
+    @ViewBuilder private func profileDiagnostic(choice: ProvisioningProfileChoice, diagnostic: ProfileDiagnosticState) -> some View {
+        DeskCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack { VStack(alignment: .leading, spacing: 3) { Text(choice.name).font(.system(size: 14, weight: .semibold)); Text("127.0.0.1:\(String(choice.listenPort))").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary) }; Spacer(); Text(model.provisioningRuntimeStatus[choice.id] ?? "等待启动").font(.system(size: 10, weight: .semibold)).foregroundColor(model.provisioningRuntimeError[choice.id] == nil ? .secondary : .red) }
+                if let error = model.provisioningRuntimeError[choice.id] { Text(error).font(.system(size: 11)).foregroundColor(.red) }
+                schedulerSummary(configured: diagnostic.configuredSchedulerMode, effective: diagnostic.effectiveSchedulerMode, switches: diagnostic.schedulerModeSwitches, reason: diagnostic.lastSchedulerModeReason)
+                HStack(spacing: 9) { DeskMetricTile(label: "Carrier", value: String(diagnostic.paths), detail: "在线路径"); DeskMetricTile(label: "连接", value: String(diagnostic.connections), detail: "逻辑连接"); DeskMetricTile(label: "上传", value: Self.bytes(diagnostic.sent), detail: "累计"); DeskMetricTile(label: "下载", value: Self.bytes(diagnostic.received), detail: "累计") }
+                HStack(spacing: 9) { DeskMetricTile(label: "重排", value: Self.bytes(diagnostic.reorderBytes), detail: "当前"); DeskMetricTile(label: "峰值", value: Self.bytes(diagnostic.reorderPeak), detail: "历史峰值"); DeskMetricTile(label: "重传", value: String(diagnostic.retransmits), detail: "TCP"); Spacer() }
+                resourcePanels(diagnostic.resources, streamExpanded: profileStreamBinding(choice.id), windowExpanded: profileWindowBinding(choice.id))
+                pathSection("TCP 路径", diagnostic.tcpPaths, hideEndpoint: true)
+                if !diagnostic.udpPaths.isEmpty { pathSection("UDP 路径", diagnostic.udpPaths, hideEndpoint: true) }
+            }
+        }
+    }
+
+    private func schedulerSummary(configured: String, effective: String, switches: UInt64, reason: String) -> some View {
+        HStack(spacing: 8) {
+            Text("配置 \(Model.schedulerTitle(configured))").font(.system(size: 11, weight: .semibold))
+            Image(systemName: "arrow.right").font(.system(size: 9)).foregroundColor(.secondary)
+            Text("当前 \(Model.schedulerTitle(effective))").font(.system(size: 11, weight: .semibold)).foregroundColor(.indigo)
+            Text("· 切换 \(switches) 次").font(.system(size: 10)).foregroundColor(.secondary)
+            Spacer()
+            if !reason.isEmpty { Text(reason).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1) }
+        }
+        .padding(10).background(Color.indigo.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 10))
+        .accessibilityIdentifier("scheduler-status")
+    }
+
+    @ViewBuilder private func resourcePanels(_ resource: ResourceMetric?, streamExpanded: Binding<Bool>, windowExpanded: Binding<Bool>) -> some View {
+        VStack(spacing: 8) {
+            DisclosureGroup(isExpanded: streamExpanded) {
+                if let resource { VStack(alignment: .leading, spacing: 5) { Text("活跃 Stream \(resource.active_streams) · Closing \(resource.closing_streams ?? 0) · 本地连接 \(resource.local_connections ?? 0)"); Text("Opening \(resource.lifecycle_opening ?? 0) · 双向开放 \(resource.lifecycle_open_bidirectional ?? 0) · 半关闭 \(resource.lifecycle_half_closed ?? 0)").foregroundColor(.secondary); Text("空闲 DATA >30s / >1m / >5m：\(resource.data_idle_over_30s ?? 0) / \(resource.data_idle_over_1m ?? 0) / \(resource.data_idle_over_5m ?? 0)").foregroundColor(.secondary) }.font(.system(size: 10, design: .monospaced)).padding(.top, 8) } else { Text("暂无 Stream / 生命周期资源数据").font(.system(size: 10)).foregroundColor(.secondary).padding(.top, 7) }
+            } label: { HStack { Label("Stream / 生命周期", systemImage: "arrow.triangle.branch"); Spacer(); Text(resource.map { "活跃 \($0.active_streams)" } ?? "等待数据").font(.system(size: 10)).foregroundColor(.secondary) } }.padding(11).background(Color.black.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 10)).accessibilityIdentifier("stream-resource-disclosure")
+            DisclosureGroup(isExpanded: windowExpanded) {
+                if let resource { VStack(alignment: .leading, spacing: 5) { Text("待确认帧 \(resource.pending_frames)/\(resource.pending_frame_limit)"); Text("接收未消费 \(Self.bytes(resource.receive_credit_bytes))/\(Self.bytes(resource.receive_credit_limit_bytes)) · 实际分页 \(Self.bytes(resource.receive_allocated_bytes))/\(Self.bytes(resource.receive_allocated_limit_bytes))").foregroundColor(.secondary); Text("DATA 队列 \(resource.data_pending_frames ?? 0) · 控制队列 \(resource.control_pending_frames ?? 0) · 窗口等待 \(resource.window_blocked_writers ?? 0)").foregroundColor(.secondary) }.font(.system(size: 10, design: .monospaced)).padding(.top, 8) } else { Text("暂无 Window / Credit 资源数据").font(.system(size: 10)).foregroundColor(.secondary).padding(.top, 7) }
+            } label: { HStack { Label("Window / Credit", systemImage: "rectangle.split.3x1"); Spacer(); Text(resource.map { "待确认 \($0.pending_frames)" } ?? "等待数据").font(.system(size: 10)).foregroundColor(.secondary) } }.padding(11).background(Color.black.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 10)).accessibilityIdentifier("window-resource-disclosure")
+        }
+    }
+
+    private var logPage: some View {
+        DeskCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack { VStack(alignment: .leading, spacing: 3) { Text("引擎事件").font(.system(size: 15, weight: .semibold)); Text("保留最近的连接、认证、重连和资源事件").font(.system(size: 10)).foregroundColor(.secondary) }; Spacer(); Button { copy(model.logs.joined(separator: "\n")) } label: { Label("复制日志", systemImage: "doc.on.doc") }.buttonStyle(.bordered) }
+                ScrollView { Text(model.logs.isEmpty ? "暂无日志。启动转发后，状态事件会显示在这里。" : model.logs.joined(separator: "\n")).font(.system(size: 11, design: .monospaced)).foregroundColor(model.logs.isEmpty ? .secondary : .primary).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .topLeading).padding(10) }.frame(minHeight: 360, maxHeight: .infinity).background(Color.black.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+        }
+    }
+
+    private var settingsPage: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            DeskCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack { VStack(alignment: .leading, spacing: 3) { Text("远程管理").font(.system(size: 15, weight: .semibold)); Text("设备只通过 HTTPS long polling 主动连接，不提供远程 Shell").font(.system(size: 10)).foregroundColor(.secondary) }; Spacer(); Toggle("", isOn: Binding(get: { model.remoteManagementEnabled }, set: { model.setRemoteManagementEnabled($0) })).toggleStyle(.switch) }
+                    Text("默认关闭；控制服务器地址和配对必须在这台 Mac 本地完成。").font(.system(size: 10)).foregroundColor(.secondary)
+                    TextField("控制服务器 HTTPS 根地址", text: $model.remoteControlServer).textFieldStyle(.roundedBorder).disabled(!model.remoteManagementEnabled)
+                    HStack { Button("保存服务器") { model.saveRemoteControlServer() }.disabled(!model.remoteManagementEnabled); Text(model.remoteControlStatus).font(.system(size: 10)).foregroundColor(model.remoteControlConnected ? .green : .secondary) }
+                    if model.remoteDeviceID.isEmpty { HStack { TextField("一次性配对码", text: $model.remotePairingCode).textFieldStyle(.roundedBorder); Button("配对并启用") { model.pairRemoteManagement() }.buttonStyle(.borderedProminent).disabled(!model.remoteManagementEnabled) } } else { HStack { Label("设备 ID \(model.remoteDeviceID.prefix(12))…", systemImage: "checkmark.shield").font(.system(size: 10)).foregroundColor(.secondary); Spacer(); Button("解除配对…") { model.unpairRemoteManagement() }.buttonStyle(.bordered).tint(.red) } }
+                }
+            }
+            DeskCard {
+                HStack { VStack(alignment: .leading, spacing: 4) { Text("后台常驻").font(.system(size: 15, weight: .semibold)); Text("登录、唤醒、网络恢复或引擎异常后自动重建转发").font(.system(size: 10)).foregroundColor(.secondary) }; Spacer(); Toggle("", isOn: Binding(get: { model.backgroundResident }, set: { model.setBackgroundResident($0) })).toggleStyle(.switch).disabled(model.remoteConfigurationSelected) }
+                Text(model.backgroundResidentStatus).font(.system(size: 10)).foregroundColor(.secondary).padding(.top, 8)
+            }
+            DeskCard {
+                HStack { VStack(alignment: .leading, spacing: 4) { Text("应用更新").font(.system(size: 15, weight: .semibold)); Text("仅使用内置 EdDSA 签名更新通道").font(.system(size: 10)).foregroundColor(.secondary) }; Spacer(); Button("检查更新") { updater.checkForUpdates() }.buttonStyle(.bordered) }
+                HStack { Toggle("自动检查", isOn: Binding(get: { updater.automaticChecks }, set: { updater.setAutomaticChecks($0) })).toggleStyle(.switch); Spacer(); Text(updater.status).font(.system(size: 10)).foregroundColor(.secondary) }
+                Divider()
+                HStack { VStack(alignment: .leading, spacing: 3) { Text("运行环境诊断").font(.system(size: 13, weight: .semibold)); Text("检查引擎、文件描述符和本地运行条件").font(.system(size: 10)).foregroundColor(.secondary) }; Spacer(); Button("检查环境") { model.launch("doctor") }.buttonStyle(.bordered).disabled(locked) }
+            }
+            if !model.userspace {
+                DeskCard { HStack { VStack(alignment: .leading, spacing: 4) { Text("Native MPTCP 系统开关").font(.system(size: 15, weight: .semibold)); Text("只影响 macOS 的 net.inet.mptcp.allow_aggregate").font(.system(size: 10)).foregroundColor(.secondary) }; Spacer(); Menu { Button("开启系统聚合…") { model.changeAggregation(enabled: true) }; Button("关闭系统聚合…") { model.changeAggregation(enabled: false) } } label: { Label("管理", systemImage: "gearshape") }.buttonStyle(.bordered) }.disabled(locked) }
+            }
+        }
+    }
+
+    private func pathSection(_ title: String, _ paths: [PathMetric], hideEndpoint: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: 13, weight: .semibold))
+            if paths.isEmpty { Text("尚无路径数据；启动后自动更新").font(.system(size: 11)).foregroundColor(.secondary) }
+            ForEach(paths) { path in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack { Circle().fill(path.connected ? Color.green : Color.gray).frame(width: 7, height: 7); Text(hideEndpoint ? "路径 \(path.id + 1)" : "\(path.id) · \(path.address)").font(.system(size: 11, design: .monospaced)); if let role = path.role { Text(role.uppercased()).font(.system(size: 9, weight: .bold)).foregroundColor(.indigo) }; Spacer(); Text(path.connected ? "在线" : "重连中").font(.system(size: 10)).foregroundColor(.secondary) }
+                    Text(String(format: "RTT %.1f ms · Goodput %.2f MiB/s · 队列 %@ · 在途 %@ · 错误 %llu", path.rtt_ms, path.goodput_bps / 1048576, Self.bytes(path.queue_bytes), Self.bytes(path.outstanding_bytes), path.errors)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                    if let error = path.last_error, !error.isEmpty { Text(hideEndpoint ? "路径连接异常" : error).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1) }
+                }.padding(10).background(Color.black.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+        }
+    }
+
+    private func profileStreamBinding(_ id: String) -> Binding<Bool> { Binding(get: { model.profileStreamResourceExpanded.contains(id) }, set: { var next = model.profileStreamResourceExpanded; if $0 { next.insert(id) } else { next.remove(id) }; model.profileStreamResourceExpanded = next }) }
+    private func profileWindowBinding(_ id: String) -> Binding<Bool> { Binding(get: { model.profileWindowResourceExpanded.contains(id) }, set: { var next = model.profileWindowResourceExpanded; if $0 { next.insert(id) } else { next.remove(id) }; model.profileWindowResourceExpanded = next }) }
+    private func copy(_ value: String) { let pasteboard = NSPasteboard.general; pasteboard.clearContents(); pasteboard.setString(value, forType: .string) }
+    private static func bytes(_ count: Int64) -> String { ByteCountFormatter.string(fromByteCount: count, countStyle: .binary) }
+    private static func bytes(_ count: Int) -> String { ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .binary) }
+    private static let portFormatter: NumberFormatter = { let f = NumberFormatter(); f.numberStyle = .none; f.minimum = 1; f.maximum = 65535; f.allowsFloats = false; return f }()
+    private static let bandwidthFormatter: NumberFormatter = { let f = NumberFormatter(); f.numberStyle = .decimal; f.minimum = 0.1; f.maximum = 6553.5; f.minimumFractionDigits = 0; f.maximumFractionDigits = 1; f.allowsFloats = true; return f }()
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
