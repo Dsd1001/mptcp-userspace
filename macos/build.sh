@@ -74,7 +74,7 @@ for arch in arm64 amd64; do
     [[ $arch != amd64 ]] || swift_arch=x86_64
     xcrun swiftc -O -swift-version 5 -parse-as-library -target "$swift_arch-apple-macosx13.0" \
         -module-cache-path /tmp/mptcp-swift-cache -debug-prefix-map "$ROOT"=. \
-        -F "$SPARKLE_VENDOR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks         "$ROOT/macos/Lifecycle.swift" "$ROOT/macos/Profile.swift" "$ROOT/macos/RemoteControl.swift" "$ROOT/macos/UpdateController.swift" "$ROOT/macos/App.swift" -o "$BUILD/MPTCPDesk-$arch"
+        -F "$SPARKLE_VENDOR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks         "$ROOT/macos/Lifecycle.swift" "$ROOT/macos/Profile.swift" "$ROOT/macos/KeychainBrokerClient.swift" "$ROOT/macos/RemoteControl.swift" "$ROOT/macos/UpdateController.swift" "$ROOT/macos/App.swift" -o "$BUILD/MPTCPDesk-$arch"
     (
         cd "$ROOT/macos/engine"
         CGO_ENABLED=1 GOOS=darwin GOARCH=$arch CC="clang -arch $swift_arch -isysroot $SDK -mmacosx-version-min=13.0" \
@@ -95,6 +95,7 @@ cp "$ROOT/macos/Info.plist" "$APP/Contents/Info.plist"
 [[ $(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist") == "$VERSION" ]]
 plutil -insert MPTCPSourceID -string "$SOURCE_ID" "$APP/Contents/Info.plist"
 printf '%s\n' "$SOURCE_ID" > "$APP/Contents/Resources/SOURCE_ID"
+cp "$ROOT/macos/keychain-broker/MPTCPKeychainBroker.v1.b64" "$APP/Contents/Resources/MPTCPKeychainBroker.v1.b64"
 xcrun swiftc "$ROOT/macos/Icon.swift" -module-cache-path /tmp/mptcp-swift-cache -o "$BUILD/icon-generator"
 "$BUILD/icon-generator" "$APPROOT/AppIcon.iconset"
 iconutil -c icns "$APPROOT/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
@@ -150,7 +151,7 @@ fi
         developer-id) signing="Developer ID ($CODESIGN_IDENTITY)" ;;
     esac
     [[ -z "$NOTARY_PROFILE" ]] || signing="$signing, notarized"
-    printf 'Component: MPTCP Desk\nVersion: %s\nSource-ID: %s\nProtocol: MPX/4 Draft 04\nArchitectures: arm64 x86_64\nUpdater: Sparkle %s / EdDSA appcast\nSigning: %s\nDesignated-Requirement: %s\n' "$VERSION" "$SOURCE_ID" "$SPARKLE_VERSION" "$signing" "$DESIGNATED_REQUIREMENT"
+    printf 'Component: MPTCP Desk\nVersion: %s\nSource-ID: %s\nProtocol: MPX/4 Draft 04\nArchitectures: arm64 x86_64\nUpdater: Sparkle %s / EdDSA appcast\nSigning: %s\nDesignated-Requirement: %s\nKeychain-Broker: v1 sha256=5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9\n' "$VERSION" "$SOURCE_ID" "$SPARKLE_VERSION" "$signing" "$DESIGNATED_REQUIREMENT"
     "$GO" version
     xcrun swiftc --version
 } > "$OUT/MPTCP-Desk.BUILDINFO"

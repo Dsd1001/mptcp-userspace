@@ -90,3 +90,8 @@ Provisioning URL 保存在 Keychain；Bundle Transport Key 只从权威 API 响�
 当前 DMG 使用 ad-hoc 签名，未做 Developer ID notarization。
 
 当前协议与控制面说明见 docs/userspace/PROTOCOL.md 与 docs/userspace/PROVISIONING.md。
+## Keychain Broker
+
+从 0.10.11 起，MPTCP Desk 本体不直接访问 Keychain。固定签名的 `MPTCPKeychainBroker` v1 首次运行时安装到 `~/Library/Application Support/MPTCP Desk/KeychainBroker/v1/`，并长期复用同一份二进制。Broker 只接受满足固定 `org.mptcp.desktop` + 本地签名证书要求的父进程调用。
+
+现有 `MPTCPDesk.UserspaceTransport`、`MPTCPDesk.Provisioning`、`MPTCPDesk.RemoteControl` 条目保持原 service/account，不复制为第二套 secret。第一次由 Broker 接管旧条目时可能各出现一次授权框；此后 Keychain partition 绑定的是冻结 Broker 的固定 cdhash，而不是每次更新都会变化的 App cdhash。不要删除或替换 Application Support 中的 Broker，除非执行明确的 Broker 升级/恢复流程。

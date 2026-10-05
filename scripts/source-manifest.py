@@ -14,7 +14,8 @@ import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FIXED = (
-    'macos/VERSION', 'macos/App.swift', 'macos/Lifecycle.swift', 'macos/Profile.swift', 'macos/RemoteControl.swift', 'macos/UpdateController.swift', 'macos/Icon.swift',
+    'macos/VERSION', 'macos/App.swift', 'macos/Lifecycle.swift', 'macos/Profile.swift', 'macos/KeychainBrokerClient.swift', 'macos/RemoteControl.swift', 'macos/UpdateController.swift', 'macos/Icon.swift',
+    'macos/keychain-broker/KeychainBroker.swift', 'macos/keychain-broker/MPTCPKeychainBroker.v1.b64',
     'macos/Info.plist', 'macos/build.sh', 'macos/README.zh-CN.md',
     'macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt',
     'macos/VALIDATION.md', 'macos/tcp-profile.example.json',

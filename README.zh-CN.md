@@ -4,11 +4,17 @@ MPTCP Userspace 是一个面向 macOS 与 Linux 的**应用层多路径传输系
 
 它**不是内核 MPTCP，也不是 QUIC**。Relay 只需要转发普通 TCP 字节；MPX/4 的认证、加密、Stream 状态、流控和调度都由 Client 与 Landing 端到端完成。
 
-**当前 macOS 正式版本：v0.10.10 · MPX/4 Draft 04**
+**当前 macOS 正式版本：v0.10.11 · MPX/4 Draft 04**
 
-- [最新 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.10)
+- [最新 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.11)
 - [MPX/4 规范仓库](https://github.com/Dsd1001/MPX-4)
 - [English README](README.md)
+
+## 0.10.11：冻结 Keychain Broker，本体与钥匙串访问分离
+
+0.10.11 不再由可更新的 MPTCP Desk 本体直接访问 Keychain。首次运行会把一份字节级固定、已经签名的 `MPTCPKeychainBroker` v1 安装到用户的 Application Support；Transport Key、Provisioning URL 与 Remote Control credential 此后全部由这个 Broker 读取和保存。
+
+Broker 只接受满足固定 MPTCP Desk 签名要求的父进程调用，而且 Broker 自身二进制后续版本不替换、不重签，因此它的 cdhash 与 Keychain `partition_id` 长期不变。0.10.10 → 0.10.11 第一次切换时，已有三个 Keychain 条目仍可能分别要求最后一次授权；之后 App 更新不再改变访问 Keychain 的进程身份。
 
 ## 0.10.10：签名连续性最终验证
 

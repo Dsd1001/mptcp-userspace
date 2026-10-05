@@ -1,6 +1,5 @@
 import Foundation
 import CryptoKit
-import Security
 
 struct ProfileError: LocalizedError {
     var text: String
@@ -245,35 +244,17 @@ struct EngineEvent: Decodable {
 // Only the transport secret goes in Keychain. Ordinary Relay/UI preferences
 // remain in UserDefaults without the key. No silent plaintext fallback exists.
 enum TransportKeyStore {
-    private static let query: [String: Any] = [
-        kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: "MPTCPDesk.UserspaceTransport",
-        kSecAttrAccount as String: "active-profile"
-    ]
     static func save(_ value: String) throws {
-        let data = Data(value.utf8)
-        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = query
-            item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(item as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw ProfileError("钥匙串保存失败（\(status)）；密钥没有写入普通偏好设置") }
+        try KeychainBrokerClient.save(Data(value.utf8), slot: .userspaceTransport)
     }
+
     static func load() throws -> String? {
-        var item = query
-        item[kSecReturnData as String] = true
-        item[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(item as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
-            throw ProfileError("钥匙串读取失败（\(status)）；请解锁钥匙串或重新输入 Landing 密钥")
-        }
+        guard let data = try KeychainBrokerClient.load(.userspaceTransport),
+              let value = String(data: data, encoding: .utf8) else { return nil }
         return value
     }
 }
+
 
 // Versioned full-client provisioning response. The provisioning URL and
 // transport key are credentials; neither is stored in UserDefaults or logs.
@@ -645,39 +626,20 @@ enum RelayProvisioningClient {
 // The provisioning URL contains the high-entropy bearer token in its path and
 // therefore lives in Keychain just like the MPX transport key.
 enum ProvisioningURLStore {
-    private static let query: [String: Any] = [
-        kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: "MPTCPDesk.Provisioning",
-        kSecAttrAccount as String: "active-url"
-    ]
     static func save(_ value: String) throws {
         let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleaned.isEmpty { try delete(); return }
         _ = try RelayProvisioningClient.endpointURL(cleaned)
-        let data = Data(cleaned.utf8)
-        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = query
-            item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(item as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw ProfileError("Provisioning URL 钥匙串保存失败（\(status)）") }
+        try KeychainBrokerClient.save(Data(cleaned.utf8), slot: .provisioning)
     }
+
     static func load() throws -> String? {
-        var item = query
-        item[kSecReturnData as String] = true
-        item[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(item as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
-            throw ProfileError("Provisioning URL 钥匙串读取失败（\(status)）")
-        }
+        guard let data = try KeychainBrokerClient.load(.provisioning),
+              let value = String(data: data, encoding: .utf8) else { return nil }
         return value
     }
+
     static func delete() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw ProfileError("Provisioning URL 钥匙串删除失败（\(status)）") }
+        try KeychainBrokerClient.delete(.provisioning)
     }
 }

@@ -4,6 +4,7 @@ No desktop automation, installation or host network changes.
 """
 from __future__ import annotations
 import importlib.util
+import base64
 import json
 import os
 import pathlib
@@ -181,7 +182,7 @@ def main() -> None:
             if not actual_dr or actual_dr!=recorded_dr:
                 raise ValueError('Packaged App designated requirement differs from BUILDINFO')
             if 'Signing: stable-local self-signed (' in desktop_buildinfo:
-                cert=ROOT/'macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.pem'
+                cert=ROOT/'macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt'
                 cert_sha1=run(['openssl','x509','-in',str(cert),'-noout','-fingerprint','-sha1']).decode().split('=',1)[1].replace(':','').strip().lower()
                 cert_sha256=run(['openssl','x509','-in',str(cert),'-noout','-fingerprint','-sha256']).decode().split('=',1)[1].replace(':','').strip().upper()
                 if cert_sha1 not in actual_dr.lower() or ('cert-sha256='+cert_sha256) not in desktop_buildinfo:
@@ -201,6 +202,24 @@ def main() -> None:
             for p in [resources/'SOURCE_ID',mount/'SOURCE_ID']:
                 if p.read_text().strip()!=identity:
                     raise ValueError('Packaged source ID differs')
+            broker_resource=resources/'MPTCPKeychainBroker.v1.b64'
+            broker_source=files['macos/keychain-broker/MPTCPKeychainBroker.v1.b64']
+            if broker_resource.read_bytes()!=broker_source:
+                raise ValueError('Packaged frozen Keychain Broker resource differs from source')
+            broker_bytes=base64.b64decode(broker_source)
+            broker_hash=source.sha(broker_bytes)
+            expected_broker_hash='5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9'
+            if broker_hash!=expected_broker_hash or ('Keychain-Broker: v1 sha256='+broker_hash) not in desktop_buildinfo:
+                raise ValueError('Frozen Keychain Broker hash is not pinned by source and BUILDINFO')
+            broker=work/'MPTCPKeychainBroker-v1'
+            broker.write_bytes(broker_bytes);broker.chmod(0o700)
+            run(['codesign','--verify','--strict',str(broker)])
+            if set(run(['lipo','-archs',str(broker)]).decode().split())!={'arm64','x86_64'}:
+                raise ValueError('Frozen Keychain Broker is not universal')
+            broker_sig=subprocess.run(['codesign','-d','-r-',str(broker)],capture_output=True,timeout=30)
+            broker_req='identifier "org.mptcp.desktop.keychainbroker.v1" and certificate root = H"d60f6edc71041789131273af4abe708db2cf0dd7"'
+            if broker_sig.returncode or broker_req not in broker_sig.stderr.decode(errors='replace'):
+                raise ValueError('Frozen Keychain Broker designated requirement differs')
             engine=resources/'mptcp-desktop-engine';ui=app/'Contents/MacOS/MPTCPDesk'
             for binary in [engine,ui]:
                 if set(run(['lipo','-archs',str(binary)]).decode().split())!={'arm64','x86_64'}:
@@ -222,7 +241,7 @@ def main() -> None:
                 run(['xcrun','swiftc','-O','-swift-version','5','-parse-as-library','-target',arch+'-apple-macosx13.0',
                      '-module-cache-path','/tmp/mptcp-swift-cache','-debug-prefix-map',str(frozen)+'=.',
                      '-F',str(sparkle),'-framework','Sparkle','-Xlinker','-rpath','-Xlinker','@executable_path/../Frameworks',
-                     str(frozen/'macos/Lifecycle.swift'),str(frozen/'macos/Profile.swift'),str(frozen/'macos/RemoteControl.swift'),
+                     str(frozen/'macos/Lifecycle.swift'),str(frozen/'macos/Profile.swift'),str(frozen/'macos/KeychainBrokerClient.swift'),str(frozen/'macos/RemoteControl.swift'),
                      str(frozen/'macos/UpdateController.swift'),str(frozen/'macos/App.swift'),'-o',str(rebuilt_ui)])
                 thin_ui=work/('packaged-ui-'+goarch)
                 run(['lipo',str(ui),'-thin',arch,'-output',str(thin_ui)])
@@ -244,7 +263,7 @@ def main() -> None:
             run([str(engine),'validate'],input=json.dumps(profile).encode())
             checks.extend(['read-only DMG and strict code signature with BUILDINFO-matched designated requirement','embedded Sparkle framework and pinned public update key',
                 'ARM and x86_64 packaged engine execution','App and engine section-identical rebuilds from frozen source','schema2/3 compatibility and placeholder rejection',
-                'packaged documentation equals frozen source'])
+                'packaged documentation equals frozen source','frozen Keychain Broker hash/signature/universal architecture'])
         finally:
             run(['hdiutil','detach',str(mount)])
     if source.manifest(source.collect())!=sums:

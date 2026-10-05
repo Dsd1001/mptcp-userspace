@@ -105,3 +105,10 @@ source manifest；私钥不进入。
 
 “成功编译”不等于“完整验收通过”。正式发布还必须通过
 [验证边界](../userspace/VALIDATION.md) 中的 gates，并发布与 Source-ID 匹配的证据。
+### 冻结 Keychain Broker
+
+0.10.11 起，稳定自签名 App 的 Designated Requirement 仍用于验证主 App，但三个 file-based Keychain 条目不再由主 App 直接访问。原因是现代 macOS 还会维护独立的 `partition_id`，其中包含访问进程的 cdhash；即使主 App 的 Designated Requirement 不变，每次重建仍会产生新的 cdhash。
+
+因此发布包固定携带 `macos/keychain-broker/MPTCPKeychainBroker.v1.b64`。它是已经签名的 Universal Broker 二进制的 Base64 表示；构建脚本只把这些字节作为资源复制进 App，绝不能重新编译或重新签名后仍声称是 v1。主 App 会核对 SHA-256 `5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`，解码安装一次后长期复用。
+
+如果未来必须修改 Broker，必须升为新的 Broker protocol/version，并按一次新的 Keychain 身份迁移处理，不能覆盖 v1。

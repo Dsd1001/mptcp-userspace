@@ -4,11 +4,17 @@ MPTCP Userspace is an **application-layer multipath transport** for macOS and Li
 
 It is **not kernel MPTCP** and it is **not QUIC**. Relay nodes only forward ordinary TCP bytes; MPX/4 authentication, encryption, stream state, flow control and scheduling are end-to-end between the Client and Landing.
 
-**Current macOS release: v0.10.10 · MPX/4 Draft 04**
+**Current macOS release: v0.10.11 · MPX/4 Draft 04**
 
-- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.10)
+- [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.11)
 - [MPX/4 specification](https://github.com/Dsd1001/MPX-4)
 - [中文说明](README.zh-CN.md)
+
+## v0.10.11: frozen Keychain Broker
+
+0.10.11 separates Keychain access from the replaceable MPTCP Desk app. A pinned, byte-for-byte frozen `MPTCPKeychainBroker` v1 is installed once under the user Application Support directory and owns all access to the existing Transport Key, Provisioning URL and Remote Control credential. The main app no longer calls Keychain APIs directly.
+
+The broker accepts requests only from a parent process satisfying the pinned MPTCP Desk signing requirement. Its signed bytes and cdhash stay unchanged across app updates, so the file-based Keychain partition list is stable even when the main app cdhash changes. The first 0.10.10 → 0.10.11 migration can still ask once for each existing Keychain item; subsequent releases keep using the same broker.
 
 ## v0.10.10: signing continuity validation
 

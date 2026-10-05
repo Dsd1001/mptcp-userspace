@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 struct RemoteControlCredential: Codable {
     var deviceID: String
@@ -7,53 +6,20 @@ struct RemoteControlCredential: Codable {
 }
 
 enum RemoteControlCredentialStore {
-    private static let service = "MPTCPDesk.RemoteControl"
-    private static let account = "device-credential"
-
     static func save(_ credential: RemoteControlCredential) throws {
-        let data = try JSONEncoder().encode(credential)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(add as CFDictionary, nil)
-        guard status == errSecSuccess else { throw ProfileError("无法保存远程管理设备凭据（" + String(status) + "）") }
+        try KeychainBrokerClient.save(try JSONEncoder().encode(credential), slot: .remoteControl)
     }
 
     static func load() throws -> RemoteControlCredential? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw ProfileError("无法读取远程管理设备凭据（" + String(status) + "）")
-        }
+        guard let data = try KeychainBrokerClient.load(.remoteControl) else { return nil }
         return try JSONDecoder().decode(RemoteControlCredential.self, from: data)
     }
 
     static func delete() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw ProfileError("无法删除远程管理设备凭据（" + String(status) + "）")
-        }
+        try KeychainBrokerClient.delete(.remoteControl)
     }
 }
+
 
 struct RemotePairResponse: Decodable {
     var device_id: String

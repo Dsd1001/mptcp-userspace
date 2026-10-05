@@ -1,11 +1,15 @@
-# MPTCP Desk 0.10.7 validation
+# MPTCP Desk 0.10.11 validation
 
-A 0.10.7 release candidate must cover:
+A 0.10.11 release candidate must cover:
 
 - remote management is default-off and desired control is ignored while locally disabled;
 - HTTPS-only control-server validation, with loopback HTTP allowed only for development;
 - per-device pairing/auth isolation and Keychain-only device secret handling;
 - signed Sparkle appcast / DMG metadata, pinned public key and embedded framework;
+- no direct main-App SecItem access for the three MPTCP Desk secrets;
+- frozen Keychain Broker v1 resource hash, Universal architectures, code signature and parent Designated Requirement enforcement;
+- two changed parent-App cdhash values successfully use the same Broker-backed validation Keychain partition;
+- untrusted direct Broker invocation is rejected;
 - remote update cannot specify an arbitrary URL or executable;
 
 - engine/Landing go test, go vet and race suite;
@@ -33,4 +37,4 @@ A 0.10.7 release candidate must cover:
 
 Correctness tests do not constitute WAN performance validation. Source-matched CAPACITY.json and RUNTIME.json remain separate evidence.
 
-The macOS DMG is ad-hoc signed and not notarized.
+The macOS DMG uses the pinned stable local self-signed identity and is not Apple Developer ID notarized. The frozen Keychain Broker is independently pinned by exact SHA-256 and must not be rebuilt or re-signed while remaining v1.

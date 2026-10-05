@@ -130,7 +130,7 @@ def main() -> None:
     elif args.phase == 'ui':
         for arch in ['arm64','x86_64']:
             binary=ROOT/'macos/build'/('SchedulerUIHarness-090-'+arch);binary.parent.mkdir(parents=True,exist_ok=True)
-            codes.append(run_case('ui-build-'+arch,['xcrun','swiftc','-O','-swift-version','5','-parse-as-library','-D','UI_TEST','-target',arch+'-apple-macosx13.0','-module-cache-path','/tmp/mptcp-swift-cache','macos/Lifecycle.swift','macos/Profile.swift','macos/App.swift','tests/userspace/SchedulerUIHarness.swift','-o',str(binary)],{},90))
+            codes.append(run_case('ui-build-'+arch,['xcrun','swiftc','-O','-swift-version','5','-parse-as-library','-D','UI_TEST','-target',arch+'-apple-macosx13.0','-module-cache-path','/tmp/mptcp-swift-cache','-F',str(ROOT/'macos/build/vendor/sparkle-2.10.0'),'-framework','Sparkle','-Xlinker','-rpath','-Xlinker',str(ROOT/'macos/build/vendor/sparkle-2.10.0'),'macos/Lifecycle.swift','macos/Profile.swift','macos/KeychainBrokerClient.swift','macos/RemoteControl.swift','macos/UpdateController.swift','macos/App.swift','tests/userspace/SchedulerUIHarness.swift','-o',str(binary)],{},90))
             directory=OUT/('ui-'+arch)
             codes.append(run_case('ui-run-'+arch,['/usr/bin/arch','-'+arch,str(binary),str(directory),str(OUT/'stdin')],{},45))
     summary={'phase':args.phase,'source_id':identity(),'command_exit_codes':codes,'all_commands_succeeded':all(c==0 for c in codes)}

@@ -112,3 +112,10 @@ files under docs/guides and the top-level README files are intentionally outside
 
 Building successfully is not equivalent to release acceptance. A release candidate must also pass the gates in
 [Validation](../userspace/VALIDATION.md) and publish source-matched evidence.
+### Frozen Keychain Broker
+
+Starting with 0.10.11, the stable self-signed Designated Requirement still authenticates the main app, but the main app no longer accesses the three file-based Keychain items directly. Modern macOS also maintains a separate `partition_id` containing the accessing process cdhash; rebuilding the app changes that cdhash even when its Designated Requirement is stable.
+
+The release therefore carries `macos/keychain-broker/MPTCPKeychainBroker.v1.b64`, the Base64 representation of a signed Universal broker whose bytes are frozen. The build copies this resource verbatim and must never rebuild or re-sign it while calling it v1. MPTCP Desk verifies SHA-256 `5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`, installs those exact bytes once, and reuses them across updates.
+
+Any future broker change requires a new broker protocol/version and an explicit one-time Keychain identity migration; v1 must not be overwritten.
