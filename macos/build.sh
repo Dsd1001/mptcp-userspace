@@ -13,6 +13,17 @@ SPARKLE_VERSION=2.10.0
 SPARKLE_SHA256=c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c
 SPARKLE_VENDOR="$BUILD/vendor/sparkle-$SPARKLE_VERSION"
 SPARKLE_ARCHIVE="$BUILD/vendor/Sparkle-$SPARKLE_VERSION.tar.xz"
+CODESIGN_IDENTITY=${MPTCP_CODESIGN_IDENTITY:--}
+NOTARY_PROFILE=${MPTCP_NOTARY_PROFILE:-}
+
+sign_target() {
+    local target="$1"
+    if [[ "$CODESIGN_IDENTITY" == "-" ]]; then
+        codesign --force --sign - "$target"
+    else
+        codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$target"
+    fi
+}
 mkdir -p "$BUILD/vendor"
 if [[ ! -f "$SPARKLE_ARCHIVE" ]]; then
     curl -fsSL --retry 3 "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz" -o "$SPARKLE_ARCHIVE.tmp"
@@ -72,8 +83,12 @@ done
 mkdir -p "$APP/Contents/Resources/Licenses"
 mv "$APP/Contents/Resources/Licenses-sparkle.tmp" "$APP/Contents/Resources/Licenses/sparkle.txt"
 cp -f "$("$GO" env GOROOT)/LICENSE" "$APP/Contents/Resources/Licenses/go.txt"
-codesign --force --sign - "$APP/Contents/Resources/mptcp-desktop-engine"
-codesign --force --deep --sign - "$APP"
+sign_target "$APP/Contents/Resources/mptcp-desktop-engine"
+if [[ "$CODESIGN_IDENTITY" == "-" ]]; then
+    codesign --force --deep --sign - "$APP"
+else
+    codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP"
+fi
 codesign --verify --deep --strict "$APP"
 for binary in "$APP/Contents/MacOS/MPTCPDesk" "$APP/Contents/Resources/mptcp-desktop-engine"; do
     archs=$(lipo -archs "$binary")
@@ -86,9 +101,18 @@ ln -s /Applications "$STAGE/Applications"
 printf '%s\n' "$SOURCE_ID" > "$STAGE/SOURCE_ID"
 hdiutil create -ov -volname 'MPTCP Desk' -srcfolder "$STAGE" -format UDZO "$OUT/MPTCP-Desk-$VERSION-universal.dmg"
 hdiutil verify "$OUT/MPTCP-Desk-$VERSION-universal.dmg"
+if [[ -n "$NOTARY_PROFILE" ]]; then
+    [[ "$CODESIGN_IDENTITY" != "-" ]] || { echo 'MPTCP_NOTARY_PROFILE requires MPTCP_CODESIGN_IDENTITY' >&2; exit 1; }
+    xcrun notarytool submit "$OUT/MPTCP-Desk-$VERSION-universal.dmg" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$OUT/MPTCP-Desk-$VERSION-universal.dmg"
+    xcrun stapler validate "$OUT/MPTCP-Desk-$VERSION-universal.dmg"
+fi
 [[ $(python3 "$ROOT/scripts/source-manifest.py" --id) == "$SOURCE_ID" ]]
 {
-    printf 'Component: MPTCP Desk\nVersion: %s\nSource-ID: %s\nProtocol: MPX/4 Draft 04\nArchitectures: arm64 x86_64\nUpdater: Sparkle %s / EdDSA appcast\nSigning: ad-hoc, not notarized\n' "$VERSION" "$SOURCE_ID" "$SPARKLE_VERSION"
+    signing='ad-hoc, not notarized'
+    [[ "$CODESIGN_IDENTITY" == "-" ]] || signing="Developer ID ($CODESIGN_IDENTITY)"
+    [[ -z "$NOTARY_PROFILE" ]] || signing="$signing, notarized"
+    printf 'Component: MPTCP Desk\nVersion: %s\nSource-ID: %s\nProtocol: MPX/4 Draft 04\nArchitectures: arm64 x86_64\nUpdater: Sparkle %s / EdDSA appcast\nSigning: %s\n' "$VERSION" "$SOURCE_ID" "$SPARKLE_VERSION" "$signing"
     "$GO" version
     xcrun swiftc --version
 } > "$OUT/MPTCP-Desk.BUILDINFO"

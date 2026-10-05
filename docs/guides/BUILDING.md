@@ -63,7 +63,7 @@ On macOS with the required Apple toolchain:
 ./macos/build.sh
 ~~~
 
-The script builds both arm64 and x86_64 Swift/Go components, combines them into a Universal app, ad-hoc signs the app, verifies the signature, and creates the DMG.
+The script builds both arm64 and x86_64 Swift/Go components, combines them into a Universal app, signs the app, verifies the signature, and creates the DMG. By default it keeps the local ad-hoc signing behavior. For a distributable updater build, set `MPTCP_CODESIGN_IDENTITY` to a Developer ID Application identity; the script then signs the app and embedded Sparkle helpers with runtime hardening and a secure timestamp.
 
 Expected output includes:
 
@@ -71,7 +71,7 @@ Expected output includes:
 - MPTCP-Desk-<version>-SHA256SUMS
 - MPTCP-Desk.BUILDINFO
 
-The DMG is ad-hoc signed and not notarized.
+The default DMG is ad-hoc signed and not notarized. Ad-hoc packages are suitable for local testing, but Sparkle may require macOS authorization when replacing an app in a protected location. A Developer ID signed app installed by the user can update remotely without repeated administrator prompts. To notarize a release, store App Store Connect credentials in a notarytool keychain profile and pass `MPTCP_NOTARY_PROFILE`; this requires a non-ad-hoc `MPTCP_CODESIGN_IDENTITY`.
 
 ## Source identity behavior
 

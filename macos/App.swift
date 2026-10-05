@@ -1501,6 +1501,7 @@ struct DesktopView: View {
                 }
             } else if model.userspace {
                 schedulerSummary(configured: model.configuredSchedulerMode, effective: model.effectiveSchedulerMode, switches: model.schedulerModeSwitches, reason: model.lastSchedulerModeReason)
+                pathOverview(model.tcpPaths)
                 HStack(spacing: 9) { DeskMetricTile(label: "当前重排", value: Self.bytes(model.reorderBytes), detail: "正在等待有序数据"); DeskMetricTile(label: "重排峰值", value: Self.bytes(model.reorderPeak), detail: "会话峰值"); DeskMetricTile(label: "等待确认", value: Self.bytes(model.pendingBytes), detail: "可靠数据"); Spacer() }
                 resourcePanels(model.resources, streamExpanded: $model.localStreamResourceExpanded, windowExpanded: $model.localWindowResourceExpanded)
                 pathSection("TCP 路径", model.tcpPaths, hideEndpoint: model.remoteConfigurationSelected)
@@ -1517,6 +1518,7 @@ struct DesktopView: View {
                 HStack { VStack(alignment: .leading, spacing: 3) { Text(choice.name).font(.system(size: 14, weight: .semibold)); Text("127.0.0.1:\(String(choice.listenPort))").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary) }; Spacer(); Text(model.provisioningRuntimeStatus[choice.id] ?? "等待启动").font(.system(size: 10, weight: .semibold)).foregroundColor(model.provisioningRuntimeError[choice.id] == nil ? .secondary : .red) }
                 if let error = model.provisioningRuntimeError[choice.id] { Text(error).font(.system(size: 11)).foregroundColor(.red) }
                 schedulerSummary(configured: diagnostic.configuredSchedulerMode, effective: diagnostic.effectiveSchedulerMode, switches: diagnostic.schedulerModeSwitches, reason: diagnostic.lastSchedulerModeReason)
+                pathOverview(diagnostic.tcpPaths)
                 HStack(spacing: 9) { DeskMetricTile(label: "Carrier", value: String(diagnostic.paths), detail: "在线路径"); DeskMetricTile(label: "连接", value: String(diagnostic.connections), detail: "逻辑连接"); DeskMetricTile(label: "上传", value: Self.bytes(diagnostic.sent), detail: "累计"); DeskMetricTile(label: "下载", value: Self.bytes(diagnostic.received), detail: "累计") }
                 HStack(spacing: 9) { DeskMetricTile(label: "重排", value: Self.bytes(diagnostic.reorderBytes), detail: "当前"); DeskMetricTile(label: "峰值", value: Self.bytes(diagnostic.reorderPeak), detail: "历史峰值"); DeskMetricTile(label: "重传", value: String(diagnostic.retransmits), detail: "TCP"); Spacer() }
                 resourcePanels(diagnostic.resources, streamExpanded: profileStreamBinding(choice.id), windowExpanded: profileWindowBinding(choice.id))
@@ -1537,6 +1539,20 @@ struct DesktopView: View {
         }
         .padding(10).background(Color.indigo.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 10))
         .accessibilityIdentifier("scheduler-status")
+    }
+
+    private func pathOverview(_ paths: [PathMetric]) -> some View {
+        let online = paths.filter(\.connected).count
+        let learning = paths.filter { ($0.role ?? "").lowercased() == "learning" }.count
+        let degraded = paths.filter { ["probe", "backup"].contains(($0.role ?? "").lowercased()) }.count
+        let rtts = paths.filter { $0.connected && $0.rtt_ms > 0 }.map(\.rtt_ms)
+        let averageRTT = rtts.isEmpty ? "—" : String(format: "%.1f ms", rtts.reduce(0, +) / Double(rtts.count))
+        return HStack(spacing: 9) {
+            DeskMetricTile(label: "在线路径", value: "\(online) / \(paths.count)", detail: "Carrier 状态")
+            DeskMetricTile(label: "Learning", value: String(learning), detail: "正在收集样本")
+            DeskMetricTile(label: "保护 / 探测", value: String(degraded), detail: "Probe + Backup")
+            DeskMetricTile(label: "平均 RTT", value: averageRTT, detail: "在线路径")
+        }
     }
 
     @ViewBuilder private func resourcePanels(_ resource: ResourceMetric?, streamExpanded: Binding<Bool>, windowExpanded: Binding<Bool>) -> some View {
@@ -1592,12 +1608,36 @@ struct DesktopView: View {
             if paths.isEmpty { Text("尚无路径数据；启动后自动更新").font(.system(size: 11)).foregroundColor(.secondary) }
             ForEach(paths) { path in
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack { Circle().fill(path.connected ? Color.green : Color.gray).frame(width: 7, height: 7); Text(hideEndpoint ? "路径 \(path.id + 1)" : "\(path.id) · \(path.address)").font(.system(size: 11, design: .monospaced)); if let role = path.role { Text(role.uppercased()).font(.system(size: 9, weight: .bold)).foregroundColor(.indigo) }; Spacer(); Text(path.connected ? "在线" : "重连中").font(.system(size: 10)).foregroundColor(.secondary) }
+                    HStack {
+                        Circle().fill(path.connected ? Color.green : Color.gray).frame(width: 7, height: 7)
+                        Text(hideEndpoint ? "路径 \(path.id + 1)" : "\(path.id) · \(path.address)").font(.system(size: 11, design: .monospaced))
+                        if let role = path.role, !role.isEmpty {
+                            Text(Self.pathRoleTitle(role)).font(.system(size: 9, weight: .bold)).foregroundColor(Self.pathRoleColor(role))
+                                .padding(.horizontal, 6).padding(.vertical, 3).background(Self.pathRoleColor(role).opacity(0.11)).clipShape(Capsule())
+                        }
+                        Spacer()
+                        Text(path.connected ? "在线" : "重连中").font(.system(size: 10)).foregroundColor(.secondary)
+                    }
                     Text(String(format: "RTT %.1f ms · Goodput %.2f MiB/s · 队列 %@ · 在途 %@ · 错误 %llu", path.rtt_ms, path.goodput_bps / 1048576, Self.bytes(path.queue_bytes), Self.bytes(path.outstanding_bytes), path.errors)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                    HStack(spacing: 12) {
+                        if let delivery = path.measured_delivery_bps, delivery > 0 { Label(String(format: "测得 %.2f Mbps", delivery * 8 / 1_000_000), systemImage: "speedometer") }
+                        if let samples = path.delivery_samples { Label("样本 \(samples)", systemImage: "chart.bar") }
+                        if let attempts = path.dial_attempts { Label("拨号 \(attempts)", systemImage: "arrow.triangle.2.circlepath") }
+                        if let budget = path.budget_bytes, budget > 0 { Label("预算 \(Self.bytes(budget))", systemImage: "gauge.with.dots.needle.33percent") }
+                    }.font(.system(size: 9)).foregroundColor(.secondary)
+                    if let reason = path.role_reason, !reason.isEmpty { Text(reason).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1) }
                     if let error = path.last_error, !error.isEmpty { Text(hideEndpoint ? "路径连接异常" : error).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1) }
                 }.padding(10).background(Color.black.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 10))
             }
         }
+    }
+
+    private static func pathRoleTitle(_ role: String) -> String {
+        switch role.lowercased() { case "learning": return "LEARNING"; case "active": return "ACTIVE"; case "probe": return "PROBE"; case "backup": return "BACKUP"; default: return role.uppercased() }
+    }
+
+    private static func pathRoleColor(_ role: String) -> Color {
+        switch role.lowercased() { case "learning": return .indigo; case "active": return .green; case "probe": return .orange; case "backup": return .secondary; default: return .secondary }
     }
 
     private func profileStreamBinding(_ id: String) -> Binding<Bool> { Binding(get: { model.profileStreamResourceExpanded.contains(id) }, set: { var next = model.profileStreamResourceExpanded; if $0 { next.insert(id) } else { next.remove(id) }; model.profileStreamResourceExpanded = next }) }

@@ -113,6 +113,20 @@ struct PathMetric: Decodable, Identifiable {
     var last_error: String?
     var role: String? = nil
     var role_reason: String? = nil
+    var measured_delivery_bps: Double? = nil
+    var valid_delivery_samples: Int? = nil
+    var delivery_samples: Int? = nil
+    var scheduler_probe_count: UInt64? = nil
+    var scheduler_probe_payload_bytes: UInt64? = nil
+    var scheduler_probe_debt_peak: Int? = nil
+    var scheduler_data_acks: Int? = nil
+    var budget_bytes: Int? = nil
+    var dial_attempts: UInt64? = nil
+    var carrier_connections: UInt64? = nil
+    var connected_at: String? = nil
+    var disconnected_at: String? = nil
+    var control_outstanding_bytes: Int? = nil
+    var control_queue_bytes: Int? = nil
 }
 struct ResourceMetric: Decodable {
     var capability_revision: Int?

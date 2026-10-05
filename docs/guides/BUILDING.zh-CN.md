@@ -86,7 +86,7 @@ Landing 使用：
 3. 使用 lipo 合并 Universal binary；
 4. 生成 App Icon；
 5. 写入 Source-ID；
-6. ad-hoc codesign；
+6. 默认使用 ad-hoc codesign；也可以通过 `MPTCP_CODESIGN_IDENTITY` 使用 Developer ID Application 签名，并自动为 Sparkle 辅助进程启用 hardened runtime 和安全时间戳；
 7. 校验签名和双架构；
 8. 生成 DMG；
 9. 生成 SHA256 与 BUILDINFO。
@@ -97,7 +97,7 @@ Landing 使用：
 - MPTCP-Desk-<version>-SHA256SUMS
 - MPTCP-Desk.BUILDINFO
 
-当前 DMG 为 ad-hoc 签名，未 notarize。
+默认 DMG 为 ad-hoc 签名，未 notarize，适合本地测试。ad-hoc 包在替换 `/Applications` 下的 App 时可能触发 macOS 授权。正式远程更新应使用 Developer ID Application 签名；这样 Sparkle 可以在用户拥有 App 的情况下后台替换并重启，避免重复管理员密码提示。配置 `MPTCP_NOTARY_PROFILE` 后，脚本还会提交并 stapler notarize DMG；该选项必须同时提供非 ad-hoc 的 `MPTCP_CODESIGN_IDENTITY`。
 
 ## Source-ID 与文档提交
 
