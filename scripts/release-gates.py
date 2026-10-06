@@ -8,8 +8,8 @@ ROOT=pathlib.Path(__file__).resolve().parents[1]
 VERSION=(ROOT/'macos/VERSION').read_text().strip()
 TARGETS=[128,256,512,1024,2048]
 MAX_STREAMS=2048
-CAPS={'active_streams':MAX_STREAMS,'receive_credit_bytes':128<<20,'bootstrap_credit_bytes':32<<20,
-      'growth_credit_bytes':96<<20,'receive_allocated_bytes':128<<20,'data_pending_frames':8192,
+CAPS={'active_streams':MAX_STREAMS,'receive_credit_bytes':128<<20,'bootstrap_credit_bytes':64<<20,
+      'growth_credit_bytes':128<<20,'receive_allocated_bytes':128<<20,'data_pending_frames':8192,
       'data_pending_bytes':128<<20,'control_pending_frames':8192,'control_pending_bytes':512<<10}
 
 
@@ -23,7 +23,7 @@ def sha(path: pathlib.Path) -> str:
 
 def bounds(snapshot: dict) -> None:
     r=snapshot['resources']
-    require(r.get('capability_revision')==6,'Capacity evidence is not MPX/4 Protocol Version 4 Stable')
+    require(r.get('capability_revision')==7,'Capacity evidence is not the RC7 MPX/4 Stable product capability')
     for field,limit in CAPS.items():
         require(isinstance(r[field],int) and 0<=r[field]<=limit,'Invalid resource bound: '+field)
     require(r['receive_credit_bytes']==r['bootstrap_credit_bytes']+r['growth_credit_bytes'],'Credit subledger mismatch')

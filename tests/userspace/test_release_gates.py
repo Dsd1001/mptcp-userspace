@@ -18,7 +18,7 @@ def records():
     for d in capacity['cases']:
         for who in ['client_peak','server_peak']:
             for k in ['receive_credit_bytes','bootstrap_credit_bytes','growth_credit_bytes','receive_allocated_bytes','data_pending_frames','data_pending_bytes','control_pending_frames','control_pending_bytes']:d[who][k]=0
-            d[who]['capability_revision']=6
+            d[who]['capability_revision']=7
         d.update(exchanges=d['target_streams'],churn_reopens=8,bulk_segments=8,typed_next_stream_rejection=d['target_streams']==2048,evidence_sha256='0'*64)
     runtime={'version':G.VERSION,'wire_protocol':4,'source_id':ID,'verified':True,'workload':'segmented-mixed-180s',
              'observed_seconds':180.1,'short_attempts':200,'short_failures':0,'idle_keepalive_connections':6,
@@ -59,7 +59,7 @@ class GateTests(unittest.TestCase):
             else:r['bulk_segments'][0]['start_seconds']=0;r['bulk_segments'][0]['end_seconds']=180
             with self.assertRaises(ValueError):G.check(c,r,ID,required=True)
     def test_overbound_capacity_peak_refused(self):
-        c,r=records();c['cases'][-1]['server_peak']['growth_credit_bytes']=97<<20
+        c,r=records();c['cases'][-1]['server_peak']['growth_credit_bytes']=129<<20
         with self.assertRaises(ValueError):G.check(c,r,ID,required=True)
     def test_failure_or_missing_cleanup_refused(self):
         for field in ['resource_refusals','admission_deadline_exceeded','open_receive_credit_waits','short_failures']:
