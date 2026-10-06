@@ -31,7 +31,8 @@ func TestRev4ScaleConstantsAndNextRefusal(t *testing.T) {
 		t.Fatalf("%dth refusal not typed: %v", MaxStreams+1, err)
 	}
 	r := s.Snapshot().Resources
-	if r.StreamLimit != 2048 || r.ReceiveCreditLimit != 128<<20 || r.BootstrapLimit != 64<<20 || r.GrowthLimit != 64<<20 {
+	if r.StreamLimit != 2048 || r.ReceiveCreditLimit != 128<<20 || r.BootstrapLimit != 64<<20 ||
+		r.GrowthBaseLimit != 64<<20 || r.GrowthLimit != 128<<20 {
 		t.Fatalf("telemetry limits mismatch: %+v", r)
 	}
 	if r.DataPendingLimit != 8192 || r.DataPendingByteLimit != 128<<20 || r.ReceiveAllocatedLimit != 128<<20 {

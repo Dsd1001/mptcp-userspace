@@ -46,6 +46,7 @@ type ResourceStats struct {
 	BootstrapCredit         int               `json:"bootstrap_credit_bytes"`
 	BootstrapLimit          int               `json:"bootstrap_credit_limit_bytes"`
 	GrowthCredit            int               `json:"growth_credit_bytes"`
+	GrowthBaseLimit         int               `json:"growth_credit_base_share_bytes"`
 	GrowthLimit             int               `json:"growth_credit_limit_bytes"`
 	DataPendingFrames       int               `json:"data_pending_frames"`
 	DataPendingLimit        int               `json:"data_pending_frame_limit"`
@@ -193,7 +194,8 @@ func (s *Session) resourceSnapshotLocked() ResourceStats {
 	r.BootstrapCredit = s.receiveCredit - s.receiveGrowth
 	r.BootstrapLimit = BootstrapCreditLimit
 	r.GrowthCredit = s.receiveGrowth
-	r.GrowthLimit = GrowthCreditLimit
+	r.GrowthBaseLimit = GrowthCreditLimit
+	r.GrowthLimit = GrowthCreditLimit + max(0, BootstrapCreditLimit-r.BootstrapCredit)
 	r.DataPendingFrames = s.dataPendingFrames
 	r.DataPendingLimit = MaxDataPending
 	r.DataPendingBytes = s.dataPendingBytes

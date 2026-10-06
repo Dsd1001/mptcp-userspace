@@ -123,10 +123,11 @@ func capacityClose(st *Stream, peer *Session) error {
 }
 func capacityBounds(st Stats) error {
 	r := st.Resources
-	if r.OccupiedSlots > MaxStreams || r.TXUsed < 0 || r.TXUsed > SessionCreditLimit || r.TXGrowth < 0 || r.TXGrowth > GrowthCreditLimit || r.TXBootstrap < 0 || r.TXBootstrap > BootstrapCreditLimit {
+	txGrowthLimit := GrowthCreditLimit + max(0, BootstrapCreditLimit-r.TXBootstrap)
+	if r.OccupiedSlots > MaxStreams || r.TXUsed < 0 || r.TXUsed > SessionCreditLimit || r.TXGrowth < 0 || r.TXGrowth > txGrowthLimit || r.TXBootstrap < 0 || r.TXBootstrap > BootstrapCreditLimit {
 		return fmt.Errorf("sender/closing resource bound")
 	}
-	for name, pair := range map[string][2]int{"streams": {r.ActiveStreams, MaxStreams}, "credit": {r.ReceiveCredit, SessionCreditLimit}, "bootstrap": {r.BootstrapCredit, BootstrapCreditLimit}, "growth": {r.GrowthCredit, GrowthCreditLimit}, "pages": {r.ReceiveAllocated, MaxBuffered}, "data_frames": {r.DataPendingFrames, MaxDataPending}, "data_bytes": {r.DataPendingBytes, MaxDataPendingBytes}, "control_frames": {r.ControlPendingFrames, MaxControlPending}, "control_bytes": {r.ControlPendingBytes, MaxControlBytes}} {
+	for name, pair := range map[string][2]int{"streams": {r.ActiveStreams, MaxStreams}, "credit": {r.ReceiveCredit, SessionCreditLimit}, "bootstrap": {r.BootstrapCredit, BootstrapCreditLimit}, "growth": {r.GrowthCredit, r.GrowthLimit}, "pages": {r.ReceiveAllocated, MaxBuffered}, "data_frames": {r.DataPendingFrames, MaxDataPending}, "data_bytes": {r.DataPendingBytes, MaxDataPendingBytes}, "control_frames": {r.ControlPendingFrames, MaxControlPending}, "control_bytes": {r.ControlPendingBytes, MaxControlBytes}} {
 		if pair[0] < 0 || pair[0] > pair[1] {
 			return fmt.Errorf("%s=%d outside 0..%d", name, pair[0], pair[1])
 		}
