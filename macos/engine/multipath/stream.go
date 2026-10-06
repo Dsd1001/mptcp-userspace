@@ -46,9 +46,10 @@ type Stream struct {
 	txNext, peerConsumed, peerCreditConsumed uint64
 	peerLimit, rxLimit                       uint64
 	windowTarget, readSampleBytes            int
+	warmTarget                               int
 	readRateBPS                              float64
 	createdAt, lastActivity                  time.Time
-	readSampleAt, lastRead                   time.Time
+	readSampleAt, lastRead, warmAt           time.Time
 	writeFIN, finACK                         bool
 	rxRead, rxContiguous, rxHigh             uint64
 	hasFIN                                   bool
@@ -59,7 +60,7 @@ type Stream struct {
 	windowAt                                 time.Time
 	windowSent                               uint64
 	demandBytes                              uint64
-	warmSeedUsed                             bool
+	warmSeedUsed, warmHistoryUsed            bool
 }
 
 var _ net.Conn = (*Stream)(nil)

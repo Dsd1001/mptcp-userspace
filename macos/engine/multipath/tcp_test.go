@@ -355,7 +355,7 @@ func TestTCPSlowReaderIsolated(t *testing.T) {
 	defer slow.Close()
 	slow.SetWriteDeadline(time.Now().Add(400 * time.Millisecond))
 	result := make(chan error, 1)
-	go func() { _, e := slow.Write(make([]byte, 4*StreamWindow)); result <- e }()
+	go func() { _, e := slow.Write(make([]byte, 4*StandbyStreamWindow)); result <- e }()
 	time.Sleep(50 * time.Millisecond)
 	if _, err = transfer(s, 32769); err != nil {
 		t.Fatalf("independent stream blocked: %v", err)
@@ -423,7 +423,7 @@ func TestStreamReorderingOverlapAndWindow(t *testing.T) {
 		if err := st.receiveLocked(2, []byte("X")); !errors.Is(err, ErrProtocol) {
 			t.Fatal("conflicting overlap accepted")
 		}
-		if err := st.receiveLocked(StreamWindow, []byte("x")); !errors.Is(err, ErrProtocol) {
+		if err := st.receiveLocked(st.rxLimit, []byte("x")); !errors.Is(err, ErrProtocol) {
 			t.Fatal("window overflow accepted")
 		}
 	}()

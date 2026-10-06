@@ -60,8 +60,9 @@ func TestAdaptiveCreditGrowthShrinkAndMonotonicGrant(t *testing.T) {
 	}
 	limit := st.rxLimit
 	st.advertiseCreditLocked(now.Add(creditIdle + time.Second))
-	if st.windowTarget != StreamWindow || st.rxLimit != limit {
-		t.Fatal("idle shrink retracted already advertised bytes")
+	standby := s.standbyWindowLocked()
+	if st.windowTarget != standby || st.rxLimit != limit {
+		t.Fatalf("idle standby retracted already advertised bytes: target=%d standby=%d", st.windowTarget, standby)
 	}
 	n := int(st.rxLimit - st.rxRead)
 	oldRead := st.rxRead
@@ -71,8 +72,8 @@ func TestAdaptiveCreditGrowthShrinkAndMonotonicGrant(t *testing.T) {
 	st.rxRead += uint64(n)
 	st.releaseReadCreditLocked(oldRead)
 	st.advertiseCreditLocked(now.Add(creditIdle + time.Second))
-	if st.rxLimit-st.rxRead != StreamWindow || s.receiveCredit != 0 {
-		t.Fatal("old grant did not drain into small target")
+	if st.rxLimit-st.rxRead != uint64(standby) || s.receiveCredit != 0 {
+		t.Fatalf("old grant did not drain into standby target: remaining=%d standby=%d", st.rxLimit-st.rxRead, standby)
 	}
 	st.Close()
 	if s.receiveCredit != 0 {

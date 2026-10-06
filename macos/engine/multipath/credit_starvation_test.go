@@ -68,7 +68,7 @@ func errString(err error) string {
 	return err.Error()
 }
 
-func TestIdleNewStreamsMustNotInheritLargeGrant(t *testing.T) {
+func TestIdleNewStreamsUseBoundedStandbyGrant(t *testing.T) {
 	s := schedulerFixture()
 	s.ctx = context.Background()
 	s.windowSeed = MaxStreamWindow
@@ -82,8 +82,9 @@ func TestIdleNewStreamsMustNotInheritLargeGrant(t *testing.T) {
 	b.advertiseCreditLocked(time.Now())
 	defer a.Close()
 	defer b.Close()
-	if b.rxLimit > StreamWindow {
-		t.Fatalf("idle new stream inherited %d bytes without consumption", b.rxLimit)
+	want := s.standbyWindowLocked()
+	if b.rxLimit != uint64(want) || want > StandbyStreamWindow || b.rxLimit >= MaxStreamWindow {
+		t.Fatalf("idle new stream escaped bounded standby: got=%d want=%d", b.rxLimit, want)
 	}
 	if s.receiveCredit > SessionCreditLimit {
 		t.Fatal("credit ledger exceeded hard bound")

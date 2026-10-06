@@ -7,16 +7,20 @@ import (
 )
 
 const (
-	MaxStreamWindow      = 16 << 20
-	SessionCreditLimit   = 128 << 20
-	BootstrapCreditLimit = MaxStreams * StreamWindow
-	GrowthCreditLimit    = SessionCreditLimit - BootstrapCreditLimit
-	SmallStreamWindow    = 128 << 10
-	SmallGrowthReserve   = 4 << 20
-	initialPathBudget    = 2 * MaxPayload
-	maxPathBudget        = 8 << 20
-	creditIdle           = 5 * time.Second
-	dataDispatchBatch    = MaxStreams / 4 // preserve ~4 scheduler cycles for a full ready-set sweep as capacity scales
+	MaxStreamWindow          = 16 << 20
+	SessionCreditLimit       = 128 << 20
+	BootstrapCreditLimit     = MaxStreams * StreamWindow
+	GrowthCreditLimit        = SessionCreditLimit - BootstrapCreditLimit
+	SmallStreamWindow        = 128 << 10
+	StandbyStreamWindow      = 192 << 10
+	InitialWindowShareBudget = 16 << 20
+	SmallGrowthReserve       = 4 << 20
+	initialPathBudget        = 2 * MaxPayload
+	maxPathBudget            = 8 << 20
+	creditIdle               = 5 * time.Second
+	warmHistoryHalfLife      = 30 * time.Second
+	warmHistoryTTL           = 2 * time.Minute
+	dataDispatchBatch        = MaxStreams / 4 // preserve ~4 scheduler cycles for a full ready-set sweep as capacity scales
 )
 
 // All methods in this file run with Session.mu held. An absolute grant is
@@ -59,6 +63,31 @@ func (s *Session) legacyCreditRTTLocked() time.Duration {
 	return rtt
 }
 
+func (s *Session) liveReceiveStreamsLocked() int {
+	count := 0
+	for _, st := range s.streams {
+		if st == nil || st.closed || st.receiveStopped {
+			continue
+		}
+		count++
+	}
+	return max(1, count)
+}
+
+func (s *Session) standbyWindowLocked() int {
+	share := BootstrapCreditLimit / s.liveReceiveStreamsLocked()
+	return min(StandbyStreamWindow, max(StreamWindow, share))
+}
+
+func (s *Session) initialWindowLocked() int {
+	live := s.liveReceiveStreamsLocked()
+	if s.scheduler.configured != SchedulerWeighted && live <= 1 {
+		return StreamWindow
+	}
+	share := InitialWindowShareBudget / live
+	return min(StandbyStreamWindow, max(StreamWindow, share))
+}
+
 func (s *Session) activeDemandStreamsLocked(now time.Time) int {
 	count := 0
 	for _, st := range s.streams {
@@ -72,25 +101,72 @@ func (s *Session) activeDemandStreamsLocked(now time.Time) int {
 	return count
 }
 
-func (s *Session) streamWindowCeilingLocked(st *Stream, now time.Time) int {
+func (s *Session) streamFairCeilingLocked(now time.Time) int {
 	active := max(1, s.activeDemandStreamsLocked(now))
+	return min(MaxStreamWindow, s.standbyWindowLocked()+2*GrowthCreditLimit/active)
+}
+
+func (s *Session) streamWindowCeilingLocked(st *Stream, now time.Time) int {
 	// Entitlement itself does not reserve memory; committed DATA remains bounded
 	// by the Session ledger. Still keep an opportunistic 2x fair share so a
 	// high-fanout workload cannot let every Stream race straight to 16 MiB.
-	fair := StreamWindow + 2*GrowthCreditLimit/active
-	demand := StreamWindow
+	fair := s.streamFairCeilingLocked(now)
+	demand := s.standbyWindowLocked()
 	if st.demandBytes >= uint64(MaxStreamWindow/8) {
 		demand = MaxStreamWindow
 	} else {
-		demand = max(StreamWindow, int(8*st.demandBytes))
+		demand = max(demand, int(8*st.demandBytes))
 	}
 	return min(MaxStreamWindow, max(StreamWindow, min(fair, demand)))
+}
+
+func (st *Stream) warmHistoryTargetLocked(now time.Time) int {
+	if st.warmTarget <= 0 || st.warmAt.IsZero() {
+		return 0
+	}
+	age := now.Sub(st.warmAt)
+	if age < 0 {
+		age = 0
+	}
+	if age >= warmHistoryTTL {
+		return 0
+	}
+	target := st.warmTarget
+	for steps := int(age / warmHistoryHalfLife); steps > 0 && target > StreamWindow; steps-- {
+		target = max(StreamWindow, target/2)
+	}
+	return max(st.s.standbyWindowLocked(), target)
+}
+
+func (st *Stream) rememberWarmHistoryLocked(now time.Time) {
+	standby := st.s.standbyWindowLocked()
+	if st.windowTarget <= standby {
+		return
+	}
+	if st.warmAt.IsZero() || now.Sub(st.warmAt) >= warmHistoryTTL || st.windowTarget >= st.warmTarget {
+		st.warmTarget = st.windowTarget
+		st.warmAt = now
+	}
+}
+
+func (st *Stream) restoreWarmHistoryLocked(now time.Time) {
+	if st.warmHistoryUsed || st.demandBytes < uint64(StreamWindow) {
+		return
+	}
+	warm := st.warmHistoryTargetLocked(now)
+	if warm == 0 {
+		st.warmHistoryUsed = true
+		return
+	}
+	st.windowTarget = max(st.windowTarget, min(warm, st.s.streamFairCeilingLocked(now)))
+	st.warmHistoryUsed = true
 }
 
 // Called only once after the new receiver has consumed a full bootstrap.
 // Idle/small control streams must not disable a measured warm seed. Preserve
 // the existing protection for another recently active or unread bulk stream.
 func (s *Session) warmSeedUncontendedLocked(st *Stream, now time.Time) bool {
+	standby := s.standbyWindowLocked()
 	for _, other := range s.streams {
 		if other == st || other.closed || other.receiveStopped {
 			continue
@@ -98,7 +174,7 @@ func (s *Session) warmSeedUncontendedLocked(st *Stream, now time.Time) bool {
 		if other.rxHigh > other.rxRead && other.rxHigh-other.rxRead >= StreamWindow {
 			return false
 		}
-		if now.Sub(other.lastRead) <= creditIdle && (other.windowTarget > StreamWindow || other.demandBytes >= StreamWindow) {
+		if now.Sub(other.lastRead) <= creditIdle && (other.windowTarget > standby || other.demandBytes >= StreamWindow) {
 			return false
 		}
 	}
@@ -117,9 +193,11 @@ func (st *Stream) consumeCreditLocked(n int, now time.Time) {
 func (st *Stream) consumeLegacySingleCreditLocked(n int, now time.Time) {
 	s := st.s
 	if now.Sub(st.lastRead) > creditIdle {
+		st.rememberWarmHistoryLocked(st.lastRead)
 		st.demandBytes = 0
-		st.windowTarget = StreamWindow
+		st.windowTarget = s.standbyWindowLocked()
 		st.warmSeedUsed = false
+		st.warmHistoryUsed = false
 		st.readSampleBytes = 0
 		st.readRateBPS = 0
 		st.readSampleAt = now
@@ -127,6 +205,7 @@ func (st *Stream) consumeLegacySingleCreditLocked(n int, now time.Time) {
 	st.demandBytes += uint64(n)
 	st.readSampleBytes += n
 	st.lastRead = now
+	st.restoreWarmHistoryLocked(now)
 	interval := max(50*time.Millisecond, s.legacyCreditRTTLocked()/2)
 	if elapsed := now.Sub(st.readSampleAt); elapsed >= interval {
 		currentTarget := st.windowTarget
@@ -162,6 +241,7 @@ func (st *Stream) consumeLegacySingleCreditLocked(n int, now time.Time) {
 			st.warmSeedUsed = true
 		}
 	}
+	st.rememberWarmHistoryLocked(now)
 	threshold := uint64(min(128<<10, max(MaxPayload, st.windowTarget/4)))
 	if st.rxRead-st.windowSent >= threshold || st.rxLimit-st.rxRead <= uint64(st.windowTarget/2) {
 		st.advertiseCreditLocked(now)
@@ -171,9 +251,11 @@ func (st *Stream) consumeLegacySingleCreditLocked(n int, now time.Time) {
 func (st *Stream) consumeAdaptiveCreditLocked(n int, now time.Time) {
 	s := st.s
 	if now.Sub(st.lastRead) > creditIdle {
+		st.rememberWarmHistoryLocked(st.lastRead)
 		st.demandBytes = 0
-		st.windowTarget = StreamWindow
+		st.windowTarget = s.standbyWindowLocked()
 		st.warmSeedUsed = false
+		st.warmHistoryUsed = false
 		st.readSampleBytes = 0
 		st.readRateBPS = 0
 		st.readSampleAt = now
@@ -181,6 +263,7 @@ func (st *Stream) consumeAdaptiveCreditLocked(n int, now time.Time) {
 	st.demandBytes += uint64(n)
 	st.readSampleBytes += n
 	st.lastRead = now
+	st.restoreWarmHistoryLocked(now)
 	priorSeed, priorSeedAt := s.windowSeed, s.windowSeedAt
 
 	feedbackRTT := s.creditRTTLocked()
@@ -257,6 +340,7 @@ func (st *Stream) consumeAdaptiveCreditLocked(n int, now time.Time) {
 			// on the BDP/fair-share controller while they remain active.
 		}
 	}
+	st.rememberWarmHistoryLocked(now)
 	if st.windowTarget > SmallStreamWindow {
 		// Keep a recent high-water seed; a transient contended/small sample must
 		// not erase a proven bulk entitlement before it can be reused. Lower
@@ -289,8 +373,14 @@ func (st *Stream) advertiseCreditLocked(now time.Time) {
 		st.advertiseConsumedLocked(nil)
 		return
 	}
+	standby := st.s.standbyWindowLocked()
+	if st.rxLimit == 0 && st.rxRead == 0 && st.demandBytes == 0 && st.windowTarget <= StreamWindow {
+		st.windowTarget = st.s.initialWindowLocked()
+	}
 	if now.Sub(st.lastRead) > creditIdle {
-		st.windowTarget = StreamWindow
+		st.rememberWarmHistoryLocked(st.lastRead)
+		st.windowTarget = standby
+		st.warmHistoryUsed = false
 	}
 	if st.rxRead <= ^uint64(0)-uint64(st.windowTarget) {
 		desired := st.rxRead + uint64(st.windowTarget)

@@ -27,11 +27,11 @@ func TestWarmSeedIdleBackgroundNeedsRealConsumption(t *testing.T) {
 		consumeWindowFixture(t, other, 1, now.Add(time.Millisecond))
 	}
 	if st.windowTarget != StreamWindow || st.rxLimit != StreamWindow {
-		t.Fatal("implicit idle grant")
+		t.Fatalf("single non-Weighted initial stream lost cold bootstrap: target=%d limit=%d", st.windowTarget, st.rxLimit)
 	}
 	consumeWindowFixture(t, st, 1, now.Add(2*time.Millisecond))
 	if st.windowTarget != StreamWindow {
-		t.Fatal("one-byte warm seed")
+		t.Fatal("one-byte read inherited bulk seed")
 	}
 	consumeWindowFixture(t, st, StreamWindow-1, now.Add(3*time.Millisecond))
 	if st.windowTarget != 8<<20 {
@@ -41,8 +41,8 @@ func TestWarmSeedIdleBackgroundNeedsRealConsumption(t *testing.T) {
 		t.Fatal("allocation or credit escaped bounds")
 	}
 	for id, other := range s.streams {
-		if id != 1 && other.windowTarget != StreamWindow {
-			t.Fatal("background was enlarged")
+		if id != 1 && other.windowTarget > StandbyStreamWindow {
+			t.Fatal("background was enlarged beyond standby")
 		}
 	}
 }

@@ -117,8 +117,8 @@ func TestKeepaliveNeverInheritsBulkGrowth(t *testing.T) {
 		st.releaseReadCreditLocked(oldRead)
 		st.consumeCreditLocked(1, now)
 		st.advertiseCreditLocked(now)
-		if st.windowTarget != StreamWindow || s.receiveGrowth != 0 || int(st.rxLimit-st.rxRead) > StreamWindow {
-			t.Fatal("keepalive took bulk growth")
+		if st.windowTarget < StreamWindow || st.windowTarget > StandbyStreamWindow || s.receiveGrowth != 0 || int(st.rxLimit-st.rxRead) > StandbyStreamWindow {
+			t.Fatalf("keepalive escaped bounded standby: target=%d remaining=%d growth=%d", st.windowTarget, st.rxLimit-st.rxRead, s.receiveGrowth)
 		}
 	}
 }
@@ -148,8 +148,8 @@ func TestBulkCreditNaturallyRebalancesAndIdleNeverRevokes(t *testing.T) {
 			t.Fatal("idle revoked WINDOW")
 		}
 	}
-	if a.windowTarget != StreamWindow {
-		t.Fatal("idle target did not shrink")
+	if want := s.standbyWindowLocked(); a.windowTarget != want {
+		t.Fatalf("idle target did not shrink to standby: got=%d want=%d", a.windowTarget, want)
 	}
 	for _, st := range streams {
 		st.discardReceiveLocked()

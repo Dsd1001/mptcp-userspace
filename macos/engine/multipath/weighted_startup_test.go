@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -69,11 +70,18 @@ func TestWeighted92x6ConcurrentStartup(t *testing.T) {
 	if os.Getenv("MPX_WEIGHTED_STARTUP") != "1" {
 		t.Skip("set MPX_WEIGHTED_STARTUP=1 for 92 Mbps x 6 concurrent startup validation")
 	}
-	const (
-		pathCount      = 6
-		streamCount    = 150
-		bytesPerStream = 2 << 20
-	)
+	const pathCount = 6
+	streamCount, bytesPerStream := 150, 2<<20
+	if raw := os.Getenv("MPX_WEIGHTED_STREAMS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > MaxStreams {
+			t.Fatalf("invalid MPX_WEIGHTED_STREAMS=%q", raw)
+		}
+		streamCount = n
+		if streamCount <= 64 {
+			bytesPerStream = 4 << 20
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 

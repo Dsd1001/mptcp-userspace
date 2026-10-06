@@ -61,6 +61,8 @@ type Stats struct {
 	PathStats        []PathStats    `json:"path_stats"`
 	ReceiveCredit    int            `json:"receive_credit_bytes"`
 	WindowTarget     int            `json:"max_stream_window_target"`
+	WarmTarget       int            `json:"max_stream_warm_target_bytes"`
+	StandbyWindow    int            `json:"standby_window_bytes"`
 	WindowSeed       int            `json:"window_seed_bytes"`
 	WindowSeedAgeMS  float64        `json:"window_seed_age_ms"`
 	CreditRTTMS      float64        `json:"credit_rtt_ms"`
@@ -1151,6 +1153,7 @@ func (s *Session) Snapshot() Stats {
 	}
 	out.CreditRTTMS = float64(s.creditRTTLocked()) / float64(time.Millisecond)
 	out.DemandStreams = s.activeDemandStreamsLocked(now)
+	out.StandbyWindow = s.standbyWindowLocked()
 	out.Resources = s.resourceSnapshotLocked()
 	out.Lifecycle = s.lifecycleSnapshotLocked()
 	out.ReadyFrames = s.controlReady.Len()
@@ -1159,6 +1162,7 @@ func (s *Session) Snapshot() Stats {
 	}
 	for _, st := range s.streams {
 		out.WindowTarget = max(out.WindowTarget, st.windowTarget)
+		out.WarmTarget = max(out.WarmTarget, st.warmHistoryTargetLocked(now))
 		out.ReorderBytes += st.buffered - int(st.rxContiguous-st.rxRead)
 	}
 	for _, c := range s.paths {

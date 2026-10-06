@@ -258,9 +258,10 @@ func TestBootstrapGuaranteeAtMaxStreamsWithBulkGrowth(t *testing.T) {
 		}
 		st := s.newStreamLocked(id)
 		st.open = true
+		want := s.initialWindowLocked()
 		st.advertiseCreditLocked(time.Now())
-		if st.rxLimit != StreamWindow || st.peerLimit != 0 {
-			t.Fatal("bootstrap missing or implicit send grant")
+		if st.rxLimit != uint64(want) || want < StreamWindow || want > StandbyStreamWindow || st.peerLimit != 0 {
+			t.Fatalf("bounded initial/bootstrap missing or implicit send grant: got=%d want=%d", st.rxLimit, want)
 		}
 	}
 	r := s.Snapshot().Resources

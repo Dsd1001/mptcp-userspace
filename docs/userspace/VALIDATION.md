@@ -47,14 +47,18 @@ Passing unit tests alone does not prove WAN throughput or production behavior.
 - CARRIER_ID wire space: non-zero MPX VarInt, 1 through 2^62-1;
 - 2048 active peer-initiated Streams;
 - 32 KiB STREAM_DATA maximum;
-- 32 KiB initial per-Stream receive window;
+- 32 KiB cold per-Stream receive-window floor and bootstrap-accounting unit;
+- up to 192 KiB initial/standby receive-window target under RC4 pressure scaling;
 - 16 MiB per-Stream receive-credit maximum;
 - 128 MiB Session receive-credit, split into a 64 MiB maximum bootstrap pool and 64 MiB growth pool at the 2048-Stream bound;
+- 16 MiB RC4 connection-storm initial-window share budget and 64 MiB established-standby share budget; these are pressure-scaling numerators, not separately reserved credit pools. WINDOW entitlement itself does not reserve committed receive credit;
 - 128 MiB physical receive-page accounting.
 
-RC3 keeps these wire and memory limits unchanged while changing the local receive-credit controller. Weighted sessions, and non-Weighted sessions with real multi-Stream demand, use a continuous BDP-aware target driven by measured application consumption and capacity-weighted base RTT. WINDOW is refreshed at roughly 50% remaining credit or earlier when predicted exhaustion would precede the next feedback opportunity. Uncontended single-Stream Auto/Aggregate/Protect retains the proven RC2 ramp/seed path to avoid a single-stream performance regression. A fresh bulk Stream may reuse a recent uncontended high-water seed only after consuming real bootstrap bytes; concurrent bulk Streams remain bounded by demand and Session fair-share.
+RC4 preserves MPX/4 wire semantics and the existing hard memory limits while refining the local receive-credit controller. A fresh Weighted Stream uses `clamp(16 MiB / live Streams, 32 KiB, 192 KiB)` as its initial target; this gives the current ~53-Stream production workload 192 KiB per Stream while reducing 128/256/512+ connection storms to 128/64/32 KiB. Established idle Streams use the larger `clamp(64 MiB / live Streams, 32 KiB, 192 KiB)` standby target. A single fresh non-Weighted Stream retains the RC3 32 KiB cold-start path so Auto/Aggregate/Protect single-stream performance is not regressed.
 
-DATA receipt timeout handling also has hysteresis in RC3: one timeout retransmits without removing a healthy Carrier from scheduling. A Carrier is temporarily deprioritized only after a second timeout epoch without intervening DATA progress; successful DATA progress clears the timeout suspicion. This is endpoint-local behavior and does not change MPX/4 wire semantics.
+Active Weighted sessions, and non-Weighted sessions with real multi-Stream demand, continue to use continuous BDP-aware autotuning driven by measured application consumption and capacity-weighted base RTT. WINDOW is refreshed at roughly 50% remaining credit or earlier when predicted exhaustion would precede the next feedback opportunity. Each Stream also keeps an endpoint-local warm high-water history: after idle, the active target may fall back to standby without revoking already advertised credit, while the proven warm target decays with a 30-second half-life and expires after two minutes. A subsequent real burst that consumes one 32 KiB cold unit can rapidly restore that Stream's warm target, bounded by current Session fair-share.
+
+The RC3 DATA-receipt timeout hysteresis is retained: one timeout retransmits without removing a healthy Carrier from scheduling. A Carrier is temporarily deprioritized only after a second timeout epoch without intervening DATA progress; successful DATA progress clears the timeout suspicion. This is endpoint-local behavior and does not change MPX/4 wire semantics.
 
 ## Keychain Broker / updater continuity
 

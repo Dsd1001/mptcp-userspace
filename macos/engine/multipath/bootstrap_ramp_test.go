@@ -47,7 +47,7 @@ func TestWarmSeedRequiresRealBootstrapConsumption(t *testing.T) {
 	defer st.Close()
 	st.advertiseCreditLocked(now)
 	if st.rxLimit != StreamWindow || st.windowTarget != StreamWindow {
-		t.Fatal("idle inherited warm bulk")
+		t.Fatalf("single non-Weighted Stream lost cold bootstrap: target=%d limit=%d", st.windowTarget, st.rxLimit)
 	}
 	consumeWindowFixture(t, st, 1, now.Add(time.Millisecond))
 	if st.windowTarget != StreamWindow {
