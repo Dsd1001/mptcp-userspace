@@ -1,44 +1,46 @@
-# MPTCP Userspace 0.10.7 / MPX/4 Draft 04
+# MPTCP Userspace 1.0.0 / MPX/4 Protocol Version 4 Stable
 
-0.10.7 是一次前端界面更新版本：正式发布重新设计后的 MPTCP Desk macOS 界面与 Provisioning Web 管理后台。Client、Landing、Provisioning 套件版本统一为 0.10.7。
+1.0.0 是整套组件的 Stable 协议版本：MPTCP Desk、Linux Client、Landing 与 Provisioning 统一使用 **1.0.0**。
 
-**MPX/4 继续使用 Draft 04：WireProtocol=4、CapabilityRevision=4。Carrier、Frame、Generation/Error Scope、Scheduler、flow-control 与 key schedule 均保持不变。**
+协议源冻结到 MPX/4 `protocol-v4.0.0`，commit `44f587fd279ed2238b070dd68114c76822353f4d`，Stable specification revision 为 Draft 11。Wire Protocol Version 仍为 4。
 
-## 前端更新
+## 协议更新
 
-### MPTCP Desk
+- 加入 critical `MAX_CARRIERS`，并把 Carrier ID 扩展为完整非零 MPX VarInt 空间；
+- CREATE/JOIN 固化 Session-scoped limits，JOIN 改值按 SESSION_CONFLICT 处理；
+- 加入 VERSION_NEGOTIATION 与 HANDSHAKE_REJECT；
+- 正式支持 DORMANT Session 保留与 replacement recovery；
+- 加入 TRANSMISSION_RETIRE、连续 Settled Through 和 confirmation replay retention；
+- 收紧 Transmission confirmation class、credit reordering、terminal/final-size、recovery 与 error-scope 语义；
+- 源码内置 Stable 的 20 个 Core JSON vectors；
+- 不提供同端口 Draft 04 静默 fallback。
 
-- 重新组织主界面的导航、状态层级和配置展示；
-- 优化 Profile / Bundle 使用过程中的信息密度与状态可读性；
-- 保留现有本地启动/停止、Provisioning、远程管理、路径状态与更新入口；
-- 不改变配置 schema、runtime supervisor 或远程控制协议。
+## Scheduler 语义
 
-### Provisioning Web Console
+MPX/4 Stable Core 不再协商 Scheduler。Auto / Aggregate / Protect / Weighted 保留为 MPTCP Userspace 的本地策略。
 
-- 重新设计 Profile、Bundle 与 Devices 管理界面；
-- 简化页面结构与操作区域，统一状态展示；
-- 底层 API、数据文件格式、配对凭据和 Device Control 语义保持兼容。
+Weighted 可使用已发布的可选扩展 `RECEIVE_CAPACITY_HINT (0x40)` 传递 receive-side 容量估计。该 Hint 不参与 Relay、不代表预留带宽，也不是 flow-control credit。
 
-## 既有能力保持
+Landing 增加独立本地 scheduler policy，默认 Auto。
 
-- 0.10.6 Sparkle 2 EdDSA 签名更新通道保持不变；
-- 0.10.6 可选远程设备管理保持默认关闭、必须本地开启和配对；
-- Client 仍通过 outbound HTTPS long polling 工作，不要求公网 IP；
-- 0.10.5 parallel Bundle 每 Profile 独立 supervisor 继续按 1s → 2s → 5s → 10s → 30s → 每 30s 自动重连；
-- 0.10.4 Last Known Good 缓存与睡眠/重启快速恢复语义保持不变；
-- Profile schema 1、Bundle schema 2、opaque envelope v1 不变。
+## 0.10.x 功能全部保留
 
-## Validation
+- 0.10.1 parallel Bundle/Profile 故障隔离；
+- 0.10.4 Last Known Good 缓存与 cache-first 恢复；
+- 0.10.5 每 Profile 自动重连：1s → 2s → 5s → 10s → 30s，之后每 30s；
+- 0.10.6 Sparkle 2 内置更新与可选远程设备管理；
+- 0.10.7 Mac 与 Provisioning 新界面；
+- 0.10.9/0.10.10 稳定本地代码签名与连续性检查；
+- 0.10.11/0.10.12 Keychain Broker / App 本体分离。
 
-0.10.7 按 0.10.x feature/patch release 门执行：
+## Broker 冻结
 
-- Go test / vet / race；
-- Provisioning test / vet / race；
-- Swift arm64 / x86_64 typecheck；
-- Swift UI smoke；
-- Bundle API / engine regression；
-- Linux amd64 runtime smoke；
-- Universal DMG、Sparkle appcast 与 EdDSA 签名校验；
-- frozen-source / provenance 校验。
+1.0.0 **不升级 Broker**。继续复用 0.10.12 的 `MPTCPKeychainBroker` v1 精确字节：
 
-本版不重新宣称新的 MPX Scheduler、容量或 WAN 性能提升。
+`sha256=5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`
+
+Mac 构建入口和发布验证都会硬校验该值。重建、重签或替换 Broker v1 会直接使 release gate 失败。
+
+## 发布验证
+
+正式 1.0.0 使用独立 `--stable-release` gate，要求 Stable 协议向量、Go/vet/race、Provisioning、Swift 双架构、Linux runtime、Scheduler policy、完整 capacity、180s runtime、Broker continuity、frozen source 和 provenance 全部绑定同一个 Source-ID。

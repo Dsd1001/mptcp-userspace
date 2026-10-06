@@ -35,7 +35,7 @@ func TestWeightedCapacityValidationAndWireUnits(t *testing.T) {
 }
 
 func TestWeightedSchedulerWireAndLegacyModesRemainStable(t *testing.T) {
-	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 04 conformance tests")
+	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Protocol Version 4 Stable conformance tests")
 	if schedulerWire(SchedulerAuto) != 0x41 || schedulerWire(SchedulerAggregate) != 0x42 || schedulerWire(SchedulerProtect) != 0x43 || schedulerWire(SchedulerWeighted) != 0x44 {
 		t.Fatal("scheduler wire assignments changed")
 	}
@@ -47,7 +47,7 @@ func TestWeightedSchedulerWireAndLegacyModesRemainStable(t *testing.T) {
 }
 
 func TestWeightedLegacyHelloLeavesCapacityBytesZero(t *testing.T) {
-	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 04 conformance tests")
+	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Protocol Version 4 Stable conformance tests")
 	key, _ := ParseKey(testToken)
 	for _, mode := range []SchedulerMode{SchedulerAuto, SchedulerAggregate, SchedulerProtect} {
 		a, b := net.Pipe()
@@ -72,7 +72,7 @@ func TestWeightedLegacyHelloLeavesCapacityBytesZero(t *testing.T) {
 }
 
 func TestWeightedCapacityIsAuthenticated(t *testing.T) {
-	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 04 conformance tests")
+	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Protocol Version 4 Stable conformance tests")
 	key, _ := ParseKey(testToken)
 	a, b := net.Pipe()
 	done := make(chan error, 1)
@@ -179,7 +179,7 @@ func TestWeightedSelectionUsesConfiguredRateButHonorsPenalty(t *testing.T) {
 	a.goodput = 20 << 20
 	b.goodput = 512 << 10
 	a.outstanding = 4 * (MaxPayload + 64)
-	s.paths = map[byte]*carrier{1: a, 2: b}
+	s.paths = map[uint64]*carrier{1: a, 2: b}
 	if got := s.pathLocked(now); got != b {
 		t.Fatalf("configured capacity did not remove stale-goodput bias: got=%v", got)
 	}
@@ -200,7 +200,7 @@ func TestWeightedUploadAutoUsesLearnedFlight(t *testing.T) {
 	c.goodput = 2 << 20
 	c.budget = 384 << 10
 	c.lastACK = time.Now()
-	s.paths = map[byte]*carrier{1: c}
+	s.paths = map[uint64]*carrier{1: c}
 	if got := s.pathLocked(time.Now()); got != c {
 		t.Fatal("upload-auto weighted path became unusable")
 	}

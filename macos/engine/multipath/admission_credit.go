@@ -35,8 +35,20 @@ func (s *Session) openWithAdmission(ctx context.Context) (*Stream, error) {
 	if reason := s.openBlockReasonLocked(); reason != "" {
 		return nil, s.resourceLocked(reason, false)
 	}
+	for !s.hasActiveCarrierLocked() {
+		ch := s.changed
+		s.mu.Unlock()
+		err := waitChange(ctx, ch, time.Time{})
+		s.mu.Lock()
+		if err != nil {
+			return nil, err
+		}
+		if s.closed {
+			return nil, s.err
+		}
+	}
 	id := s.nextStream
-	if id == 0 || id > ^uint64(0)-2 {
+	if id == 0 || id > mpx4VarIntMax {
 		return nil, s.resourceLocked(LimitPacketIDs, false)
 	}
 	s.nextStream += 2

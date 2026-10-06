@@ -1,0 +1,36 @@
+{
+  "protocol": "MPX/4",
+  "revision": "Draft 11",
+  "direction": "client_to_server",
+  "traffic_key_hex": "095e2f7dc0505642121edf7613944f62d1e5d185bf431fcebcd7862a92f21eac",
+  "traffic_iv_hex": "125d55dacaf4bb44dc69329f",
+  "records": [
+    {
+      "sequence_number": "0",
+      "plaintext_hex": "130b01800080000768656c6c6f",
+      "record_flags_hex": "00",
+      "ciphertext_length": "13",
+      "ciphertext_length_varint_hex": "0d",
+      "aad_hex": "000d",
+      "seq96_hex": "000000000000000000000000",
+      "nonce_hex": "125d55dacaf4bb44dc69329f",
+      "ciphertext_hex": "406d7fae1794dd7ff5848ed2ed",
+      "authentication_tag_hex": "85807a6e5c368cbe170c51118788869c",
+      "wire_record_hex": "000d406d7fae1794dd7ff5848ed2ed85807a6e5c368cbe170c51118788869c"
+    },
+    {
+      "sequence_number": "1",
+      "plaintext_hex": "010101",
+      "plaintext_meaning": "PING token=1",
+      "record_flags_hex": "00",
+      "ciphertext_length": "3",
+      "ciphertext_length_varint_hex": "03",
+      "aad_hex": "0003",
+      "seq96_hex": "000000000000000000000001",
+      "nonce_hex": "125d55dacaf4bb44dc69329e",
+      "ciphertext_hex": "7754b0",
+      "authentication_tag_hex": "0910d0193ae9a8cd76a7a8f6cd0eebc8",
+      "wire_record_hex": "00037754b00910d0193ae9a8cd76a7a8f6cd0eebc8"
+    }
+  ]
+}

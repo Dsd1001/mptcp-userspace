@@ -22,12 +22,15 @@ import (
 )
 
 const (
-	Version             = "0.10.7"
-	CapabilityRevision  = 4 // MPX/4 Draft 04
+	Version             = "1.0.0"
+	CapabilityRevision  = 6 // MPX/4 Protocol Version 4 Stable
+	ProtocolRelease     = "protocol-v4.0.0"
+	ProtocolReleaseSHA  = "44f587fd279ed2238b070dd68114c76822353f4d"
 	MaxPayload          = 32768
 	MaxRecordSize       = 65536
 	StreamWindow        = 16 << 10
 	MaxStreams          = 2048
+	MaxCarriers         = 8 // local active-Carrier implementation limit; Carrier IDs use the full MPX VarInt space
 	MaxPending          = 8192
 	MaxDataPendingBytes = 128 << 20
 	MaxBuffered         = 128 << 20
@@ -54,44 +57,48 @@ const (
 	kindOpenReject
 	kindCreditProbe
 	kindFinalConsumed
+	kindTransmissionRetire
 	kindCarrierClose
 	kindSessionClose
 )
 
 const (
-	mpx4HSClientInit     uint64 = 0x01
-	mpx4HSServerInit     uint64 = 0x02
-	mpx4HSClientFinished uint64 = 0x03
-	mpx4HSServerFinished uint64 = 0x04
+	mpx4HSClientInit         uint64 = 0x01
+	mpx4HSServerInit         uint64 = 0x02
+	mpx4HSClientFinished     uint64 = 0x03
+	mpx4HSServerFinished     uint64 = 0x04
+	mpx4HSVersionNegotiation uint64 = 0x05
+	mpx4HSHandshakeReject    uint64 = 0x06
 
-	mpx4ParamSessionID         uint64 = 0x01
-	mpx4ParamSessionAction     uint64 = 0x02
-	mpx4ParamCarrierID         uint64 = 0x03
-	mpx4ParamCarrierGeneration uint64 = 0x04
-	mpx4ParamClientNonce       uint64 = 0x05
-	mpx4ParamServerNonce       uint64 = 0x06
-	mpx4ParamMaxFramePayload   uint64 = 0x07
-	mpx4ParamMaxRecordSize     uint64 = 0x08
-	mpx4ParamMaxStreams        uint64 = 0x09
-	mpx4ParamScheduler         uint64 = 0x10
-	mpx4ParamPathCapacity      uint64 = 0x11
+	mpx4ParamSessionID           uint64 = 0x01
+	mpx4ParamSessionAction       uint64 = 0x02
+	mpx4ParamCarrierID           uint64 = 0x03
+	mpx4ParamCarrierGeneration   uint64 = 0x04
+	mpx4ParamClientNonce         uint64 = 0x05
+	mpx4ParamServerNonce         uint64 = 0x06
+	mpx4ParamMaxFramePayload     uint64 = 0x07
+	mpx4ParamMaxRecordSize       uint64 = 0x08
+	mpx4ParamMaxStreams          uint64 = 0x09
+	mpx4ParamMaxCarriers         uint64 = 0x0a
+	mpx4ParamReceiveCapacityHint uint64 = 0x40
 
-	mpx4FramePing             uint64 = 0x01
-	mpx4FramePong             uint64 = 0x02
-	mpx4FrameCarrierClose     uint64 = 0x03
-	mpx4FrameSessionClose     uint64 = 0x04
-	mpx4FrameStreamOpen       uint64 = 0x10
-	mpx4FrameStreamOpenOK     uint64 = 0x11
-	mpx4FrameStreamOpenReject uint64 = 0x12
-	mpx4FrameStreamData       uint64 = 0x13
-	mpx4FrameTransmissionACK  uint64 = 0x14
-	mpx4FrameStreamCredit     uint64 = 0x15
-	mpx4FrameStreamFIN        uint64 = 0x16
-	mpx4FrameResetStream      uint64 = 0x17
-	mpx4FrameStopSending      uint64 = 0x18
-	mpx4FrameStreamConsumed   uint64 = 0x19
-	mpx4FrameSessionCredit    uint64 = 0x20
-	mpx4FrameCreditProbe      uint64 = 0x21
+	mpx4FramePing               uint64 = 0x01
+	mpx4FramePong               uint64 = 0x02
+	mpx4FrameCarrierClose       uint64 = 0x03
+	mpx4FrameSessionClose       uint64 = 0x04
+	mpx4FrameStreamOpen         uint64 = 0x10
+	mpx4FrameStreamOpenOK       uint64 = 0x11
+	mpx4FrameStreamOpenReject   uint64 = 0x12
+	mpx4FrameStreamData         uint64 = 0x13
+	mpx4FrameTransmissionACK    uint64 = 0x14
+	mpx4FrameStreamCredit       uint64 = 0x15
+	mpx4FrameStreamFIN          uint64 = 0x16
+	mpx4FrameResetStream        uint64 = 0x17
+	mpx4FrameStopSending        uint64 = 0x18
+	mpx4FrameStreamConsumed     uint64 = 0x19
+	mpx4FrameTransmissionRetire uint64 = 0x1a
+	mpx4FrameSessionCredit      uint64 = 0x20
+	mpx4FrameCreditProbe        uint64 = 0x21
 )
 
 var (
@@ -325,6 +332,9 @@ func encodeV4Frame(f frame) ([]byte, error) {
 	case kindFinalConsumed:
 		typ = mpx4FrameStreamConsumed
 		body, err = appendField(nil, f.stream, f.id, f.offset)
+	case kindTransmissionRetire:
+		typ = mpx4FrameTransmissionRetire
+		body, err = appendField(nil, f.offset)
 	case kindSessionWindow:
 		typ = mpx4FrameSessionCredit
 		body, err = appendField(nil, f.offset, f.id)
@@ -436,6 +446,12 @@ func decodeV4Frame(typ uint64, body []byte) (frame, error) {
 			return f, ErrProtocol
 		}
 		f.kind, f.stream, f.id, f.offset = kindFinalConsumed, v[0], v[1], v[2]
+	case mpx4FrameTransmissionRetire:
+		v, n, err := readFields(body, 1)
+		if err != nil || n != len(body) {
+			return f, ErrProtocol
+		}
+		f.kind, f.offset = kindTransmissionRetire, v[0]
 	case mpx4FrameSessionCredit:
 		v, n, err := readFields(body, 2)
 		if err != nil || n != len(body) || v[1] < v[0] {
@@ -509,15 +525,16 @@ func parseV4Frames(plain []byte) ([]frame, error) {
 
 type secureConn struct {
 	net.Conn
-	txMu                 sync.Mutex
-	reader               *bufio.Reader
-	send, receive        cipher.AEAD
-	txIV, rxIV           [12]byte
-	txCounter, rxCounter uint64
-	pendingFrames        []frame
-	configuredRateBPS    float64
-	generation           uint64
-	peerMaxRecord        uint64
+	txMu                                        sync.Mutex
+	reader                                      *bufio.Reader
+	send, receive                               cipher.AEAD
+	txIV, rxIV                                  [12]byte
+	txCounter, rxCounter                        uint64
+	pendingFrames                               []frame
+	configuredRateBPS                           float64
+	generation                                  uint64
+	peerMaxFrame, peerMaxRecord, peerMaxStreams uint64
+	localMaxCarriers, peerMaxCarriers           uint64
 }
 
 func xorV4Nonce(iv [12]byte, seq uint64) []byte {
@@ -772,12 +789,15 @@ func readHandshakeMessage(r *bufio.Reader) (uint64, []byte, []byte, error) {
 	return typ, body, raw, nil
 }
 
-func encodeParam(typ uint64, value []byte) ([]byte, error) {
+func encodeParam(typ uint64, flags byte, value []byte) ([]byte, error) {
+	if flags&0xfe != 0 {
+		return nil, ErrProtocol
+	}
 	out, err := appendV4VarInt(nil, typ)
 	if err != nil {
 		return nil, err
 	}
-	out = append(out, 0)
+	out = append(out, flags)
 	out, err = appendV4VarInt(out, uint64(len(value)))
 	if err != nil {
 		return nil, err
@@ -787,34 +807,8 @@ func encodeParam(typ uint64, value []byte) ([]byte, error) {
 
 func paramVarInt(v uint64) ([]byte, error) { return appendV4VarInt(nil, v) }
 
-func mpx4SchedulerID(mode SchedulerMode) (uint64, error) {
-	switch mode {
-	case SchedulerAuto:
-		return 0, nil
-	case SchedulerAggregate:
-		return 1, nil
-	case SchedulerProtect:
-		return 2, nil
-	case SchedulerWeighted:
-		return 3, nil
-	default:
-		return 0, ErrProtocol
-	}
-}
-
-func mpx4SchedulerFromID(v uint64) (SchedulerMode, error) {
-	switch v {
-	case 0:
-		return SchedulerAuto, nil
-	case 1:
-		return SchedulerAggregate, nil
-	case 2:
-		return SchedulerProtect, nil
-	case 3:
-		return SchedulerWeighted, nil
-	default:
-		return "", ErrSchedulerMismatch
-	}
+type handshakeLimits struct {
+	maxFrame, maxRecord, maxStreams, maxCarriers uint64
 }
 
 type handshakeParams struct {
@@ -822,86 +816,89 @@ type handshakeParams struct {
 	action, carrier, generation     uint64
 	clientNonce, serverNonce        [32]byte
 	maxFrame, maxRecord, maxStreams uint64
-	scheduler                       SchedulerMode
-	capacity                        PathCapacity
-	hasCapacity                     bool
+	maxCarriers                     uint64
+	receiveCapacityHint             uint64
+	hasReceiveCapacityHint          bool
+}
+
+func (p handshakeParams) limits() handshakeLimits {
+	return handshakeLimits{maxFrame: p.maxFrame, maxRecord: p.maxRecord, maxStreams: p.maxStreams, maxCarriers: p.maxCarriers}
+}
+
+type handshakeParamItem struct {
+	typ   uint64
+	flags byte
+	val   []byte
+}
+
+func encodeHandshakeParams(items []handshakeParamItem) ([]byte, error) {
+	var body []byte
+	var last uint64
+	for i, it := range items {
+		if i > 0 && it.typ <= last {
+			return nil, ErrProtocol
+		}
+		last = it.typ
+		enc, err := encodeParam(it.typ, it.flags, it.val)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, enc...)
+	}
+	return body, nil
 }
 
 func encodeClientParams(p handshakeParams) ([]byte, error) {
-	sched, err := mpx4SchedulerID(p.scheduler)
-	if err != nil {
-		return nil, err
+	if p.maxCarriers == 0 {
+		p.maxCarriers = MaxCarriers
 	}
-	type item struct {
-		typ uint64
-		val []byte
-	}
-	items := []item{{mpx4ParamSessionID, p.sid[:]}}
+	items := []handshakeParamItem{{typ: mpx4ParamSessionID, val: p.sid[:]}}
 	v, _ := paramVarInt(p.action)
-	items = append(items, item{mpx4ParamSessionAction, v})
+	items = append(items, handshakeParamItem{typ: mpx4ParamSessionAction, val: v})
 	v, _ = paramVarInt(p.carrier)
-	items = append(items, item{mpx4ParamCarrierID, v})
+	items = append(items, handshakeParamItem{typ: mpx4ParamCarrierID, val: v})
 	v, _ = paramVarInt(p.generation)
-	items = append(items, item{mpx4ParamCarrierGeneration, v})
-	items = append(items, item{mpx4ParamClientNonce, p.clientNonce[:]})
+	items = append(items, handshakeParamItem{typ: mpx4ParamCarrierGeneration, val: v})
+	items = append(items, handshakeParamItem{typ: mpx4ParamClientNonce, val: p.clientNonce[:]})
 	v, _ = paramVarInt(MaxPayload)
-	items = append(items, item{mpx4ParamMaxFramePayload, v})
+	items = append(items, handshakeParamItem{typ: mpx4ParamMaxFramePayload, val: v})
 	v, _ = paramVarInt(MaxRecordSize)
-	items = append(items, item{mpx4ParamMaxRecordSize, v})
+	items = append(items, handshakeParamItem{typ: mpx4ParamMaxRecordSize, val: v})
 	v, _ = paramVarInt(MaxStreams)
-	items = append(items, item{mpx4ParamMaxStreams, v})
-	v, _ = paramVarInt(sched)
-	items = append(items, item{mpx4ParamScheduler, v})
-	if p.scheduler == SchedulerWeighted {
-		down, err := capacityUnits(p.capacity.DownloadMbps, true)
-		if err != nil {
-			return nil, err
+	items = append(items, handshakeParamItem{typ: mpx4ParamMaxStreams, val: v})
+	v, _ = paramVarInt(p.maxCarriers)
+	items = append(items, handshakeParamItem{typ: mpx4ParamMaxCarriers, flags: 1, val: v})
+	if p.hasReceiveCapacityHint {
+		if p.receiveCapacityHint == 0 || p.receiveCapacityHint > 65535 {
+			return nil, ErrProtocol
 		}
-		up, err := capacityUnits(p.capacity.UploadMbps, false)
-		if err != nil {
-			return nil, err
-		}
-		capv, _ := appendField(nil, uint64(down), uint64(up))
-		items = append(items, item{mpx4ParamPathCapacity, capv})
+		v, _ = paramVarInt(p.receiveCapacityHint)
+		items = append(items, handshakeParamItem{typ: mpx4ParamReceiveCapacityHint, val: v})
 	}
-	var body []byte
-	for _, it := range items {
-		enc, err := encodeParam(it.typ, it.val)
-		if err != nil {
-			return nil, err
-		}
-		body = append(body, enc...)
-	}
-	return body, nil
+	return encodeHandshakeParams(items)
 }
 
 func encodeServerParams(p handshakeParams) ([]byte, error) {
-	sched, err := mpx4SchedulerID(p.scheduler)
-	if err != nil {
-		return nil, err
+	if p.maxCarriers == 0 {
+		p.maxCarriers = MaxCarriers
 	}
-	type item struct {
-		typ uint64
-		val []byte
-	}
-	items := []item{{mpx4ParamServerNonce, p.serverNonce[:]}}
+	items := []handshakeParamItem{{typ: mpx4ParamServerNonce, val: p.serverNonce[:]}}
 	v, _ := paramVarInt(MaxPayload)
-	items = append(items, item{mpx4ParamMaxFramePayload, v})
+	items = append(items, handshakeParamItem{typ: mpx4ParamMaxFramePayload, val: v})
 	v, _ = paramVarInt(MaxRecordSize)
-	items = append(items, item{mpx4ParamMaxRecordSize, v})
+	items = append(items, handshakeParamItem{typ: mpx4ParamMaxRecordSize, val: v})
 	v, _ = paramVarInt(MaxStreams)
-	items = append(items, item{mpx4ParamMaxStreams, v})
-	v, _ = paramVarInt(sched)
-	items = append(items, item{mpx4ParamScheduler, v})
-	var body []byte
-	for _, it := range items {
-		enc, e := encodeParam(it.typ, it.val)
-		if e != nil {
-			return nil, e
+	items = append(items, handshakeParamItem{typ: mpx4ParamMaxStreams, val: v})
+	v, _ = paramVarInt(p.maxCarriers)
+	items = append(items, handshakeParamItem{typ: mpx4ParamMaxCarriers, flags: 1, val: v})
+	if p.hasReceiveCapacityHint {
+		if p.receiveCapacityHint == 0 || p.receiveCapacityHint > 65535 {
+			return nil, ErrProtocol
 		}
-		body = append(body, enc...)
+		v, _ = paramVarInt(p.receiveCapacityHint)
+		items = append(items, handshakeParamItem{typ: mpx4ParamReceiveCapacityHint, val: v})
 	}
-	return body, nil
+	return encodeHandshakeParams(items)
 }
 
 func parseParams(body []byte, client bool) (handshakeParams, error) {
@@ -911,10 +908,7 @@ func parseParams(body []byte, client bool) (handshakeParams, error) {
 	seen := map[uint64]bool{}
 	for len(body) > 0 {
 		typ, n1, err := readV4VarInt(body)
-		if err != nil {
-			return p, err
-		}
-		if len(body) <= n1 {
+		if err != nil || len(body) <= n1 {
 			return p, ErrProtocol
 		}
 		flags := body[n1]
@@ -941,14 +935,20 @@ func parseParams(body []byte, client bool) (handshakeParams, error) {
 			}
 			return v, nil
 		}
+		coreFlags := func(expected byte) error {
+			if flags != expected {
+				return ErrProtocol
+			}
+			return nil
+		}
 		switch typ {
 		case mpx4ParamSessionID:
-			if !client || len(val) != 16 {
+			if !client || coreFlags(0) != nil || len(val) != 16 {
 				return p, ErrProtocol
 			}
 			copy(p.sid[:], val)
 		case mpx4ParamSessionAction:
-			if !client {
+			if !client || coreFlags(0) != nil {
 				return p, ErrProtocol
 			}
 			p.action, err = readOne()
@@ -956,15 +956,15 @@ func parseParams(body []byte, client bool) (handshakeParams, error) {
 				return p, ErrProtocol
 			}
 		case mpx4ParamCarrierID:
-			if !client {
+			if !client || coreFlags(0) != nil {
 				return p, ErrProtocol
 			}
 			p.carrier, err = readOne()
-			if err != nil || p.carrier < 1 || p.carrier > 8 {
+			if err != nil || p.carrier == 0 || p.carrier > mpx4VarIntMax {
 				return p, ErrProtocol
 			}
 		case mpx4ParamCarrierGeneration:
-			if !client {
+			if !client || coreFlags(0) != nil {
 				return p, ErrProtocol
 			}
 			p.generation, err = readOne()
@@ -972,70 +972,67 @@ func parseParams(body []byte, client bool) (handshakeParams, error) {
 				return p, err
 			}
 		case mpx4ParamClientNonce:
-			if !client || len(val) != 32 {
+			if !client || coreFlags(0) != nil || len(val) != 32 {
 				return p, ErrProtocol
 			}
 			copy(p.clientNonce[:], val)
 		case mpx4ParamServerNonce:
-			if client || len(val) != 32 {
+			if client || coreFlags(0) != nil || len(val) != 32 {
 				return p, ErrProtocol
 			}
 			copy(p.serverNonce[:], val)
 		case mpx4ParamMaxFramePayload:
+			if coreFlags(0) != nil {
+				return p, ErrProtocol
+			}
 			p.maxFrame, err = readOne()
 			if err != nil || p.maxFrame < 1 || p.maxFrame > MaxPayload {
 				return p, ErrProtocol
 			}
 		case mpx4ParamMaxRecordSize:
+			if coreFlags(0) != nil {
+				return p, ErrProtocol
+			}
 			p.maxRecord, err = readOne()
 			if err != nil || p.maxRecord < 1024 || p.maxRecord > MaxRecordSize {
 				return p, ErrProtocol
 			}
 		case mpx4ParamMaxStreams:
+			if coreFlags(0) != nil {
+				return p, ErrProtocol
+			}
 			p.maxStreams, err = readOne()
 			if err != nil || p.maxStreams < 1 || p.maxStreams > MaxStreams {
 				return p, ErrProtocol
 			}
-		case mpx4ParamScheduler:
-			v, e := readOne()
-			if e != nil {
-				return p, e
-			}
-			p.scheduler, err = mpx4SchedulerFromID(v)
-			if err != nil {
-				return p, err
-			}
-		case mpx4ParamPathCapacity:
-			if !client {
+		case mpx4ParamMaxCarriers:
+			if coreFlags(1) != nil {
 				return p, ErrProtocol
 			}
-			v, n, e := readV4VarInt(val)
-			if e != nil {
-				return p, e
-			}
-			u, m, e := readV4VarInt(val[n:])
-			if e != nil || n+m != len(val) || v == 0 || v > 65535 || u > 65535 {
+			p.maxCarriers, err = readOne()
+			if err != nil || p.maxCarriers == 0 || p.maxCarriers > mpx4VarIntMax {
 				return p, ErrProtocol
 			}
-			p.capacity = PathCapacity{DownloadMbps: capacityFromUnits(uint16(v)), UploadMbps: capacityFromUnits(uint16(u))}
-			p.hasCapacity = true
+		case mpx4ParamReceiveCapacityHint:
+			if flags != 0 {
+				return p, ErrProtocol
+			}
+			p.receiveCapacityHint, err = readOne()
+			if err != nil || p.receiveCapacityHint == 0 || p.receiveCapacityHint > 65535 {
+				return p, ErrProtocol
+			}
+			p.hasReceiveCapacityHint = true
 		default:
 			if flags&1 != 0 {
-				return p, ErrProtocol
+				return p, &mpx4Failure{code: mpx4ErrUnsupportedParameter, scope: mpx4ScopePreEstablishmentCarrier, reason: "unknown critical handshake Parameter", cause: ErrProtocol}
 			}
 		}
 	}
-	if p.maxFrame == 0 || p.maxRecord == 0 || p.maxStreams == 0 {
+	if p.maxFrame == 0 || p.maxRecord == 0 || p.maxStreams == 0 || p.maxCarriers == 0 {
 		return p, ErrProtocol
 	}
 	if client {
 		if p.sid == (sessionID{}) || p.carrier == 0 || p.clientNonce == ([32]byte{}) {
-			return p, ErrProtocol
-		}
-		if p.scheduler == SchedulerWeighted && !p.hasCapacity {
-			return p, ErrProtocol
-		}
-		if p.scheduler != SchedulerWeighted && p.hasCapacity {
 			return p, ErrProtocol
 		}
 	} else if p.serverNonce == ([32]byte{}) {
@@ -1061,34 +1058,141 @@ func bytesJoin(parts ...[]byte) []byte {
 	return out
 }
 
-func clientHandshake(c net.Conn, key []byte, sid sessionID, carrier byte, create bool) (*secureConn, error) {
+func encodeHandshakeCodeMessage(typ, code uint64) ([]byte, error) {
+	body, err := appendV4VarInt(nil, code)
+	if err != nil {
+		return nil, err
+	}
+	return encodeHandshakeMessage(typ, body)
+}
+
+func decodeHandshakeCode(body []byte) (uint64, error) {
+	code, n, err := readV4VarInt(body)
+	if err != nil || n != len(body) {
+		return 0, ErrProtocol
+	}
+	return code, nil
+}
+
+func validCoreHandshakeRejectCode(code uint64) bool {
+	switch code {
+	case mpx4ErrInternal, mpx4ErrProtocolViolation, mpx4ErrAuthenticationFailed,
+		mpx4ErrResourceLimit, mpx4ErrSessionNotFound, mpx4ErrSessionConflict,
+		mpx4ErrCarrierConflict, mpx4ErrUnsupportedParameter:
+		return true
+	default:
+		return false
+	}
+}
+
+func handshakeRejectError(code uint64) error {
+	if code < 0x40 && !validCoreHandshakeRejectCode(code) {
+		return fmt.Errorf("%w: invalid Core HANDSHAKE_REJECT error code 0x%x", ErrProtocol, code)
+	}
+	switch code {
+	case mpx4ErrSessionNotFound:
+		return ErrSessionExpired
+	case mpx4ErrResourceLimit:
+		return &ResourceLimitError{Reason: "handshake_resource_limit"}
+	case mpx4ErrAuthenticationFailed:
+		return ErrAuthentication
+	default:
+		return &mpx4Failure{code: code, scope: mpx4ScopePreEstablishmentCarrier, reason: "candidate handshake rejected", cause: ErrProtocol}
+	}
+}
+
+func writeHandshakeReject(c net.Conn, code uint64) error {
+	if !validCoreHandshakeRejectCode(code) {
+		return ErrProtocol
+	}
+	wire, err := encodeHandshakeCodeMessage(mpx4HSHandshakeReject, code)
+	if err != nil {
+		return err
+	}
+	return writeAll(c, wire)
+}
+
+func encodeVersionNegotiation(versions []uint64) ([]byte, error) {
+	if len(versions) == 0 {
+		return nil, ErrProtocol
+	}
+	body, err := appendV4VarInt(nil, uint64(len(versions)))
+	if err != nil {
+		return nil, err
+	}
+	for i, version := range versions {
+		if version == 0 || (i > 0 && version >= versions[i-1]) {
+			return nil, ErrProtocol
+		}
+		body, err = appendV4VarInt(body, version)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return encodeHandshakeMessage(mpx4HSVersionNegotiation, body)
+}
+
+func parseVersionNegotiation(body []byte) ([]uint64, error) {
+	count, n, err := readV4VarInt(body)
+	if err != nil || count == 0 || count > uint64(len(body)-n) {
+		return nil, ErrProtocol
+	}
+	body = body[n:]
+	versions := make([]uint64, 0, int(count))
+	for i := uint64(0); i < count; i++ {
+		version, consumed, err := readV4VarInt(body)
+		if err != nil || version == 0 {
+			return nil, ErrProtocol
+		}
+		if len(versions) > 0 && version >= versions[len(versions)-1] {
+			return nil, ErrProtocol
+		}
+		versions = append(versions, version)
+		body = body[consumed:]
+	}
+	if len(body) != 0 {
+		return nil, ErrProtocol
+	}
+	return versions, nil
+}
+
+func clientHandshake(c net.Conn, key []byte, sid sessionID, carrier uint64, create bool) (*secureConn, error) {
 	return clientHandshakeMode(c, key, sid, carrier, create, SchedulerAuto)
 }
-func clientHandshakeMode(c net.Conn, key []byte, sid sessionID, carrier byte, create bool, mode SchedulerMode) (*secureConn, error) {
+func clientHandshakeMode(c net.Conn, key []byte, sid sessionID, carrier uint64, create bool, mode SchedulerMode) (*secureConn, error) {
 	return clientHandshakePolicy(c, key, sid, carrier, create, mode, PathCapacity{})
 }
-func clientHandshakePolicy(c net.Conn, key []byte, sid sessionID, carrier byte, create bool, mode SchedulerMode, capacity PathCapacity) (*secureConn, error) {
+func clientHandshakePolicy(c net.Conn, key []byte, sid sessionID, carrier uint64, create bool, mode SchedulerMode, capacity PathCapacity) (*secureConn, error) {
 	return clientHandshakePolicyGeneration(c, key, sid, carrier, 0, create, mode, capacity)
 }
 
-func clientHandshakePolicyGeneration(c net.Conn, key []byte, sid sessionID, carrier byte, generation uint64, create bool, mode SchedulerMode, capacity PathCapacity) (*secureConn, error) {
-	if carrier < 1 || carrier > 8 || len(key) != 32 {
+func clientHandshakePolicyGeneration(c net.Conn, key []byte, sid sessionID, carrier, generation uint64, create bool, mode SchedulerMode, capacity PathCapacity) (*secureConn, error) {
+	return clientHandshakePolicyGenerationExpected(c, key, sid, carrier, generation, create, mode, capacity, nil)
+}
+
+func clientHandshakePolicyGenerationExpected(c net.Conn, key []byte, sid sessionID, carrier, generation uint64, create bool, mode SchedulerMode, capacity PathCapacity, expected *handshakeLimits) (*secureConn, error) {
+	if carrier == 0 || carrier > mpx4VarIntMax || generation > mpx4VarIntMax || len(key) != 32 {
 		return nil, ErrProtocol
 	}
+	var receiveHint uint16
 	if mode == SchedulerWeighted {
 		if err := capacity.validateWeighted(); err != nil {
+			return nil, err
+		}
+		var err error
+		receiveHint, err = capacityUnits(capacity.DownloadMbps, true)
+		if err != nil {
 			return nil, err
 		}
 	}
 	if err := c.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
 		return nil, err
 	}
-	var p handshakeParams
-	p.sid = sid
-	p.carrier = uint64(carrier)
-	p.generation = generation
-	p.scheduler = mode
-	p.capacity = capacity
+	p := handshakeParams{sid: sid, carrier: carrier, generation: generation, maxCarriers: MaxCarriers}
+	if mode == SchedulerWeighted {
+		p.receiveCapacityHint = uint64(receiveHint)
+		p.hasReceiveCapacityHint = true
+	}
 	if create {
 		p.action = 0
 	} else {
@@ -1105,28 +1209,39 @@ func clientHandshakePolicyGeneration(c net.Conn, key []byte, sid sessionID, carr
 	if err != nil {
 		return nil, err
 	}
-	preface := []byte{'M', 'P', 'X', 0, 4}
+	version, _ := appendV4VarInt(nil, WireProtocol)
+	preface := append([]byte{'M', 'P', 'X', 0}, version...)
 	if err := writeAll(c, bytesJoin(preface, clientInit)); err != nil {
 		return nil, err
 	}
 	r := bufio.NewReaderSize(c, 64<<10)
 	typ, serverBody, serverInit, err := readHandshakeMessage(r)
-	if err != nil || typ != mpx4HSServerInit {
-		// Draft 04 permits an unauthenticated handshake rejection to be signaled
-		// by transport close. A JOIN that is rejected before SERVER_INIT most
-		// commonly means the Session is absent; callers already treat this as a
-		// terminal restart condition rather than retrying the stale Session ID.
-		if !create {
-			return nil, ErrSessionExpired
+	if err != nil {
+		return nil, err
+	}
+	if typ == mpx4HSHandshakeReject {
+		code, err := decodeHandshakeCode(serverBody)
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("%w: server init", ErrProtocol)
+		return nil, handshakeRejectError(code)
+	}
+	if typ == mpx4HSVersionNegotiation {
+		versions, err := parseVersionNegotiation(serverBody)
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: peer does not accept Protocol Version %d; offered versions %v", ErrProtocol, WireProtocol, versions)
+	}
+	if typ != mpx4HSServerInit {
+		return nil, fmt.Errorf("%w: expected SERVER_INIT", ErrProtocol)
 	}
 	serverParams, err := parseParams(serverBody, false)
 	if err != nil {
 		return nil, err
 	}
-	if serverParams.scheduler != mode {
-		return nil, ErrSchedulerMismatch
+	if expected != nil && serverParams.limits() != *expected {
+		return nil, &mpx4Failure{code: mpx4ErrSessionConflict, scope: mpx4ScopePreEstablishmentCarrier, reason: "JOIN peer receive limits differ from CREATE", cause: ErrProtocol}
 	}
 	h0 := sha256.Sum256(bytesJoin(preface, clientInit, serverInit))
 	hs, err := handshakeSecretFor(key, h0[:])
@@ -1159,21 +1274,22 @@ func clientHandshakePolicyGeneration(c net.Conn, key []byte, sid sessionID, carr
 		return nil, err
 	}
 	sc.reader = r
+	sc.peerMaxFrame = serverParams.maxFrame
+	sc.peerMaxStreams = serverParams.maxStreams
+	sc.localMaxCarriers = p.maxCarriers
+	sc.peerMaxCarriers = serverParams.maxCarriers
 	sc.configuredRateBPS = capacity.txRateBPS(false)
 	return sc, nil
 }
 
 type incomingHandshake struct {
-	scheduler           SchedulerMode
 	conn                net.Conn
 	reader              *bufio.Reader
 	id                  sessionID
-	carrier             byte
-	generation          uint64
+	carrier, generation uint64
 	create              bool
 	clientInit, preface []byte
 	client              handshakeParams
-	capacity            PathCapacity
 }
 
 func readHandshake(c net.Conn, key []byte) (incomingHandshake, error) {
@@ -1185,35 +1301,55 @@ func readHandshake(c net.Conn, key []byte) (incomingHandshake, error) {
 		return out, err
 	}
 	r := bufio.NewReaderSize(c, 64<<10)
-	preface := make([]byte, 5)
-	if _, err := io.ReadFull(r, preface); err != nil {
+	magic := make([]byte, 4)
+	if _, err := io.ReadFull(r, magic); err != nil {
 		return out, err
 	}
-	if string(preface[:4]) != "MPX\x00" || preface[4] != 4 {
+	if string(magic) != "MPX\x00" {
 		return out, ErrProtocol
 	}
+	version, rawVersion, err := readV4VarIntReader(r)
+	if err != nil {
+		return out, err
+	}
+	if version != WireProtocol {
+		wire, encErr := encodeVersionNegotiation([]uint64{WireProtocol})
+		if encErr == nil {
+			_ = writeAll(c, wire)
+		}
+		return out, fmt.Errorf("%w: unsupported Protocol Version %d", ErrProtocol, version)
+	}
+	preface := append(append([]byte(nil), magic...), rawVersion...)
 	typ, body, raw, err := readHandshakeMessage(r)
 	if err != nil || typ != mpx4HSClientInit {
+		_ = writeHandshakeReject(c, mpx4ErrProtocolViolation)
 		return out, ErrProtocol
 	}
 	p, err := parseParams(body, true)
 	if err != nil {
+		code := mpx4ErrProtocolViolation
+		var failure *mpx4Failure
+		if errors.As(err, &failure) && failure.scope == mpx4ScopePreEstablishmentCarrier {
+			code = failure.code
+		}
+		_ = writeHandshakeReject(c, code)
 		return out, err
 	}
-	out = incomingHandshake{scheduler: p.scheduler, conn: c, reader: r, id: p.sid, carrier: byte(p.carrier), generation: p.generation, create: p.action == 0, clientInit: raw, preface: preface, client: p, capacity: p.capacity}
+	out = incomingHandshake{conn: c, reader: r, id: p.sid, carrier: p.carrier, generation: p.generation, create: p.action == 0, clientInit: raw, preface: preface, client: p}
 	return out, nil
 }
 
-func (h incomingHandshake) finish(key []byte, status byte) (*secureConn, error) {
-	if status != 0 {
+func (h incomingHandshake) finish(key []byte, rejectCode uint64) (*secureConn, error) {
+	if rejectCode != 0 {
+		_ = h.conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+		_ = writeHandshakeReject(h.conn, rejectCode)
 		_ = h.conn.Close()
-		return nil, fmt.Errorf("MPX/4 handshake rejected: status %d", status)
+		return nil, handshakeRejectError(rejectCode)
 	}
 	if err := h.conn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
 		return nil, err
 	}
-	var server handshakeParams
-	server.scheduler = h.scheduler
+	server := handshakeParams{maxCarriers: MaxCarriers}
 	if _, err := rand.Read(server.serverNonce[:]); err != nil {
 		return nil, err
 	}
@@ -1235,10 +1371,12 @@ func (h incomingHandshake) finish(key []byte, status byte) (*secureConn, error) 
 	}
 	typ, clientFinishedBody, clientFinished, err := readHandshakeMessage(h.reader)
 	if err != nil || typ != mpx4HSClientFinished || len(clientFinishedBody) != 32 {
+		_ = writeHandshakeReject(h.conn, mpx4ErrAuthenticationFailed)
 		return nil, ErrAuthentication
 	}
 	cfk, _ := finishedKey(hs, true)
 	if !hmac.Equal(clientFinishedBody, finishedVerify(cfk, h0[:])) {
+		_ = writeHandshakeReject(h.conn, mpx4ErrAuthenticationFailed)
 		return nil, ErrAuthentication
 	}
 	h1 := sha256.Sum256(bytesJoin(h.preface, h.clientInit, serverInit, clientFinished))
@@ -1259,7 +1397,13 @@ func (h incomingHandshake) finish(key []byte, status byte) (*secureConn, error) 
 		return nil, err
 	}
 	sc.reader = h.reader
-	sc.configuredRateBPS = h.capacity.txRateBPS(true)
+	sc.peerMaxFrame = h.client.maxFrame
+	sc.peerMaxStreams = h.client.maxStreams
+	sc.localMaxCarriers = server.maxCarriers
+	sc.peerMaxCarriers = h.client.maxCarriers
+	if h.client.hasReceiveCapacityHint {
+		sc.configuredRateBPS = configuredRateBPS(capacityFromUnits(uint16(h.client.receiveCapacityHint)))
+	}
 	return sc, nil
 }
 

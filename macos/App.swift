@@ -886,7 +886,7 @@ final class Model: ObservableObject {
         }
         if line.contains("正在建立 Userspace 会话") { return "正在连接" }
         if line.contains("不使用内核 MPTCP") { return nil }
-        if line.contains("MPX/4 Draft") && !line.contains("错误") { return nil }
+        if (line.contains("MPX/4 Draft") || line.contains("MPX/4 Protocol Version")) && !line.contains("错误") { return nil }
         return line
     }
     func append(_ line: String) {

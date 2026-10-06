@@ -19,8 +19,8 @@ def fixture():
              for rate in [300, 500] for paths in [2, 3, 6] for ms in [30, 50, 100]]
     cases += [{'name': 'asymmetric-fastest-only', 'mbps': 270.0},
               {'name': 'asymmetric-300+20+180Mbps', 'mbps': 380.0}]
-    return {'version': '0.9.8', 'wire_protocol': 4, 'source_id': IDENTITY,
-            'scheduler_capability_revision': 5, 'verified': True, 'status': 'passed',
+    return {'version': gate.VERSION, 'wire_protocol': 4, 'source_id': IDENTITY,
+            'scheduler_policy_revision': gate.SCHEDULER_POLICY_REVISION, 'verified': True, 'status': 'passed',
             'candidate_frozen_after_short_acceptance': True, 'failures': [],
             'checks': dict.fromkeys(gate.REQUIRED_CHECKS, True),
             'coverage': dict(gate.MIN_COVERAGE), 'default_mode': 'auto',
@@ -29,6 +29,26 @@ def fixture():
             'full_matrices': [{'mode': mode, 'round': n, 'source_id': IDENTITY, 'exit_code': 0,
                                'cases': copy.deepcopy(cases)}
                               for mode, n in [('auto', 1), ('auto', 2), ('aggregate', 1)]],
+            'uniform_regression': {
+                'origin_commit': gate.ORIGIN_BASELINE_COMMIT,
+                'minimum_ratio': gate.UNIFORM_MIN_RATIO,
+                'modes': {mode: {
+                    'baseline_commit': gate.ORIGIN_BASELINE_COMMIT,
+                    'cases': {c['name']: {'baseline_mbps': [270.0], 'candidate_mbps': [271.0, 272.0]}
+                              for c in cases if 'asymmetric' not in c['name']},
+                } for mode in ['auto', 'aggregate']},
+            },
+            'asymmetric_regression': {
+                'origin_commit': gate.ORIGIN_BASELINE_COMMIT,
+                'minimum_ratio': gate.ASYMMETRIC_MIN_RATIO,
+                'modes': {mode: {
+                    'baseline_commit': gate.ORIGIN_BASELINE_COMMIT,
+                    'baseline_fastest_mbps': [270.0, 272.0, 268.0],
+                    'baseline_mixed_mbps': [110.0, 112.0, 108.0],
+                    'candidate_fastest_mbps': [271.0, 273.0, 269.0],
+                    'candidate_mixed_mbps': [111.0, 113.0, 109.0],
+                } for mode in ['auto','aggregate','protect']}
+            },
             'evidence': [{'path': f'reports/test/evidence-{i}.json', 'sha256': 'b'*64} for i in range(12)]}
 
 
@@ -54,7 +74,7 @@ class SchedulerGateTests(unittest.TestCase):
 
     def test_identity_capability_and_candidate_state(self):
         for key, value in [('source_id', 'c'*64), ('wire_protocol', 2),
-                           ('scheduler_capability_revision', 0), ('verified', False),
+                           ('scheduler_policy_revision', 0), ('verified', False),
                            ('candidate_frozen_after_short_acceptance', False),
                            ('status', 'pending'), ('failures', ['failed extreme case'])]:
             with self.subTest(key=key):
@@ -74,14 +94,21 @@ class SchedulerGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gate.check(data, IDENTITY)
 
-    def test_full_matrix_thresholds_not_weakened(self):
-        for name, value in [('300Mbps-6paths-50ms', 239.99),
-                            ('500Mbps-6paths-30ms', 299.99),
-                            ('asymmetric-300+20+180Mbps', 256.0)]:
-            data = fixture()
-            next(c for c in data['full_matrices'][0]['cases'] if c['name'] == name)['mbps'] = value
-            with self.assertRaises(ValueError):
-                gate.check(data, IDENTITY)
+    def test_uniform_regression_gate_is_relative_to_frozen_origin(self):
+        data = fixture()
+        data['uniform_regression']['modes']['auto']['cases']['300Mbps-6paths-50ms']['candidate_mbps'] = [200.0, 201.0]
+        with self.assertRaises(ValueError):
+            gate.check(data, IDENTITY)
+
+    def test_asymmetric_regression_is_relative_to_frozen_origin(self):
+        data = fixture()
+        data['asymmetric_regression']['modes']['auto']['candidate_mixed_mbps'] = [80.0, 81.0, 82.0]
+        with self.assertRaises(ValueError):
+            gate.check(data, IDENTITY)
+        data = fixture()
+        data['asymmetric_regression']['origin_commit'] = '0'*40
+        with self.assertRaises(ValueError):
+            gate.check(data, IDENTITY)
 
     def test_matrix_inventory_and_source_are_required(self):
         data = fixture()

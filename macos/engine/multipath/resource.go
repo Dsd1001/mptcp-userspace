@@ -117,7 +117,7 @@ type LifecycleStats struct {
 	Events        []TransportEvent `json:"events,omitempty"`
 }
 
-func (s *Session) eventLocked(kind, reason string, path byte, stream uint64) {
+func (s *Session) eventLocked(kind, reason string, path uint64, stream uint64) {
 	s.eventSequence++
 	e := TransportEvent{s.eventSequence, time.Now().UTC().Format(time.RFC3339Nano), kind, reason, int(path), stream}
 	if len(s.transportEvents) >= 64 {
@@ -292,7 +292,7 @@ func (s *Session) lifecycleSnapshotLocked() LifecycleStats {
 	}
 	return out
 }
-func (s *Session) recordDialAttempt(id byte, address string) {
+func (s *Session) recordDialAttempt(id uint64, address string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c := s.paths[id]

@@ -92,7 +92,7 @@ func TestSchedulerModesThroughActualStdin(t *testing.T) {
 				}
 			}()
 			key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-			server, err := multipath.NewServer(ctx, key, backend.Addr().String(), 2)
+			server, err := multipath.NewServerWithScheduler(ctx, key, backend.Addr().String(), 2, multipath.SchedulerMode(mode))
 			if err != nil {
 				t.Fatal(err)
 			}

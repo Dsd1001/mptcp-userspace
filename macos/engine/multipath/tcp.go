@@ -18,8 +18,8 @@ func DialClient(ctx context.Context, addresses []string, token string) (*Session
 	return DialClientWithScheduler(ctx, addresses, token, SchedulerAuto)
 }
 
-// DialClientWithScheduler authenticates one immutable configured policy for
-// both directions. Auto may choose different effective roles per direction.
+// DialClientWithScheduler selects this endpoint's local sending policy. MPX/4
+// Stable does not negotiate scheduler modes in the Core handshake.
 func DialClientWithScheduler(ctx context.Context, addresses []string, token string, requested SchedulerMode) (*Session, error) {
 	return DialClientWithPolicy(ctx, addresses, token, requested, nil)
 }
@@ -29,8 +29,8 @@ func DialClientWithPolicy(ctx context.Context, addresses []string, token string,
 	if modeErr != nil {
 		return nil, modeErr
 	}
-	if len(addresses) < 1 || len(addresses) > 8 {
-		return nil, errors.New("require 1-8 carrier addresses")
+	if len(addresses) < 1 || len(addresses) > MaxCarriers {
+		return nil, fmt.Errorf("require 1-%d carrier addresses", MaxCarriers)
 	}
 	if mode == SchedulerWeighted {
 		if len(capacities) != len(addresses) {
@@ -55,13 +55,13 @@ func DialClientWithPolicy(ctx context.Context, addresses []string, token string,
 	s := newSession(ctx, id, false, nil, mode)
 	if mode == SchedulerWeighted {
 		for i, capacity := range capacities {
-			s.pathCapacities[i+1] = capacity
+			s.pathCapacities[uint64(i+1)] = capacity
 		}
 	}
 	first := -1
 	var last error
 	for i, address := range addresses {
-		s.recordDialAttempt(byte(i+1), address)
+		s.recordDialAttempt(uint64(i+1), address)
 		c, e := PlainDial(ctx, address)
 		if e == nil {
 			stopClose := context.AfterFunc(ctx, func() { c.Close() })
@@ -69,10 +69,10 @@ func DialClientWithPolicy(ctx context.Context, addresses []string, token string,
 			if mode == SchedulerWeighted {
 				capacity = capacities[i]
 			}
-			sc, he := clientHandshakePolicy(c, key, id, byte(i+1), true, mode, capacity)
+			sc, he := clientHandshakePolicy(c, key, id, uint64(i+1), true, mode, capacity)
 			stopClose()
 			if he == nil {
-				e = s.addCarrier(byte(i+1), address, sc)
+				e = s.addCarrier(uint64(i+1), address, sc)
 				if e == nil {
 					first = i
 					break
@@ -85,7 +85,7 @@ func DialClientWithPolicy(ctx context.Context, addresses []string, token string,
 			}
 		}
 		last = e
-		s.recordDialError(byte(i+1), address, e)
+		s.recordDialError(uint64(i+1), address, e)
 		if ctx.Err() != nil {
 			break
 		}
@@ -95,12 +95,12 @@ func DialClientWithPolicy(ctx context.Context, addresses []string, token string,
 		return nil, fmt.Errorf("no authenticated Landing carrier: %w", last)
 	}
 	for i, address := range addresses {
-		go s.maintainCarrier(byte(i+1), address, key)
+		go s.maintainCarrier(uint64(i+1), address, key)
 	}
 	return s, nil
 }
 
-func (s *Session) maintainCarrier(id byte, address string, key []byte) {
+func (s *Session) maintainCarrier(id uint64, address string, key []byte) {
 	delay := 200 * time.Millisecond
 	for {
 		s.mu.Lock()
@@ -123,9 +123,8 @@ func (s *Session) maintainCarrier(id byte, address string, key []byte) {
 			return
 		}
 
-		// Draft 04 allocates a candidate Generation independently from the
-		// accepted Generation high-water mark. Failed candidates do not advance
-		// Highest Accepted Generation and Generation values never wrap.
+		// Candidate Generations are allocated independently from Highest Accepted
+		// Generation. Failed candidates do not advance accepted Session state.
 		s.mu.Lock()
 		generation, ok := s.nextCarrierCandidateGenerationLocked(id)
 		s.mu.Unlock()
@@ -143,7 +142,12 @@ func (s *Session) maintainCarrier(id byte, address string, key []byte) {
 			if s.scheduler.configured == SchedulerWeighted {
 				capacity = s.pathCapacities[id]
 			}
-			sc, err = clientHandshakePolicyGeneration(conn, key, s.id, id, generation, false, s.scheduler.configured, capacity)
+			expected, haveExpected := s.expectedPeerLimits()
+			var expectedPtr *handshakeLimits
+			if haveExpected {
+				expectedPtr = &expected
+			}
+			sc, err = clientHandshakePolicyGenerationExpected(conn, key, s.id, id, generation, false, s.scheduler.configured, capacity, expectedPtr)
 			stopClose()
 			if err == nil {
 				err = s.addCarrier(id, address, sc)
@@ -156,13 +160,8 @@ func (s *Session) maintainCarrier(id byte, address string, key []byte) {
 			delay = 200 * time.Millisecond
 			continue
 		}
-		// A candidate JOIN rejection is Carrier-scoped and must not mutate the
-		// live Session. Scheduler mismatch is a local Session policy mismatch and
-		// remains terminal for this configured client profile.
-		if errors.Is(err, ErrSchedulerMismatch) {
-			s.stop(err)
-			return
-		}
+		// Candidate JOIN rejection is Carrier-scoped and does not mutate the live
+		// Session. Local scheduler policy is intentionally absent from Core wire state.
 		s.recordDialError(id, address, err)
 		timer := time.NewTimer(delay)
 		select {
@@ -183,6 +182,7 @@ type Server struct {
 	key                                  []byte
 	backend                              string
 	maxSessions                          int
+	schedulerDefault                     SchedulerMode
 	mu                                   sync.Mutex
 	sessions                             map[sessionID]*Session
 	handshakes                           map[net.Conn]bool
@@ -198,6 +198,18 @@ type Server struct {
 }
 
 func NewServer(ctx context.Context, token, backend string, maxSessions int) (*Server, error) {
+	return NewServerWithScheduler(ctx, token, backend, maxSessions, SchedulerAuto)
+}
+
+// NewServerWithScheduler selects the Landing endpoint's local sending policy.
+// MPX/4 Protocol Version 4 Stable deliberately does not negotiate scheduler
+// modes in Core. A RECEIVE_CAPACITY_HINT may still let Auto select Weighted
+// behavior for server-to-client traffic without changing Core semantics.
+func NewServerWithScheduler(ctx context.Context, token, backend string, maxSessions int, requested SchedulerMode) (*Server, error) {
+	mode, err := ParseSchedulerMode(string(requested))
+	if err != nil {
+		return nil, err
+	}
 	key, err := ParseKey(token)
 	if err != nil {
 		return nil, err
@@ -209,7 +221,7 @@ func NewServer(ctx context.Context, token, backend string, maxSessions int) (*Se
 		return nil, err
 	}
 	child, cancel := context.WithCancel(ctx)
-	return &Server{ctx: child, cancel: cancel, key: key, backend: backend, maxSessions: maxSessions, sessions: make(map[sessionID]*Session), handshakes: make(map[net.Conn]bool)}, nil
+	return &Server{ctx: child, cancel: cancel, key: key, backend: backend, maxSessions: maxSessions, schedulerDefault: mode, sessions: make(map[sessionID]*Session), handshakes: make(map[net.Conn]bool)}, nil
 }
 
 func (srv *Server) session(id sessionID) *Session {
@@ -325,53 +337,49 @@ func (srv *Server) attach(c net.Conn) error {
 		}
 	}
 	existing := srv.sessions[h.id]
-	status := byte(0)
+	rejectCode := uint64(0)
 	if srv.ctx.Err() != nil {
-		status = 3
+		rejectCode = mpx4ErrInternal
 	} else if h.create {
-		if existing != nil || len(srv.sessions) >= srv.maxSessions {
-			status = 3
+		switch {
+		case h.generation != 0:
+			rejectCode = mpx4ErrCarrierConflict
+		case existing != nil:
+			rejectCode = mpx4ErrSessionConflict
+		case len(srv.sessions) >= srv.maxSessions:
+			rejectCode = mpx4ErrResourceLimit
 		}
 	} else if existing == nil {
-		status = 2
-	} else if existing.scheduler.configured != h.scheduler {
-		status = 4
-	} else if err := existing.validateCarrierGeneration(h.carrier, h.generation); err != nil {
-		status = 5
-	}
-	if h.create && h.generation != 0 {
-		status = 5
+		rejectCode = mpx4ErrSessionNotFound
+	} else if err := existing.validateCarrierAdmission(h.carrier, h.generation, h.client.limits()); err != nil {
+		rejectCode = mpx4ErrCarrierConflict
+		var failure *mpx4Failure
+		if errors.As(err, &failure) {
+			rejectCode = failure.code
+		}
 	}
 	srv.mu.Unlock()
 
-	// For an authenticated Session scheduler conflict, send SERVER_INIT with the
-	// Session's existing scheduler. The client can then deterministically report
-	// SCHEDULER_MISMATCH instead of guessing from a transport close. It will not
-	// send CLIENT_FINISHED, so no Carrier state is attached.
-	if status == 4 && existing != nil {
-		h.scheduler = existing.scheduler.configured
-		_, _ = h.finish(srv.key, 0)
-		srv.mu.Lock()
-		srv.handshakeOutcomeLocked("scheduler_mode_conflict")
-		srv.mu.Unlock()
-		return ErrSchedulerMismatch
-	}
-
-	sc, err := h.finish(srv.key, status)
+	sc, err := h.finish(srv.key, rejectCode)
 	if err != nil {
 		srv.mu.Lock()
-		if status == 5 {
+		switch rejectCode {
+		case mpx4ErrCarrierConflict:
 			srv.handshakeOutcomeLocked("carrier_generation_conflict")
-		} else if status == 4 {
-			srv.handshakeOutcomeLocked("scheduler_mode_conflict")
-		} else if status == 2 {
+		case mpx4ErrSessionNotFound:
 			srv.handshakeOutcomeLocked("session_missing")
-		} else if status != 0 {
-			srv.handshakeOutcomeLocked("session_capacity_or_conflict")
-		} else if errors.Is(err, ErrAuthentication) {
-			srv.handshakeOutcomeLocked("authentication_failed")
-		} else {
-			srv.handshakeOutcomeLocked("handshake_failed")
+		case mpx4ErrSessionConflict:
+			srv.handshakeOutcomeLocked("session_conflict")
+		case mpx4ErrResourceLimit:
+			srv.handshakeOutcomeLocked("session_or_carrier_capacity")
+		case mpx4ErrInternal:
+			srv.handshakeOutcomeLocked("server_closing")
+		default:
+			if errors.Is(err, ErrAuthentication) {
+				srv.handshakeOutcomeLocked("authentication_failed")
+			} else {
+				srv.handshakeOutcomeLocked("handshake_failed")
+			}
 		}
 		srv.mu.Unlock()
 		return err
@@ -388,7 +396,13 @@ func (srv *Server) attach(c net.Conn) error {
 			sc.Close()
 			return &ResourceLimitError{Reason: "session_capacity_or_conflict"}
 		}
-		s = newSession(srv.ctx, h.id, true, srv.openBackend, h.scheduler)
+		serverMode := srv.schedulerDefault
+		if serverMode == SchedulerAuto && h.client.hasReceiveCapacityHint {
+			// The published Capacity Hint extension is unilateral and safely
+			// ignorable. Auto may use it as local evidence and select Weighted.
+			serverMode = SchedulerWeighted
+		}
+		s = newSession(srv.ctx, h.id, true, srv.openBackend, serverMode)
 		srv.sessions[h.id] = s
 		srv.handshakeOutcomeLocked("session_created")
 	} else {
@@ -397,12 +411,6 @@ func (srv *Server) attach(c net.Conn) error {
 			srv.mu.Unlock()
 			sc.Close()
 			return ErrSessionExpired
-		}
-		if s.scheduler.configured != h.scheduler {
-			srv.handshakeOutcomeLocked("scheduler_mode_conflict")
-			srv.mu.Unlock()
-			sc.Close()
-			return ErrSchedulerMismatch
 		}
 		srv.handshakeOutcomeLocked("session_joined")
 	}

@@ -108,6 +108,8 @@ func frameTypeForKind(kind byte) uint64 {
 		return mpx4FrameStopSending
 	case kindFinalConsumed:
 		return mpx4FrameStreamConsumed
+	case kindTransmissionRetire:
+		return mpx4FrameTransmissionRetire
 	case kindSessionWindow:
 		return mpx4FrameSessionCredit
 	case kindCreditProbe:
@@ -147,8 +149,24 @@ func validOpenRejectCode(code uint64) bool {
 	return code == mpx4ErrStreamLimit || code == mpx4ErrResourceLimit || code == mpx4ErrStreamState
 }
 
-func (s *Session) validateCarrierGenerationLocked(id byte, generation uint64) error {
-	if id < 1 || id > 8 || generation > mpx4VarIntMax {
+func (s *Session) ensureCarrierStateMapsLocked() {
+	if s.carrierUsed == nil {
+		s.carrierUsed = make(map[uint64]bool)
+	}
+	if s.highestGeneration == nil {
+		s.highestGeneration = make(map[uint64]uint64)
+	}
+	if s.nextCandidateGeneration == nil {
+		s.nextCandidateGeneration = make(map[uint64]uint64)
+	}
+	if s.generationExhausted == nil {
+		s.generationExhausted = make(map[uint64]bool)
+	}
+}
+
+func (s *Session) validateCarrierGenerationLocked(id uint64, generation uint64) error {
+	s.ensureCarrierStateMapsLocked()
+	if id == 0 || id > mpx4VarIntMax || generation > mpx4VarIntMax {
 		return ErrCarrierConflict
 	}
 	if !s.carrierUsed[id] {
@@ -163,7 +181,7 @@ func (s *Session) validateCarrierGenerationLocked(id byte, generation uint64) er
 	return nil
 }
 
-func (s *Session) validateCarrierGeneration(id byte, generation uint64) error {
+func (s *Session) validateCarrierGeneration(id uint64, generation uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -172,7 +190,7 @@ func (s *Session) validateCarrierGeneration(id byte, generation uint64) error {
 	return s.validateCarrierGenerationLocked(id, generation)
 }
 
-func (s *Session) commitCarrierGenerationLocked(id byte, generation uint64) error {
+func (s *Session) commitCarrierGenerationLocked(id uint64, generation uint64) error {
 	if err := s.validateCarrierGenerationLocked(id, generation); err != nil {
 		return err
 	}
@@ -193,8 +211,9 @@ func (s *Session) commitCarrierGenerationLocked(id byte, generation uint64) erro
 // nextCarrierCandidateGenerationLocked allocates a local candidate Generation
 // without changing Highest Accepted Generation. Failed candidates may therefore
 // consume/skips numbers, but never mutate accepted Session state.
-func (s *Session) nextCarrierCandidateGenerationLocked(id byte) (uint64, bool) {
-	if id < 1 || id > 8 {
+func (s *Session) nextCarrierCandidateGenerationLocked(id uint64) (uint64, bool) {
+	s.ensureCarrierStateMapsLocked()
+	if id == 0 || id > mpx4VarIntMax {
 		return 0, false
 	}
 	if !s.carrierUsed[id] {

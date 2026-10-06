@@ -18,6 +18,18 @@ STABLE_LOCAL_CERT="$ROOT/macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt"
 CODESIGN_IDENTITY=${MPTCP_CODESIGN_IDENTITY:-$STABLE_LOCAL_IDENTITY}
 CODESIGN_STYLE=${MPTCP_CODESIGN_STYLE:-local}
 NOTARY_PROFILE=${MPTCP_NOTARY_PROFILE:-}
+PROTOCOL_RELEASE=protocol-v4.0.0
+PROTOCOL_SOURCE=44f587fd279ed2238b070dd68114c76822353f4d
+BROKER_RESOURCE="$ROOT/macos/keychain-broker/MPTCPKeychainBroker.v1.b64"
+BROKER_SHA256=5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9
+BROKER_ACTUAL_SHA256=$(python3 - "$BROKER_RESOURCE" <<'PY'
+import base64, hashlib, pathlib, sys
+encoded = b''.join(pathlib.Path(sys.argv[1]).read_bytes().split())
+raw = base64.b64decode(encoded, validate=True)
+print(hashlib.sha256(raw).hexdigest())
+PY
+)
+[[ "$BROKER_ACTUAL_SHA256" == "$BROKER_SHA256" ]] || { echo "Frozen Keychain Broker v1 bytes changed; refusing to build" >&2; exit 1; }
 
 if [[ "$CODESIGN_IDENTITY" == "-" ]]; then CODESIGN_STYLE=adhoc; fi
 case "$CODESIGN_STYLE" in
@@ -95,7 +107,7 @@ cp "$ROOT/macos/Info.plist" "$APP/Contents/Info.plist"
 [[ $(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist") == "$VERSION" ]]
 plutil -insert MPTCPSourceID -string "$SOURCE_ID" "$APP/Contents/Info.plist"
 printf '%s\n' "$SOURCE_ID" > "$APP/Contents/Resources/SOURCE_ID"
-cp "$ROOT/macos/keychain-broker/MPTCPKeychainBroker.v1.b64" "$APP/Contents/Resources/MPTCPKeychainBroker.v1.b64"
+cp "$BROKER_RESOURCE" "$APP/Contents/Resources/MPTCPKeychainBroker.v1.b64"
 xcrun swiftc "$ROOT/macos/Icon.swift" -module-cache-path /tmp/mptcp-swift-cache -o "$BUILD/icon-generator"
 "$BUILD/icon-generator" "$APPROOT/AppIcon.iconset"
 iconutil -c icns "$APPROOT/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
@@ -151,7 +163,7 @@ fi
         developer-id) signing="Developer ID ($CODESIGN_IDENTITY)" ;;
     esac
     [[ -z "$NOTARY_PROFILE" ]] || signing="$signing, notarized"
-    printf 'Component: MPTCP Desk\nVersion: %s\nSource-ID: %s\nProtocol: MPX/4 Draft 04\nArchitectures: arm64 x86_64\nUpdater: Sparkle %s / EdDSA appcast\nSigning: %s\nDesignated-Requirement: %s\nKeychain-Broker: v1 sha256=5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9\n' "$VERSION" "$SOURCE_ID" "$SPARKLE_VERSION" "$signing" "$DESIGNATED_REQUIREMENT"
+    printf 'Component: MPTCP Desk\nVersion: %s\nSource-ID: %s\nProtocol: MPX/4 Protocol Version 4 Stable\nProtocol-Release: %s\nProtocol-Source: %s\nArchitectures: arm64 x86_64\nUpdater: Sparkle %s / EdDSA appcast\nSigning: %s\nDesignated-Requirement: %s\nKeychain-Broker: v1 sha256=%s\n' "$VERSION" "$SOURCE_ID" "$PROTOCOL_RELEASE" "$PROTOCOL_SOURCE" "$SPARKLE_VERSION" "$signing" "$DESIGNATED_REQUIREMENT" "$BROKER_SHA256"
     "$GO" version
     xcrun swiftc --version
 } > "$OUT/MPTCP-Desk.BUILDINFO"

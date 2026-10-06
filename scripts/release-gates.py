@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Bind the 0.9.8 candidate to ten actual 30s capacity cases and a 180s physical mixed run.
+"""Bind the current suite candidate to ten actual 30s capacity cases and a 180s physical mixed run.
 Only reads recorded evidence; never starts traffic, changes a service or GUI.
 """
 from __future__ import annotations
 import argparse, hashlib, importlib.util, json, pathlib
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-VERSION='0.9.8'
+VERSION=(ROOT/'macos/VERSION').read_text().strip()
 TARGETS=[128,256,512,1024,2048]
 MAX_STREAMS=2048
 CAPS={'active_streams':MAX_STREAMS,'receive_credit_bytes':128<<20,'bootstrap_credit_bytes':32<<20,
@@ -23,7 +23,7 @@ def sha(path: pathlib.Path) -> str:
 
 def bounds(snapshot: dict) -> None:
     r=snapshot['resources']
-    require(r.get('capability_revision')==4,'Capacity evidence is not MPX/4 Draft 04')
+    require(r.get('capability_revision')==6,'Capacity evidence is not MPX/4 Protocol Version 4 Stable')
     for field,limit in CAPS.items():
         require(isinstance(r[field],int) and 0<=r[field]<=limit,'Invalid resource bound: '+field)
     require(r['receive_credit_bytes']==r['bootstrap_credit_bytes']+r['growth_credit_bytes'],'Credit subledger mismatch')

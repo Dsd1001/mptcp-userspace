@@ -6,12 +6,12 @@ import (
 )
 
 func schedulerFixture() *Session {
-	s := &Session{scheduler: schedulerState{configured: SchedulerAggregate, effective: SchedulerAggregate, reason: "forced_aggregate"}, changed: make(chan struct{}), kick: make(chan struct{}, 1), streams: make(map[uint64]*Stream), pending: make(map[uint64]*outbound), paths: make(map[byte]*carrier)}
+	s := &Session{scheduler: schedulerState{configured: SchedulerAggregate, effective: SchedulerAggregate, reason: "forced_aggregate"}, changed: make(chan struct{}), kick: make(chan struct{}, 1), streams: make(map[uint64]*Stream), pending: make(map[uint64]*outbound), paths: make(map[uint64]*carrier)}
 	s.initCreditLocked()
 	s.credit.peerLimit = SessionCreditLimit // fixture models an authenticated initial grant
 	return s
 }
-func schedulerPath(id byte) *carrier {
+func schedulerPath(id uint64) *carrier {
 	return &carrier{id: id, active: true, rtt: 20 * time.Millisecond, goodput: 2 << 20, queue: make(chan sendTask, carrierQueue), control: make(chan frame, 512), reliableControl: make(chan sendTask, controlCarrierQueue), sampleAt: time.Now()}
 }
 func TestGoodputExcludesApplicationIdle(t *testing.T) {

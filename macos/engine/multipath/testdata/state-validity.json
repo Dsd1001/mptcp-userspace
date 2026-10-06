@@ -1,0 +1,419 @@
+{
+  "protocol": "MPX/4",
+  "revision": "Draft 11",
+  "document": "STATE-MACHINES.md",
+  "cases": [
+    {
+      "name": "open-new-stream",
+      "state": "UNSEEN responder",
+      "frame": "STREAM_OPEN",
+      "expected": "apply",
+      "notes": "Create OPEN_PENDING state when Stream ID and Transmission ID are valid."
+    },
+    {
+      "name": "duplicate-open-same-transmission",
+      "state": "OPEN responder",
+      "frame": "STREAM_OPEN",
+      "conditions": {
+        "transmission_id": "same as original"
+      },
+      "expected": "idempotent",
+      "response": "repeat STREAM_OPEN_OK"
+    },
+    {
+      "name": "duplicate-open-conflicting-transmission",
+      "state": "OPEN responder",
+      "frame": "STREAM_OPEN",
+      "conditions": {
+        "transmission_id": "different from original"
+      },
+      "expected": "session_error",
+      "error": "TRANSMISSION_ID_ERROR"
+    },
+    {
+      "name": "credit-overtakes-open-ok",
+      "state": "OPENING initiator",
+      "frame": "STREAM_CREDIT",
+      "expected": "acceptance_evidence"
+    },
+    {
+      "name": "data-before-open-ok",
+      "state": "OPENING initiator",
+      "frame": "STREAM_DATA",
+      "expected": "session_error",
+      "error": "STREAM_STATE_ERROR",
+      "notes": "Draft 11 has no implicit Stream data credit."
+    },
+    {
+      "name": "zero-fin-overtakes-open-ok",
+      "state": "OPENING initiator",
+      "frame": "STREAM_FIN",
+      "conditions": {
+        "final_offset": "0"
+      },
+      "expected": "acceptance_evidence"
+    },
+    {
+      "name": "nonzero-fin-before-open-ok",
+      "state": "OPENING initiator",
+      "frame": "STREAM_FIN",
+      "conditions": {
+        "final_offset": ">0"
+      },
+      "expected": "session_error",
+      "error": "STREAM_STATE_ERROR"
+    },
+    {
+      "name": "preopen-reset-zero",
+      "state": "UNSEEN responder",
+      "frame": "RESET_STREAM",
+      "conditions": {
+        "final_offset": "0"
+      },
+      "expected": "preopen_cancellation",
+      "response": "TRANSMISSION_ACK"
+    },
+    {
+      "name": "preopen-reset-nonzero",
+      "state": "UNSEEN responder",
+      "frame": "RESET_STREAM",
+      "conditions": {
+        "final_offset": ">0"
+      },
+      "expected": "session_error",
+      "error": "STREAM_STATE_ERROR"
+    },
+    {
+      "name": "preopen-stop-sending",
+      "state": "UNSEEN responder",
+      "frame": "STOP_SENDING",
+      "expected": "preopen_cancellation",
+      "response": [
+        "TRANSMISSION_ACK",
+        "RESET_STREAM(final_offset=0)"
+      ],
+      "notes": "Server RESET_STREAM(final_offset=0) is a cancellation response, not acceptance evidence. Later matching STREAM_OPEN_REJECT completes local cancellation."
+    },
+    {
+      "name": "late-data-fills-fin-hole",
+      "state": "FIN_RECEIVED",
+      "frame": "STREAM_DATA",
+      "conditions": {
+        "end_offset": "<= final_offset",
+        "bytes": "consistent"
+      },
+      "expected": "apply"
+    },
+    {
+      "name": "data-beyond-fin",
+      "state": "FIN_RECEIVED",
+      "frame": "STREAM_DATA",
+      "conditions": {
+        "end_offset": "> final_offset"
+      },
+      "expected": "session_error",
+      "error": "FINAL_SIZE_ERROR"
+    },
+    {
+      "name": "late-data-after-reset",
+      "state": "RESET_RECEIVED",
+      "frame": "STREAM_DATA",
+      "conditions": {
+        "end_offset": "<= final_offset"
+      },
+      "expected": "stale_duplicate_no_application_delivery"
+    },
+    {
+      "name": "conflicting-terminal-size",
+      "state": "FIN_RECEIVED",
+      "frame": "RESET_STREAM",
+      "conditions": {
+        "final_offset": "different from established final_offset"
+      },
+      "expected": "session_error",
+      "error": "FINAL_SIZE_ERROR"
+    },
+    {
+      "name": "ack-outstanding-transmission",
+      "state": "Session active",
+      "frame": "TRANSMISSION_ACK",
+      "conditions": {
+        "transmission_id": "outstanding"
+      },
+      "expected": "settle_transmission"
+    },
+    {
+      "name": "ack-settled-transmission",
+      "state": "Session active",
+      "frame": "TRANSMISSION_ACK",
+      "conditions": {
+        "transmission_id": "previously settled"
+      },
+      "expected": "ignore_duplicate"
+    },
+    {
+      "name": "ack-never-allocated-transmission",
+      "state": "Session active",
+      "frame": "TRANSMISSION_ACK",
+      "conditions": {
+        "transmission_id": ">= next unallocated local Transmission ID"
+      },
+      "expected": "session_error",
+      "error": "TRANSMISSION_ID_ERROR"
+    },
+    {
+      "name": "stream-credit-after-send-closed",
+      "state": "SEND_CLOSED",
+      "frame": "STREAM_CREDIT",
+      "conditions": {
+        "consumed_offset": "<= local_final_offset"
+      },
+      "expected": "validate_then_ignore"
+    },
+    {
+      "name": "stream-consumed-wrong-final",
+      "state": "FIN_PENDING",
+      "frame": "STREAM_CONSUMED",
+      "conditions": {
+        "final_offset": "different from local final_offset"
+      },
+      "expected": "session_error",
+      "error": "FINAL_SIZE_ERROR"
+    },
+    {
+      "name": "tombstone-duplicate-terminal",
+      "state": "TOMBSTONE",
+      "frame": "STREAM_FIN",
+      "conditions": {
+        "transmission_id": "same terminal TxID",
+        "final_offset": "same"
+      },
+      "expected": "idempotent",
+      "response": "TRANSMISSION_ACK"
+    },
+    {
+      "name": "tombstone-data-beyond-final",
+      "state": "TOMBSTONE",
+      "frame": "STREAM_DATA",
+      "conditions": {
+        "end_offset": "> recorded peer final_offset"
+      },
+      "expected": "session_error",
+      "error": "FINAL_SIZE_ERROR"
+    },
+    {
+      "name": "retired-data",
+      "state": "RETIRED_ID",
+      "frame": "STREAM_DATA",
+      "expected": "ignore",
+      "notes": "Must not recreate Stream state, deliver application data, or send another confirmation after peer retirement covers the Transmission.",
+      "conditions": {
+        "transmission_id": "<= peer_retired_through"
+      }
+    },
+    {
+      "name": "retired-open",
+      "state": "RETIRED_ID",
+      "frame": "STREAM_OPEN",
+      "expected": "ignore",
+      "notes": "Must not recreate Stream state; silent ignore is valid only because peer retirement covers the reliable STREAM_OPEN.",
+      "conditions": {
+        "transmission_id": "<= peer_retired_through"
+      }
+    },
+    {
+      "name": "duplicate-session-close",
+      "state": "CLOSING",
+      "frame": "SESSION_CLOSE",
+      "expected": "idempotent"
+    },
+    {
+      "name": "fin-then-reset-same-final",
+      "state": "FIN_RECEIVED",
+      "frame": "RESET_STREAM",
+      "conditions": {
+        "final_offset": "same as established final_offset"
+      },
+      "expected": "apply_reset_semantics",
+      "notes": "RESET_STREAM becomes authoritative for application-visible termination."
+    },
+    {
+      "name": "reset-then-fin-same-final",
+      "state": "RESET_RECEIVED",
+      "frame": "STREAM_FIN",
+      "conditions": {
+        "final_offset": "same as established final_offset"
+      },
+      "expected": "acknowledge_without_changing_reset_semantics",
+      "response": "TRANSMISSION_ACK"
+    },
+    {
+      "name": "opening-cancel-reset-response",
+      "state": "OPENING_CANCEL_PENDING initiator",
+      "frame": "RESET_STREAM",
+      "conditions": {
+        "final_offset": "0",
+        "matches_outstanding_preopen_stop": true
+      },
+      "expected": "cancellation_response_not_acceptance_evidence"
+    },
+    {
+      "name": "opening-cancel-matching-reject",
+      "state": "OPENING_CANCEL_PENDING initiator",
+      "frame": "STREAM_OPEN_REJECT",
+      "conditions": {
+        "error": "STREAM_STATE_ERROR",
+        "matches_cancelled_open": true
+      },
+      "expected": "cancelled_open_complete_no_session_error"
+    },
+    {
+      "name": "opening-cancel-acceptance-wins",
+      "state": "OPENING_CANCEL_PENDING initiator",
+      "frame": "STREAM_OPEN_OK",
+      "expected": "accepted_then_apply_pending_cancellation",
+      "conditions": {
+        "transmission_id": "original STREAM_OPEN",
+        "stream_id": "matches"
+      }
+    },
+    {
+      "name": "stream-credit-stale-reordered",
+      "state": "Stream sending",
+      "frame": "STREAM_CREDIT",
+      "conditions": {
+        "retained": "(512,1536)",
+        "received": "(0,1024)"
+      },
+      "expected": "ignore_stale"
+    },
+    {
+      "name": "stream-credit-crossed",
+      "state": "Stream sending",
+      "frame": "STREAM_CREDIT",
+      "conditions": {
+        "retained": "(512,1536)",
+        "received": "(768,1400)"
+      },
+      "expected": "session_error",
+      "error": "FLOW_CONTROL_ERROR"
+    },
+    {
+      "name": "transmission-retire-valid",
+      "state": "Session active",
+      "frame": "TRANSMISSION_RETIRE",
+      "conditions": {
+        "retired_through": "<= largest_contiguous_peer_tx_processed"
+      },
+      "expected": "advance_peer_retired_through_if_newer"
+    },
+    {
+      "name": "transmission-retire-future",
+      "state": "Session active",
+      "frame": "TRANSMISSION_RETIRE",
+      "conditions": {
+        "retired_through": "> largest_contiguous_peer_tx_processed"
+      },
+      "expected": "session_error",
+      "error": "TRANSMISSION_ID_ERROR"
+    },
+    {
+      "name": "terminal-duplicate-before-retire",
+      "state": "TOMBSTONE",
+      "frame": "RESET_STREAM",
+      "conditions": {
+        "transmission_id": "> peer_retired_through",
+        "matches_recorded_terminal": true
+      },
+      "expected": "idempotent",
+      "response": "TRANSMISSION_ACK"
+    },
+    {
+      "name": "ack-stream-open-wrong-confirmation",
+      "state": "OPENING initiator",
+      "frame": "TRANSMISSION_ACK",
+      "conditions": {
+        "transmission_id": "outstanding STREAM_OPEN",
+        "stream_id": "matches"
+      },
+      "expected": "session_error",
+      "error": "TRANSMISSION_ID_ERROR"
+    },
+    {
+      "name": "open-ok-wrong-frame-transmission",
+      "state": "OPENING initiator",
+      "frame": "STREAM_OPEN_OK",
+      "conditions": {
+        "transmission_id": "allocated STREAM_DATA",
+        "stream_id": "matches"
+      },
+      "expected": "session_error",
+      "error": "TRANSMISSION_ID_ERROR"
+    },
+    {
+      "name": "open-reject-wrong-stream",
+      "state": "OPENING initiator",
+      "frame": "STREAM_OPEN_REJECT",
+      "conditions": {
+        "transmission_id": "original STREAM_OPEN",
+        "stream_id": "different"
+      },
+      "expected": "session_error",
+      "error": "TRANSMISSION_ID_ERROR"
+    },
+    {
+      "name": "fin-superseded-by-reset-remains-reliable",
+      "state": "RESET_PENDING with superseded FIN outstanding",
+      "frame": "local reliability",
+      "conditions": {
+        "fin_ack_received": false,
+        "eligible_carrier": true
+      },
+      "expected": "continue_FIN_retransmit_or_reinject_same_txid"
+    },
+    {
+      "name": "late-fin-after-reset-same-final",
+      "state": "RESET_RECEIVED",
+      "frame": "STREAM_FIN",
+      "conditions": {
+        "final_offset": "same",
+        "transmission_id": "> peer_retired_through"
+      },
+      "expected": "acknowledge_without_changing_reset_semantics",
+      "response": "TRANSMISSION_ACK"
+    },
+    {
+      "name": "opening-cancel-open-ok-wrong-frame-transmission",
+      "state": "OPENING_CANCEL_PENDING initiator",
+      "frame": "STREAM_OPEN_OK",
+      "conditions": {
+        "transmission_id": "allocated STREAM_DATA",
+        "stream_id": "matches"
+      },
+      "expected": "session_error",
+      "error": "TRANSMISSION_ID_ERROR"
+    },
+    {
+      "name": "opening-cancel-open-ok-wrong-stream",
+      "state": "OPENING_CANCEL_PENDING initiator",
+      "frame": "STREAM_OPEN_OK",
+      "conditions": {
+        "transmission_id": "original STREAM_OPEN",
+        "stream_id": "different"
+      },
+      "expected": "session_error",
+      "error": "TRANSMISSION_ID_ERROR"
+    },
+    {
+      "name": "retired-open-replay-before-retire",
+      "state": "RETIRED_ID",
+      "frame": "STREAM_OPEN",
+      "conditions": {
+        "transmission_id": "> peer_retired_through",
+        "confirmation_replay_retained": true
+      },
+      "expected": "repeat_confirmation_without_recreating_stream",
+      "notes": "Before retirement covers the original STREAM_OPEN, compact state must retain/recover the opening decision without recreating application Stream state."
+    }
+  ]
+}

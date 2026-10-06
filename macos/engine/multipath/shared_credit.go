@@ -70,10 +70,18 @@ func (s *Session) receiveSessionCreditLocked(f frame) error {
 	if f.stream != 0 || len(f.data) != 0 || f.id < f.offset || f.id-f.offset > SessionCreditLimit || f.offset > fc.txCommitted {
 		return flowControlFailure("invalid session credit")
 	}
-	fc.peerConsumed = max(fc.peerConsumed, f.offset)
-	fc.peerLimit = max(fc.peerLimit, f.id)
-	s.wakeLocked()
-	return nil
+	oldConsumed, oldMaximum := fc.peerConsumed, fc.peerLimit
+	switch {
+	case f.offset >= oldConsumed && f.id >= oldMaximum:
+		fc.peerConsumed, fc.peerLimit = f.offset, f.id
+		s.wakeLocked()
+		return nil
+	case f.offset <= oldConsumed && f.id <= oldMaximum:
+		// Fully stale/duplicate credit is safe under cross-Carrier reordering.
+		return nil
+	default:
+		return flowControlFailure("crossed Session credit advertisement")
+	}
 }
 
 // A high offset proves commitment of the preceding range, even when its DATA

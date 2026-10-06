@@ -126,13 +126,20 @@ func (st *Stream) receiveCreditLocked(f frame) error {
 	if f.id < f.offset || f.id-f.offset > MaxStreamWindow || f.offset > st.txNext {
 		return flowControlFailure("invalid Stream credit advertisement")
 	}
-	if err := st.releaseSendCreditLocked(f.offset); err != nil {
-		return err
+	oldConsumed, oldMaximum := st.peerCreditConsumed, st.peerLimit
+	switch {
+	case f.offset >= oldConsumed && f.id >= oldMaximum:
+		if err := st.releaseSendCreditLocked(f.offset); err != nil {
+			return err
+		}
+		st.peerCreditConsumed, st.peerLimit = f.offset, f.id
+		return nil
+	case f.offset <= oldConsumed && f.id <= oldMaximum:
+		// Fully stale/duplicate credit can arrive later on another Carrier.
+		return nil
+	default:
+		return flowControlFailure("crossed Stream credit advertisement")
 	}
-	if f.id > st.peerLimit {
-		st.peerLimit = f.id
-	}
-	return nil
 }
 
 func (c *carrier) observeRTT(sample time.Duration) {

@@ -29,7 +29,7 @@ build_one() {
     esac
     shasum -a 256 "$out" > "$out.sha256"
     {
-        printf 'Component: mptcp-client\nVersion: %s\nSource-ID: %s\nTarget: linux/%s\nCGO_ENABLED: 0\nProtocol: MPX/4 Draft 04\nMode: userspace_multipath only\n' "$VERSION" "$SOURCE_ID" "$arch"
+        printf 'Component: mptcp-client\nVersion: %s\nSource-ID: %s\nTarget: linux/%s\nCGO_ENABLED: 0\nProtocol: MPX/4 Protocol Version 4 Stable\nProtocol-Release: protocol-v4.0.0\nProtocol-Source: 44f587fd279ed2238b070dd68114c76822353f4d\nMode: userspace_multipath only\n' "$VERSION" "$SOURCE_ID" "$arch"
         "$GO" version
         "$GO" version -m "$out"
     } > "$out.BUILDINFO"

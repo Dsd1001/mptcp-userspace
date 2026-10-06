@@ -3,6 +3,7 @@ package multipath
 import (
 	"container/list"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net"
@@ -83,7 +84,7 @@ type sendTask struct {
 type carrier struct {
 	generation                        uint64
 	scheduler                         schedulerPathState
-	id                                byte
+	id                                uint64
 	address                           string
 	conn                              *secureConn
 	active                            bool
@@ -144,12 +145,21 @@ type Session struct {
 	windowSeedAt                                    time.Time
 	clockStart                                      time.Time
 	pending                                         map[uint64]*outbound
-	paths                                           map[byte]*carrier
-	carrierUsed                                     [9]bool
-	highestGeneration                               [9]uint64
-	nextCandidateGeneration                         [9]uint64
-	generationExhausted                             [9]bool
-	pathCapacities                                  [9]PathCapacity
+	paths                                           map[uint64]*carrier
+	carrierUsed                                     map[uint64]bool
+	highestGeneration                               map[uint64]uint64
+	nextCandidateGeneration                         map[uint64]uint64
+	generationExhausted                             map[uint64]bool
+	pathCapacities                                  map[uint64]PathCapacity
+	localMaxCarriers, peerMaxCarriers               uint64
+	peerMaxFrame, peerMaxRecord, peerMaxStreams     uint64
+	effectiveCarrierLimit                           uint64
+	settled                                         map[uint64]bool
+	peerProcessed                                   map[uint64]bool
+	peerTransmissionFingerprint                     map[uint64][32]byte
+	confirmationReplay                              map[uint64]frame
+	settledThrough, lastRetireAdvertised            uint64
+	peerProcessedThrough, peerRetiredThrough        uint64
 	seen                                            map[uint64]bool
 	maxSeen, nextStream, nextPacket, dispatchCursor uint64
 	bulkDispatchCursor, dispatchSequence            uint64
@@ -175,7 +185,7 @@ type Session struct {
 
 func newSession(parent context.Context, id sessionID, server bool, onOpen func(*Stream), modes ...SchedulerMode) *Session {
 	ctx, cancel := context.WithCancel(parent)
-	s := &Session{clockStart: time.Now(), ctx: ctx, cancel: cancel, id: id, server: server, changed: make(chan struct{}), kick: make(chan struct{}, 1), done: make(chan struct{}), streams: make(map[uint64]*Stream), pending: make(map[uint64]*outbound), paths: make(map[byte]*carrier), seen: make(map[uint64]bool), nextStream: 1, noPathsSince: time.Now(), onOpen: onOpen}
+	s := &Session{clockStart: time.Now(), ctx: ctx, cancel: cancel, id: id, server: server, changed: make(chan struct{}), kick: make(chan struct{}, 1), done: make(chan struct{}), streams: make(map[uint64]*Stream), pending: make(map[uint64]*outbound), paths: make(map[uint64]*carrier), carrierUsed: make(map[uint64]bool), highestGeneration: make(map[uint64]uint64), nextCandidateGeneration: make(map[uint64]uint64), generationExhausted: make(map[uint64]bool), pathCapacities: make(map[uint64]PathCapacity), settled: make(map[uint64]bool), peerProcessed: make(map[uint64]bool), peerTransmissionFingerprint: make(map[uint64][32]byte), confirmationReplay: make(map[uint64]frame), seen: make(map[uint64]bool), nextStream: 1, noPathsSince: time.Now(), localMaxCarriers: MaxCarriers, onOpen: onOpen}
 	mode := SchedulerAuto
 	if len(modes) > 0 {
 		mode = modes[0]
@@ -246,24 +256,96 @@ func (s *Session) stop(err error) {
 	s.wakeLocked()
 }
 
-func (s *Session) addCarrier(id byte, address string, conn *secureConn) error {
+func (s *Session) activeCarrierCountLocked() uint64 {
+	var n uint64
+	for _, c := range s.paths {
+		if c != nil && c.active {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *Session) peerLimitsLocked() (handshakeLimits, bool) {
+	if s.peerMaxCarriers == 0 {
+		return handshakeLimits{}, false
+	}
+	return handshakeLimits{maxFrame: s.peerMaxFrame, maxRecord: s.peerMaxRecord, maxStreams: s.peerMaxStreams, maxCarriers: s.peerMaxCarriers}, true
+}
+
+func (s *Session) validateCarrierAdmissionLocked(id, generation uint64, peer handshakeLimits) error {
+	if peer.maxFrame == 0 || peer.maxRecord == 0 || peer.maxStreams == 0 || peer.maxCarriers == 0 || peer.maxCarriers > mpx4VarIntMax {
+		return &mpx4Failure{code: mpx4ErrProtocolViolation, scope: mpx4ScopePreEstablishmentCarrier, reason: "invalid peer Session limits", cause: ErrProtocol}
+	}
+	if established, ok := s.peerLimitsLocked(); ok && peer != established {
+		return &mpx4Failure{code: mpx4ErrSessionConflict, scope: mpx4ScopePreEstablishmentCarrier, reason: "Session receive limits changed on JOIN", cause: ErrProtocol}
+	}
+	if err := s.validateCarrierGenerationLocked(id, generation); err != nil {
+		return &mpx4Failure{code: mpx4ErrCarrierConflict, scope: mpx4ScopePreEstablishmentCarrier, reason: "carrier generation conflict", cause: err}
+	}
+	localMax := s.localMaxCarriers
+	if localMax == 0 {
+		localMax = MaxCarriers
+	}
+	effective := min(localMax, peer.maxCarriers)
+	old := s.paths[id]
+	needsSlot := old == nil || !old.active
+	if needsSlot && s.activeCarrierCountLocked() >= effective {
+		return &mpx4Failure{code: mpx4ErrResourceLimit, scope: mpx4ScopePreEstablishmentCarrier, reason: "effective MAX_CARRIERS reached", cause: ErrResourceLimit}
+	}
+	return nil
+}
+
+func (s *Session) validateCarrierAdmission(id, generation uint64, peer handshakeLimits) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrSessionExpired
+	}
+	return s.validateCarrierAdmissionLocked(id, generation, peer)
+}
+
+func (s *Session) expectedPeerLimits() (handshakeLimits, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peerLimitsLocked()
+}
+
+func (s *Session) addCarrier(id uint64, address string, conn *secureConn) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		conn.Close()
 		return net.ErrClosed
 	}
-	// Draft 04 commits Highest Accepted Generation only after the candidate has
-	// completed its authenticated handshake and while holding the Session lock.
+	peer := handshakeLimits{maxFrame: conn.peerMaxFrame, maxRecord: conn.peerMaxRecord, maxStreams: conn.peerMaxStreams, maxCarriers: conn.peerMaxCarriers}
+	if err := s.validateCarrierAdmissionLocked(id, conn.generation, peer); err != nil {
+		failure := normalizeEstablishedFailure(err, frame{})
+		var candidate *mpx4Failure
+		if errors.As(err, &candidate) {
+			failure = candidate
+		}
+		s.mu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+		_ = conn.writeFrame(frame{kind: kindCarrierClose, offset: failure.code, data: closeReason(failure.reason)})
+		conn.Close()
+		return err
+	}
 	if err := s.commitCarrierGenerationLocked(id, conn.generation); err != nil {
 		s.mu.Unlock()
-		// A simultaneous candidate can lose the Generation comparison only after
-		// both Finished messages completed. Report the registered conflict on this
-		// authenticated candidate before terminating it.
-		_ = conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
-		_ = conn.writeFrame(frame{kind: kindCarrierClose, offset: mpx4ErrCarrierConflict, data: []byte("carrier generation conflict")})
 		conn.Close()
-		return fmt.Errorf("%w: carrier %d generation %d", err, id, conn.generation)
+		return err
+	}
+	if s.peerMaxCarriers == 0 {
+		s.peerMaxFrame = conn.peerMaxFrame
+		s.peerMaxRecord = conn.peerMaxRecord
+		s.peerMaxStreams = conn.peerMaxStreams
+		s.peerMaxCarriers = conn.peerMaxCarriers
+		s.localMaxCarriers = conn.localMaxCarriers
+		if s.localMaxCarriers == 0 {
+			s.localMaxCarriers = MaxCarriers
+		}
+		s.effectiveCarrierLimit = min(s.localMaxCarriers, s.peerMaxCarriers)
 	}
 	c := &carrier{id: id, generation: conn.generation, address: address, conn: conn, active: true, done: make(chan struct{}), queue: make(chan sendTask, carrierQueue), control: make(chan frame, 512), reliableControl: make(chan sendTask, controlCarrierQueue), rtt: 50 * time.Millisecond, goodput: 4 << 20, configuredRateBPS: conn.configuredRateBPS, sampleAt: time.Now()}
 	c.scheduler.role = RoleLearning
@@ -292,6 +374,7 @@ func (s *Session) addCarrier(id byte, address string, conn *secureConn) error {
 	s.eventLocked("carrier_connected", "", id, 0)
 	s.paths[id] = c
 	s.advertiseSessionCreditLocked(time.Now(), true)
+	s.advertiseTransmissionRetireLocked()
 	s.refreshSchedulerLocked(time.Now(), false)
 	s.noPathsSince = time.Time{}
 	s.wakeLocked()
@@ -345,6 +428,8 @@ func (s *Session) detachLocked(c *carrier, err error) {
 	}
 	if !any && s.noPathsSince.IsZero() {
 		s.noPathsSince = time.Now()
+		// Refresh the current cumulative retirement watermark after DORMANT recovery.
+		s.lastRetireAdvertised = 0
 	}
 	s.wakeLocked()
 }
@@ -355,7 +440,7 @@ func (s *Session) carrierFailure(c *carrier, err error) {
 	s.mu.Unlock()
 }
 
-func (s *Session) recordDialError(id byte, address string, err error) {
+func (s *Session) recordDialError(id uint64, address string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c := s.paths[id]
@@ -413,13 +498,146 @@ func (s *Session) readCarrier(c *carrier) {
 	}
 }
 
-func (s *Session) controlLocked(c *carrier, f frame) {
+func reliableTransmissionKind(kind byte) bool {
+	switch kind {
+	case kindOpen, kindData, kindFIN, kindResetStream, kindStopReceiving, kindFinalConsumed:
+		return true
+	default:
+		return false
+	}
+}
+
+func confirmationKind(kind byte) bool {
+	return kind == kindACK || kind == kindOpenOK || kind == kindOpenReject
+}
+
+func cloneFrame(f frame) frame {
+	f.data = append([]byte(nil), f.data...)
+	return f
+}
+
+func (s *Session) hasActiveCarrierLocked() bool {
+	for _, c := range s.paths {
+		if c != nil && c.active {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Session) peerAttemptLocked(c *carrier, f frame) (bool, error) {
+	if !reliableTransmissionKind(f.kind) {
+		return false, nil
+	}
+	if s.peerTransmissionFingerprint == nil {
+		s.peerTransmissionFingerprint = make(map[uint64][32]byte)
+	}
+	if s.confirmationReplay == nil {
+		s.confirmationReplay = make(map[uint64]frame)
+	}
+	if s.peerProcessed == nil {
+		s.peerProcessed = make(map[uint64]bool)
+	}
+	if f.id == 0 || f.id > mpx4VarIntMax {
+		return false, transmissionIDFailure("invalid peer Transmission ID")
+	}
+	if f.id <= s.peerRetiredThrough {
+		return true, nil
+	}
+	wire, err := encodeV4Frame(f)
+	if err != nil {
+		return false, err
+	}
+	fingerprint := sha256.Sum256(wire)
+	if previous, ok := s.peerTransmissionFingerprint[f.id]; ok {
+		if previous != fingerprint {
+			return false, transmissionIDFailure("Transmission ID reused with different Frame semantics")
+		}
+		if confirmation, ok := s.confirmationReplay[f.id]; ok {
+			s.controlLocked(c, confirmation)
+			return true, nil
+		}
+		return false, nil
+	}
+	s.peerTransmissionFingerprint[f.id] = fingerprint
+	return false, nil
+}
+
+func (s *Session) markPeerProcessedLocked(id uint64) {
+	if id == 0 || id <= s.peerRetiredThrough {
+		return
+	}
+	if s.peerProcessed == nil {
+		s.peerProcessed = make(map[uint64]bool)
+	}
+	s.peerProcessed[id] = true
+	for s.peerProcessedThrough < mpx4VarIntMax && s.peerProcessed[s.peerProcessedThrough+1] {
+		s.peerProcessedThrough++
+	}
+}
+
+func (s *Session) handleTransmissionRetireLocked(f frame) error {
+	if f.stream != 0 || f.id != 0 || len(f.data) != 0 || f.offset > mpx4VarIntMax {
+		return protocolViolation("invalid TRANSMISSION_RETIRE")
+	}
+	if f.offset > s.peerProcessedThrough {
+		return transmissionIDFailure("TRANSMISSION_RETIRE exceeds contiguous processed peer prefix")
+	}
+	if f.offset <= s.peerRetiredThrough {
+		return nil
+	}
+	s.peerRetiredThrough = f.offset
+	for id := range s.peerProcessed {
+		if id <= f.offset {
+			delete(s.peerProcessed, id)
+		}
+	}
+	for id := range s.peerTransmissionFingerprint {
+		if id <= f.offset {
+			delete(s.peerTransmissionFingerprint, id)
+			delete(s.confirmationReplay, id)
+		}
+	}
+	return nil
+}
+
+func (s *Session) advertiseTransmissionRetireLocked() {
+	if s.settledThrough == 0 || s.settledThrough <= s.lastRetireAdvertised || !s.hasActiveCarrierLocked() {
+		return
+	}
+	if s.controlLocked(nil, frame{kind: kindTransmissionRetire, offset: s.settledThrough}) {
+		s.lastRetireAdvertised = s.settledThrough
+	}
+}
+
+func (s *Session) markSettledLocked(id uint64) {
+	if id == 0 {
+		return
+	}
+	if s.settled == nil {
+		s.settled = make(map[uint64]bool)
+	}
+	s.settled[id] = true
+	for s.settledThrough < mpx4VarIntMax && s.settled[s.settledThrough+1] {
+		delete(s.settled, s.settledThrough+1)
+		s.settledThrough++
+	}
+	s.advertiseTransmissionRetireLocked()
+}
+
+func (s *Session) controlLocked(c *carrier, f frame) bool {
+	if confirmationKind(f.kind) && f.id != 0 && f.id > s.peerRetiredThrough {
+		if s.confirmationReplay == nil {
+			s.confirmationReplay = make(map[uint64]frame)
+		}
+		s.confirmationReplay[f.id] = cloneFrame(f)
+	}
 	// A directed ACK/PING/PONG keeps its original carrier. DATA delivery
 	// measurements rely on that identity; never reroute a usable directed send.
 	if c != nil && c.active {
 		select {
 		case c.control <- f:
-			return
+			return true
 		default:
 		}
 	}
@@ -449,13 +667,14 @@ func (s *Session) controlLocked(c *carrier, f frame) {
 	if best != nil {
 		select {
 		case best.control <- f:
-			return
+			return true
 		default:
 		}
 	}
 	// Exhausted control queues remain bounded; existing retries and periodic
 	// WINDOW regeneration recover loss without introducing another payload copy.
 	s.controlDrops++
+	return false
 }
 
 func (s *Session) queueLocked(f frame) *outbound {
@@ -482,7 +701,7 @@ func (s *Session) queueLocked(f frame) *outbound {
 			return nil
 		}
 	}
-	if s.nextPacket == ^uint64(0) {
+	if s.nextPacket >= mpx4VarIntMax {
 		s.resourceLocked(LimitPacketIDs, false)
 		return nil
 	}
@@ -529,21 +748,23 @@ func (s *Session) removePendingLocked(p *outbound) {
 func (s *Session) ackLocked(c *carrier, f frame) error {
 	p := s.pending[f.id]
 	if p == nil {
-		// Draft 04 distinguishes compacted/settled duplicate acknowledgements
-		// from IDs that this endpoint has never allocated.
 		if f.id > s.nextPacket {
-			return transmissionIDFailure("acknowledges never-allocated Transmission ID")
+			return transmissionIDFailure("confirmation references never-allocated Transmission ID")
 		}
-		return nil
+		if f.id <= s.settledThrough || s.settled[f.id] {
+			return nil
+		}
+		return transmissionIDFailure("confirmation references missing unsettled Transmission state")
 	}
 	if p.f.stream != f.stream {
 		return transmissionIDFailure("acknowledgement Stream ID does not match Transmission ID")
 	}
-	if p.f.kind == kindOpen && f.kind != kindOpenOK {
-		return nil
-	}
-	if p.f.kind != kindOpen && f.kind == kindOpenOK {
-		return nil
+	if p.f.kind == kindOpen {
+		if f.kind != kindOpenOK {
+			return transmissionIDFailure("STREAM_OPEN requires STREAM_OPEN_OK or STREAM_OPEN_REJECT")
+		}
+	} else if f.kind != kindACK {
+		return transmissionIDFailure("reliable Frame requires TRANSMISSION_ACK")
 	}
 	st := s.streamForCreditLocked(f.stream)
 	if st != nil {
@@ -572,6 +793,7 @@ func (s *Session) ackLocked(c *carrier, f frame) error {
 			s.schedulerReceiptLocked(c, p, now)
 		}
 	}
+	s.markSettledLocked(p.f.id)
 	s.removePendingLocked(p)
 	s.tryRetireStreamLocked(st)
 	s.wakeLocked()
@@ -590,6 +812,14 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 	if f.kind == kindSessionWindow {
 		return s.receiveSessionCreditLocked(f)
 	}
+	if f.kind == kindTransmissionRetire {
+		return s.handleTransmissionRetireLocked(f)
+	}
+	if handled, err := s.peerAttemptLocked(c, f); err != nil {
+		return err
+	} else if handled {
+		return nil
+	}
 	if f.kind == kindPing || f.kind == kindPong {
 		if f.stream != 0 || f.id != 0 {
 			return ErrProtocol
@@ -606,7 +836,11 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 	}
 	switch f.kind {
 	case kindOpen:
-		return s.handleOpenLocked(c, f)
+		err := s.handleOpenLocked(c, f)
+		if err == nil {
+			s.markPeerProcessedLocked(f.id)
+		}
+		return err
 	case kindOpenOK, kindACK:
 		if f.id == 0 {
 			return ErrProtocol
@@ -636,6 +870,7 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 				return streamStateFailure("STREAM_DATA for unknown Stream")
 			}
 			s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id})
+			s.markPeerProcessedLocked(f.id)
 			return nil
 		}
 		if !st.open && s.server && !st.closed {
@@ -647,23 +882,54 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 			}
 			s.resetLocked(st, mpx4ErrResourceLimit, true)
 			st.err = err
+			s.markPeerProcessedLocked(f.id)
 			return nil
 		}
 		s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart) / time.Microsecond)})
+		s.markPeerProcessedLocked(f.id)
 		s.wakeLocked()
 	case kindFIN:
-		return s.handleFinalLocked(c, f)
+		err := s.handleFinalLocked(c, f)
+		if err == nil {
+			s.markPeerProcessedLocked(f.id)
+		}
+		return err
 	case kindResetStream:
-		return s.handleResetStreamLocked(c, f)
+		err := s.handleResetStreamLocked(c, f)
+		if err == nil {
+			s.markPeerProcessedLocked(f.id)
+		}
+		return err
 	case kindStopReceiving:
-		return s.handleStopReceivingLocked(c, f)
+		err := s.handleStopReceivingLocked(c, f)
+		if err == nil {
+			s.markPeerProcessedLocked(f.id)
+		}
+		return err
 	case kindCreditProbe:
 		return s.handleCreditProbeLocked(c, f)
 	case kindFinalConsumed:
-		return s.handleFinalConsumedLocked(c, f)
+		err := s.handleFinalConsumedLocked(c, f)
+		if err == nil {
+			s.markPeerProcessedLocked(f.id)
+		}
+		return err
 	case kindOpenReject:
 		if f.id == 0 || !validOpenRejectCode(f.offset) {
 			return protocolViolation("invalid STREAM_OPEN_REJECT Error Code")
+		}
+		p := s.pending[f.id]
+		if p == nil {
+			if f.id > s.nextPacket {
+				return transmissionIDFailure("STREAM_OPEN_REJECT references never-allocated Transmission ID")
+			}
+			if f.id <= s.settledThrough || s.settled[f.id] {
+				return nil
+			}
+			return transmissionIDFailure("STREAM_OPEN_REJECT references missing unsettled Transmission")
+		}
+		if p.f.kind != kindOpen || p.f.stream != f.stream {
+			return transmissionIDFailure("STREAM_OPEN_REJECT confirmation class mismatch")
 		}
 		if st := s.streams[f.stream]; st != nil {
 			if f.id != st.openID {
@@ -682,6 +948,8 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 			}
 			s.resetLocked(st, f.offset, false)
 		}
+		s.markSettledLocked(p.f.id)
+		s.removePendingLocked(p)
 	default:
 		return ErrProtocol
 	}

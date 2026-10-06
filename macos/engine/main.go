@@ -1488,10 +1488,10 @@ func main() {
 		}
 	case len(os.Args) == 2 && os.Args[1] == "version":
 		name := "mptcp-desktop-engine"
-		message := name + " " + multipath.Version + " MPX/4 Draft 04 + Native fallback"
+		message := name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") + Native fallback"
 		if runtime.GOOS == "linux" {
 			name = "mptcp-client"
-			message = name + " " + multipath.Version + " MPX/4 Draft 04 userspace client"
+			message = name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") userspace client"
 		}
 		emit(Event{Kind: "ready", Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Message: message})
 	case len(os.Args) == 2 && (os.Args[1] == "run-managed" || os.Args[1] == "validate-managed"):

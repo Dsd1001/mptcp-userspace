@@ -25,11 +25,12 @@ type Config struct {
 	UDPEnabled    bool   `json:"udp_enabled"`
 	TransportKey  string `json:"transport_key"`
 	MaxSessions   int    `json:"max_sessions"`
+	SchedulerMode string `json:"scheduler_mode,omitempty"`
 }
 
 func defaultConfig() (Config, error) {
 	key, err := multipath.NewKey()
-	return Config{SchemaVersion: 1, ListenTCP: "0.0.0.0:24001", ListenUDP: "0.0.0.0:24001", BackendTCP: "127.0.0.1:8388", BackendUDP: "127.0.0.1:8388", UDPEnabled: true, TransportKey: key, MaxSessions: 4}, err
+	return Config{SchemaVersion: 1, ListenTCP: "0.0.0.0:24001", ListenUDP: "0.0.0.0:24001", BackendTCP: "127.0.0.1:8388", BackendUDP: "127.0.0.1:8388", UDPEnabled: true, TransportKey: key, MaxSessions: 4, SchedulerMode: string(multipath.SchedulerAuto)}, err
 }
 
 func endpoint(address string, listen bool) error {
@@ -60,6 +61,9 @@ func (c Config) validate() error {
 	}
 	if c.MaxSessions < 1 || c.MaxSessions > 16 {
 		return errors.New("max_sessions 必须为 1..16")
+	}
+	if _, err := multipath.ParseSchedulerMode(c.SchedulerMode); err != nil {
+		return fmt.Errorf("scheduler_mode: %w", err)
 	}
 	pairs := [][2]string{{c.ListenTCP, c.BackendTCP}}
 	if c.UDPEnabled {
@@ -125,7 +129,7 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 	if err := c.validate(); err != nil {
 		return err
 	}
-	srv, err := multipath.NewServer(ctx, c.TransportKey, c.BackendTCP, c.MaxSessions)
+	srv, err := multipath.NewServerWithScheduler(ctx, c.TransportKey, c.BackendTCP, c.MaxSessions, multipath.SchedulerMode(c.SchedulerMode))
 	if err != nil {
 		return err
 	}
@@ -150,7 +154,8 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 	if err = notifyReady(); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "MPTCP Landing %s：Userspace TCP=%s UDP=%t；不使用内核 MPTCP。\n", multipath.Version, listener.Addr(), c.UDPEnabled)
+	mode, _ := multipath.ParseSchedulerMode(c.SchedulerMode)
+	fmt.Fprintf(out, "MPTCP Landing %s：Userspace TCP=%s UDP=%t；Scheduler=%s（本地策略）；不使用内核 MPTCP。\n", multipath.Version, listener.Addr(), c.UDPEnabled, mode)
 	started := time.Now()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()

@@ -43,7 +43,7 @@ type Stream struct {
 	open, closed                             bool
 	err                                      error
 	openID                                   uint64
-	txNext, peerConsumed                     uint64
+	txNext, peerConsumed, peerCreditConsumed uint64
 	peerLimit, rxLimit                       uint64
 	windowTarget, readSampleBytes            int
 	createdAt, lastActivity                  time.Time
@@ -272,6 +272,16 @@ func (st *Stream) Write(p []byte) (int, error) {
 			return total, os.ErrDeadlineExceeded
 		}
 		st.writeRemaining = len(p)
+		if !s.hasActiveCarrierLocked() {
+			ch, deadline := s.changed, st.writeDeadline
+			s.mu.Unlock()
+			err := waitChange(s.ctx, ch, deadline)
+			s.mu.Lock()
+			if err != nil {
+				return total, err
+			}
+			continue
+		}
 		n, reason := st.writeAllowanceLocked()
 		if n > 0 && !s.writerTurnLocked(st) {
 			n = 0

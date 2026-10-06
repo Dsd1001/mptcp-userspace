@@ -48,6 +48,7 @@ func TestAdmissionIgnoresReceiveCreditAndDataLedgers(t *testing.T) {
 			s := schedulerFixture()
 			s.ctx = context.Background()
 			s.nextStream = 1
+			s.paths[1] = schedulerPath(1) // admission test is ACTIVE, not DORMANT
 			// Isolate an adversarial ledger state from the actual network dispatcher.
 			if reason == LimitReceiveCredit {
 				s.receiveCredit = SessionCreditLimit

@@ -1,0 +1,51 @@
+{
+  "protocol": "MPX/4",
+  "revision": "Draft 11",
+  "profile": "PSK / HKDF-SHA256 / HMAC-SHA256 / AES-256-GCM",
+  "inputs": {
+    "transport_key_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "connection_preface_hex": "4d50580004",
+    "client_init_hex": "01405a01001000112233445566778899aabbccddeeff020001000300010104000100050020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f070004800080000800048001000009000248000a01024060",
+    "server_init_hex": "023b060020202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f070004800080000800048001000009000248000a01024080"
+  },
+  "derived": {
+    "h0_hex": "53731db4646e0c60563a772a9d1a1d59ad35a3071d13f0112fbe5b63a444e2d4",
+    "early_secret_hex": "fff6bab75d4df43e3a58d45a6b3d6ebaa0f75da67d71520fc66467d24f537e5e",
+    "handshake_secret_hex": "8c1032bba8ab3e3f74a4b395db4238dae2ffe59f5b3be5674062aa07a6fab462",
+    "client_finished_key_hex": "44b1c63e5e9901009cba066d69e731253845f2530a1c165c084dd560f08242ac",
+    "server_finished_key_hex": "a3f2ce077f1505c2dde142cf19e33ac4ec14e001b0814d28e8f0fac15c20f74f",
+    "client_verify_data_hex": "ac03617663c756fbc623940cccaa9cd144c7a0dfaa3f7c0dea29f9a56b8eb189",
+    "client_finished_hex": "0320ac03617663c756fbc623940cccaa9cd144c7a0dfaa3f7c0dea29f9a56b8eb189",
+    "h1_hex": "00466799c19b26106f7b6e9a2b37f5b7ae064d4d8df16a9cb667bfc7e9422586",
+    "server_verify_data_hex": "c607d316e0e32d5cf7ec48583b31e3d0e511ff9b701b317f989fb320fa1ae331",
+    "server_finished_hex": "0420c607d316e0e32d5cf7ec48583b31e3d0e511ff9b701b317f989fb320fa1ae331",
+    "h2_hex": "c1e8cd1d94ec2902317d8d65efd5542098500a669f88f032727e24e539181399",
+    "client_application_secret_hex": "72407efc78d513205dd6fa564b0d4fa0ebf022637fa879fd1f139130be896876",
+    "server_application_secret_hex": "e40937d892d0b5218d5e1c93e89277672cbed12ae21cf25532259e1513a5122c",
+    "client_traffic_key_hex": "095e2f7dc0505642121edf7613944f62d1e5d185bf431fcebcd7862a92f21eac",
+    "client_traffic_iv_hex": "125d55dacaf4bb44dc69329f",
+    "server_traffic_key_hex": "cd9237ecd5f142914846cf519ebafa8c3e9c533b5c9b218b74e94df5a45f4055",
+    "server_traffic_iv_hex": "c8f2f857f3accef8b0993213"
+  },
+  "decoded_handshake": {
+    "session_id_hex": "00112233445566778899aabbccddeeff",
+    "session_action": "CREATE",
+    "carrier_id": "1",
+    "carrier_generation": "0",
+    "client_nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "server_nonce_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "client_receive_limits": {
+      "max_frame_payload": "32768",
+      "max_record_size": "65536",
+      "max_streams": "2048"
+    },
+    "server_receive_limits": {
+      "max_frame_payload": "32768",
+      "max_record_size": "65536",
+      "max_streams": "2048"
+    },
+    "client_max_carriers": "96",
+    "server_max_carriers": "128",
+    "effective_carrier_limit": "96"
+  }
+}

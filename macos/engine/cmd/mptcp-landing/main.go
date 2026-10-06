@@ -79,6 +79,18 @@ func (t *terminal) configure(c Config) (Config, error) {
 			return c, err
 		}
 	}
+	defaultScheduler := c.SchedulerMode
+	if defaultScheduler == "" {
+		defaultScheduler = string(multipath.SchedulerAuto)
+	}
+	scheduler, err := t.line("Landing 本地 Scheduler（auto/aggregate/protect/weighted）", defaultScheduler)
+	if err != nil {
+		return c, err
+	}
+	if _, err = multipath.ParseSchedulerMode(scheduler); err != nil {
+		return c, err
+	}
+	c.SchedulerMode = scheduler
 	key, err := t.line("传输密钥：回车保留；new 生成新密钥；或粘贴 64 位十六进制（输入可在终端显示）", "")
 	if err != nil {
 		return c, err
@@ -128,7 +140,7 @@ func execute(ctx context.Context, command string, o options, t *terminal) error 
 	}
 	switch command {
 	case "version":
-		fmt.Fprintf(t.out, "mptcp-landing %s %s/%s MPX/4 Draft 04 source=%s\n", multipath.Version, runtime.GOOS, runtime.GOARCH, multipath.SourceID)
+		fmt.Fprintf(t.out, "mptcp-landing %s %s/%s MPX/4 Protocol Version 4 Stable (%s) source=%s\n", multipath.Version, runtime.GOOS, runtime.GOARCH, multipath.ProtocolRelease, multipath.SourceID)
 		return nil
 	case "help":
 		help(t.out)
@@ -273,7 +285,7 @@ func doctor(ctx context.Context, m *manager, c Config, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "版本 %s；主机 %s/%s；配置有效；传输密钥已隐藏。\n", multipath.Version, runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintln(out, "运行协议为应用层 MPX/4 Draft 04；客户端需支持 MPX/4 Draft 04；建议两端使用相同版本。无需启用内核 MPTCP，不修改防火墙、路由或 SS 配置。")
+	fmt.Fprintln(out, "运行协议为应用层 MPX/4 Protocol Version 4 Stable（protocol-v4.0.0）；Client/Landing 建议使用同一 1.0.0 套件。无需启用内核 MPTCP，不修改防火墙、路由或 SS 配置。")
 	var failures []error
 	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
 	backend, err := multipath.PlainDial(probe, c.BackendTCP)

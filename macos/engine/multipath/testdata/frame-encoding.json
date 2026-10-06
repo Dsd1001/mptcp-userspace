@@ -1,0 +1,194 @@
+{
+  "protocol": "MPX/4",
+  "revision": "Draft 11",
+  "representation": "decrypted Frame bytes before Secure Record encryption",
+  "vectors": [
+    {
+      "name": "stream-data-small",
+      "frame_type": "STREAM_DATA",
+      "fields": {
+        "stream_id": "1",
+        "offset": "32768",
+        "transmission_id": "7",
+        "data_utf8": "hello"
+      },
+      "hex": "130b01800080000768656c6c6f",
+      "length": 13
+    },
+    {
+      "name": "transmission-ack",
+      "frame_type": "TRANSMISSION_ACK",
+      "fields": {
+        "stream_id": "1",
+        "transmission_id": "7",
+        "receiver_timestamp_us": "1234567"
+      },
+      "hex": "140601078012d687",
+      "length": 8
+    },
+    {
+      "name": "stream-credit",
+      "frame_type": "STREAM_CREDIT",
+      "fields": {
+        "stream_id": "1",
+        "consumed_offset": "65536",
+        "maximum_offset": "131072"
+      },
+      "hex": "1509018001000080020000",
+      "length": 11
+    },
+    {
+      "name": "session-credit",
+      "frame_type": "SESSION_CREDIT",
+      "fields": {
+        "consumed_bytes": "1048576",
+        "maximum_bytes": "8388608"
+      },
+      "hex": "20088010000080800000",
+      "length": 10
+    },
+    {
+      "name": "credit-probe-session",
+      "frame_type": "CREDIT_PROBE",
+      "fields": {
+        "stream_id": "0"
+      },
+      "hex": "210100",
+      "length": 3
+    },
+    {
+      "name": "transmission-retire",
+      "frame_type": "TRANSMISSION_RETIRE",
+      "fields": {
+        "retired_through": "7"
+      },
+      "hex": "1a0107",
+      "length": 3
+    },
+    {
+      "name": "stream-open",
+      "frame_type": "STREAM_OPEN",
+      "fields": {
+        "stream_id": "1",
+        "transmission_id": "1"
+      },
+      "hex": "10020101",
+      "length": 4
+    },
+    {
+      "name": "stream-open-ok",
+      "frame_type": "STREAM_OPEN_OK",
+      "fields": {
+        "stream_id": "1",
+        "transmission_id": "1"
+      },
+      "hex": "11020101",
+      "length": 4
+    },
+    {
+      "name": "stream-open-reject",
+      "frame_type": "STREAM_OPEN_REJECT",
+      "fields": {
+        "stream_id": "1",
+        "transmission_id": "1",
+        "error_code": "8"
+      },
+      "hex": "1203010108",
+      "length": 5
+    },
+    {
+      "name": "stream-fin",
+      "frame_type": "STREAM_FIN",
+      "fields": {
+        "stream_id": "1",
+        "transmission_id": "2",
+        "final_offset": "10"
+      },
+      "hex": "160301020a",
+      "length": 5
+    },
+    {
+      "name": "reset-stream",
+      "frame_type": "RESET_STREAM",
+      "fields": {
+        "stream_id": "1",
+        "transmission_id": "3",
+        "final_offset": "10",
+        "stream_error_code": "14"
+      },
+      "hex": "170401030a0e",
+      "length": 6
+    },
+    {
+      "name": "stop-sending",
+      "frame_type": "STOP_SENDING",
+      "fields": {
+        "stream_id": "1",
+        "transmission_id": "4",
+        "stream_error_code": "14"
+      },
+      "hex": "180301040e",
+      "length": 5
+    },
+    {
+      "name": "stream-consumed",
+      "frame_type": "STREAM_CONSUMED",
+      "fields": {
+        "stream_id": "1",
+        "transmission_id": "5",
+        "final_offset": "10"
+      },
+      "hex": "190301050a",
+      "length": 5
+    },
+    {
+      "name": "ping",
+      "frame_type": "PING",
+      "fields": {
+        "token": "1"
+      },
+      "hex": "010101",
+      "length": 3
+    },
+    {
+      "name": "padding-two-octets",
+      "frame_type": "PADDING",
+      "fields": {
+        "padding_hex": "0000"
+      },
+      "hex": "00020000",
+      "length": 4
+    },
+    {
+      "name": "pong",
+      "frame_type": "PONG",
+      "fields": {
+        "token": "1"
+      },
+      "hex": "020101",
+      "length": 3
+    },
+    {
+      "name": "carrier-close",
+      "frame_type": "CARRIER_CLOSE",
+      "fields": {
+        "error_code": "0",
+        "trigger_frame_type": "0",
+        "reason_utf8": "bye"
+      },
+      "hex": "0306000003627965",
+      "length": 8
+    },
+    {
+      "name": "session-close",
+      "frame_type": "SESSION_CLOSE",
+      "fields": {
+        "error_code": "0",
+        "trigger_frame_type": "0",
+        "reason_utf8": "done"
+      },
+      "hex": "0407000004646f6e65",
+      "length": 9
+    }
+  ]
+}

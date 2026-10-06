@@ -278,7 +278,10 @@ func highBDPCase(t *testing.T, name string, rates []int64, rtts []time.Duration,
 func TestHighBDPMatrix(t *testing.T) {
 	mode := os.Getenv("MPX_HIGH_BDP")
 	if mode == "" {
-		t.Skip("set MPX_HIGH_BDP=baseline, quick or enforce")
+		t.Skip("set MPX_HIGH_BDP=baseline, quick, record or enforce")
+	}
+	if mode != "baseline" && mode != "quick" && mode != "record" && mode != "enforce" {
+		t.Fatal("invalid MPX_HIGH_BDP mode")
 	}
 	var results []highBDPResult
 	defer func() {
@@ -317,7 +320,7 @@ func TestHighBDPMatrix(t *testing.T) {
 			}
 		}
 	}
-	if mode == "enforce" {
+	if mode == "enforce" || mode == "record" {
 		var fastest float64
 		for _, mixed := range []bool{false, true} {
 			name := "asymmetric-fastest-only"
@@ -333,7 +336,7 @@ func TestHighBDPMatrix(t *testing.T) {
 				results = append(results, r)
 				if !mixed {
 					fastest = r.Mbps
-				} else if r.Mbps < fastest*.95 {
+				} else if mode == "enforce" && r.Mbps < fastest*.95 {
 					t.Errorf("slow path regression: %.3f vs fastest %.3f", r.Mbps, fastest)
 				}
 			})

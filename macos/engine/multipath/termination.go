@@ -100,13 +100,10 @@ func (s *Session) ensureTerminationControlsLocked(st *Stream) {
 func (s *Session) resetSendLocked(st *Stream, code uint64) {
 	if !st.sendReset {
 		st.sendReset, st.sendResetCode = true, code
-		// txNext was debited at commitment. Canceling payload transmission does
-		// NOT refund it: only authenticated peer consumption/RESET ACK can.
-		for _, p := range s.pending {
-			if p.f.stream == st.id && (p.f.kind == kindData || p.f.kind == kindFIN || p.f.kind == kindOpen) {
-				s.removePendingLocked(p)
-			}
-		}
+		// Reliable Transmissions already allocated for OPEN/DATA/FIN remain
+		// outstanding after local cancellation. Stable MPX/4 requires eventual
+		// attempt/confirmation and in particular FIN remains reliable when RESET
+		// supersedes graceful application semantics.
 	}
 	s.ensureTerminationControlsLocked(st)
 	s.wakeLocked()

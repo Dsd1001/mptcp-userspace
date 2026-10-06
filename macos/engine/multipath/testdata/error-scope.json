@@ -1,6 +1,6 @@
 {
   "protocol": "MPX/4",
-  "revision": "Draft 04",
+  "revision": "Draft 11",
   "document": "ERROR-HANDLING.md",
   "cases": [
     {
@@ -23,7 +23,15 @@
       "context": "JOIN_HANDSHAKE",
       "error": "SESSION_NOT_FOUND",
       "expected_scope": "pre_establishment_carrier",
-      "expected_action": "reject_candidate",
+      "expected_action": "HANDSHAKE_REJECT_if_safely_reportable_then_reject_candidate",
+      "existing_session_modified": false
+    },
+    {
+      "name": "create-session-id-collision",
+      "context": "CREATE_HANDSHAKE",
+      "error": "SESSION_CONFLICT",
+      "expected_scope": "pre_establishment_carrier",
+      "expected_action": "HANDSHAKE_REJECT_if_safely_reportable_then_reject_candidate",
       "existing_session_modified": false
     },
     {
@@ -31,7 +39,7 @@
       "context": "JOIN_HANDSHAKE",
       "error": "CARRIER_CONFLICT",
       "expected_scope": "pre_establishment_carrier",
-      "expected_action": "reject_candidate",
+      "expected_action": "HANDSHAKE_REJECT_if_safely_reportable_then_reject_candidate",
       "generation_advanced": false
     },
     {
@@ -39,7 +47,7 @@
       "context": "HANDSHAKE",
       "error": "AUTHENTICATION_FAILED",
       "expected_scope": "carrier",
-      "expected_action": "terminate_carrier"
+      "expected_action": "HANDSHAKE_REJECT_if_safely_reportable_or_terminate_carrier"
     },
     {
       "name": "secure-record-authentication-failure",
@@ -101,6 +109,15 @@
       "notes": "Retirement alone does not require STREAM_OPEN_REJECT when detailed response state has been compacted."
     },
     {
+      "name": "join-exceeds-effective-carrier-limit",
+      "context": "JOIN_HANDSHAKE",
+      "resource_scope": "active_logical_carrier_count",
+      "error": "RESOURCE_LIMIT",
+      "expected_scope": "pre_establishment_carrier",
+      "expected_action": "HANDSHAKE_REJECT_if_safely_reportable_then_reject_candidate",
+      "existing_session_modified": false
+    },
+    {
       "name": "carrier-resource-limit",
       "context": "ESTABLISHED_CARRIER",
       "resource_scope": "one_carrier",
@@ -129,6 +146,20 @@
       "expected_scope": "session",
       "expected_action": "SESSION_CLOSE",
       "trigger_frame_type": 0
+    },
+    {
+      "name": "transmission-retire-beyond-processed-prefix",
+      "context": "ESTABLISHED_SESSION",
+      "error": "TRANSMISSION_ID_ERROR",
+      "expected_scope": "session",
+      "expected_action": "SESSION_CLOSE"
+    },
+    {
+      "name": "wrong-confirmation-type",
+      "context": "ESTABLISHED_SESSION",
+      "error": "TRANSMISSION_ID_ERROR",
+      "expected_scope": "session",
+      "expected_action": "SESSION_CLOSE"
     }
   ]
 }

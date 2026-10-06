@@ -45,6 +45,7 @@ func TestMPX4CoreFrameRoundTrip(t *testing.T) {
 		{kind: kindPong, offset: 9},
 		{kind: kindCreditProbe, stream: 1},
 		{kind: kindFinalConsumed, stream: 1, id: 4, offset: 32773},
+		{kind: kindTransmissionRetire, offset: 7},
 	}
 	for _, want := range frames {
 		wire, err := encodeV4Frame(want)
@@ -69,15 +70,16 @@ func TestMPX4CoreFrameRoundTrip(t *testing.T) {
 	}
 }
 
-func TestMPX4WeightedParameters(t *testing.T) {
+func TestMPX4StableParametersAndCapacityHint(t *testing.T) {
 	var p handshakeParams
 	p.sid[0] = 1
 	p.action = 0
-	p.carrier = 2
+	p.carrier = 1<<40 + 7
 	p.generation = 7
 	p.clientNonce[0] = 1
-	p.scheduler = SchedulerWeighted
-	p.capacity = PathCapacity{DownloadMbps: 100.5, UploadMbps: 20.0}
+	p.maxCarriers = MaxCarriers
+	p.receiveCapacityHint = 1005
+	p.hasReceiveCapacityHint = true
 	body, err := encodeClientParams(p)
 	if err != nil {
 		t.Fatal(err)
@@ -86,8 +88,11 @@ func TestMPX4WeightedParameters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.carrier != 2 || got.generation != 7 || got.scheduler != SchedulerWeighted || got.capacity.DownloadMbps != 100.5 || got.capacity.UploadMbps != 20.0 {
+	if got.carrier != p.carrier || got.generation != 7 || got.maxCarriers != MaxCarriers || !got.hasReceiveCapacityHint || got.receiveCapacityHint != 1005 {
 		t.Fatalf("params changed: %+v", got)
+	}
+	if bytes.Contains(body, []byte{0x10, 0x00}) || bytes.Contains(body, []byte{0x11, 0x00}) {
+		t.Fatal("retired Core scheduler parameters leaked into Stable handshake")
 	}
 }
 
@@ -105,7 +110,7 @@ func TestMPX4HandshakeSecureRecordAndGeneration(t *testing.T) {
 			serverDone <- err
 			return
 		}
-		if !h.create || h.carrier != 1 || h.generation != 0 || h.scheduler != SchedulerAggregate {
+		if !h.create || h.carrier != 1 || h.generation != 0 || h.client.maxCarriers != MaxCarriers {
 			serverDone <- ErrProtocol
 			return
 		}

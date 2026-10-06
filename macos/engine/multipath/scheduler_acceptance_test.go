@@ -105,7 +105,7 @@ func TestSchedulerForcedModesSurviveCarrierRejoin(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			backend, _ := echoBackend(t)
-			srv, err := NewServer(ctx, testToken, backend, 2)
+			srv, err := NewServerWithScheduler(ctx, testToken, backend, 2, mode)
 			if err != nil {
 				t.Fatal(err)
 			}

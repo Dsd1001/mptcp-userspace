@@ -58,7 +58,7 @@ func TestSchedulerAggregateMatchesFrozenSelection(t *testing.T) {
 		s := schedulerFixture()
 		s.initScheduler(SchedulerAggregate)
 		now := time.Now()
-		for id := byte(1); id <= 6; id++ {
+		for id := uint64(1); id <= 6; id++ {
 			c := schedulerPath(id)
 			c.active = rng.Intn(5) != 0
 			c.minRTT = time.Duration(1+rng.Intn(200)) * time.Millisecond

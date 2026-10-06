@@ -482,7 +482,7 @@ func TestSchedulerRetransmitACKIsLivenessNotCapacity(t *testing.T) {
 }
 
 func TestSchedulerModeAuthenticatedAndLegacyCapabilityRejected(t *testing.T) {
-	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Draft 04 conformance tests")
+	t.Skip("legacy MPX/3 wire-format test; superseded by MPX/4 Protocol Version 4 Stable conformance tests")
 	key, _ := ParseKey(testToken)
 	for _, legacy := range []bool{false, true} {
 		a, b := net.Pipe()
@@ -523,7 +523,7 @@ func TestSchedulerModeAuthenticatedAndLegacyCapabilityRejected(t *testing.T) {
 	}
 }
 
-func TestSchedulerModeBothDirectionsAndJoinConflict(t *testing.T) {
+func TestSchedulerModeIsLocalPolicyAndAbsentFromStableJoin(t *testing.T) {
 	for _, mode := range []SchedulerMode{SchedulerAuto, SchedulerAggregate, SchedulerProtect} {
 		t.Run(string(mode), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -551,12 +551,14 @@ func TestSchedulerModeBothDirectionsAndJoinConflict(t *testing.T) {
 			if peer == nil {
 				t.Fatal("no corresponding session")
 			}
-			for _, side := range []*Session{client, peer} {
-				st := side.Snapshot()
-				if st.ConfiguredSchedulerMode != mode || st.Sent == 0 || st.Received == 0 {
-					t.Fatal("mode or actual bidirectional DATA absent", st)
-				}
+			clientStats, peerStats := client.Snapshot(), peer.Snapshot()
+			if clientStats.ConfiguredSchedulerMode != mode || peerStats.ConfiguredSchedulerMode != SchedulerAuto || clientStats.Sent == 0 || peerStats.Sent == 0 {
+				t.Fatalf("Stable local scheduler policy mismatch: client=%+v peer=%+v", clientStats.SchedulerStats, peerStats.SchedulerStats)
 			}
+
+			// Stable MPX/4 does not carry scheduler mode in Core. A JOIN created by
+			// a caller using a different local policy therefore remains a valid
+			// candidate and cannot mutate the existing Session's local policy.
 			wrong := SchedulerAggregate
 			if mode == wrong {
 				wrong = SchedulerProtect
@@ -566,16 +568,46 @@ func TestSchedulerModeBothDirectionsAndJoinConflict(t *testing.T) {
 				t.Fatal(err)
 			}
 			key, _ := ParseKey(testToken)
-			_, err = clientHandshakeMode(c, key, client.id, 2, false, wrong)
-			c.Close()
-			if !errors.Is(err, ErrSchedulerMismatch) {
-				t.Fatal("join silently changed configured mode", err)
+			sc, err := clientHandshakeMode(c, key, client.id, 2, false, wrong)
+			if err != nil {
+				c.Close()
+				t.Fatalf("scheduler-local JOIN was rejected: %v", err)
 			}
-			if peer.Snapshot().ConfiguredSchedulerMode != mode || client.Snapshot().Paths != 1 {
-				t.Fatal("conflicting join changed established session")
+			sc.Close()
+			if peer.Snapshot().ConfiguredSchedulerMode != SchedulerAuto {
+				t.Fatal("JOIN changed Landing local scheduler policy")
 			}
 			if _, err := transfer(client, 65537); err != nil {
-				t.Fatal("conflict harmed existing data", err)
+				t.Fatal("independent-policy JOIN harmed existing data", err)
+			}
+		})
+	}
+}
+
+func TestLandingSchedulerPolicyIsConfiguredLocally(t *testing.T) {
+	for _, mode := range []SchedulerMode{SchedulerAggregate, SchedulerProtect} {
+		t.Run(string(mode), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			backend, _ := echoBackend(t)
+			srv, err := NewServerWithScheduler(ctx, testToken, backend, 2, mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer srv.Close()
+			l, err := PlainListen(ctx, "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			go srv.Serve(l)
+			client, err := DialClientWithScheduler(ctx, []string{l.Addr().String()}, testToken, SchedulerAuto)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			peer := srv.session(client.id)
+			if peer == nil || peer.Snapshot().ConfiguredSchedulerMode != mode {
+				t.Fatalf("Landing did not retain local %s policy", mode)
 			}
 		})
 	}

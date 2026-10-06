@@ -1,16 +1,16 @@
-# 0.10.7 部署、升级与回滚
+# 1.0.0 部署、升级与回滚
 
-本文面向 **MPTCP Userspace v0.10.7 / MPX/4 Draft 04**。正式环境建议 Client、Landing、Provisioning 使用同一版本。
+本文面向 **MPTCP Userspace v1.0.0 / MPX/4 Protocol Version 4 Stable**。正式环境建议 Client、Landing、Provisioning 使用同一版本。由于 pre-Stable Draft 04 与 Stable 都使用 Wire Protocol Version 4 但握手语义不同，迁移时不要在同一端口做静默 fallback；需要并行迁移时使用独立 listener/端口。
 
 ## 1. 发布文件
 
-从 v0.10.7 Release 下载并校验：
+从 v1.0.0 Release 下载并校验：
 
-- MPTCP-Desk-0.10.7-universal.dmg
+- MPTCP-Desk-1.0.0-universal.dmg
 - mptcp-client-linux-amd64 / arm64
 - mptcp-landing / mptcp-landing-linux-arm64
 - mpx-provision / mpx-provision-linux-arm64
-- MPTCP-Userspace-0.10.7-SHA256SUMS
+- MPTCP-Userspace-1.0.0-SHA256SUMS
 - SOURCE_ID / PROVENANCE.json / TESTS.json
 
 任何二进制替换前先确认 SHA256 与 Source-ID。
@@ -54,13 +54,13 @@ Provisioning 建议只监听 loopback，例如 127.0.0.1:8088，再由 nginx/Cad
 - admin-password；
 - reverse proxy 配置。
 
-0.10.7 保持现有 Profile/Bundle 数据模型与 URL；不需要迁移数据。
+1.0.0 保持现有 Profile/Bundle 数据模型与 URL；Provisioning 数据不需要迁移。
 
 公网 /v1/config/ 与 /v1/bundle/ 响应是 v/n/d 加密 envelope。不要用“浏览器看不到明文”替代 HTTPS；完整 URL 本身仍是 bearer credential。
 
 ### 3.1 Device Control
 
-0.10.7 的远程设备控制复用同一个 Provisioning HTTPS 站点，不需要额外开放 Client 端口。Mac 主动访问 /v1/device/*，因此 NAT / CGNAT 后的设备可以正常使用。
+1.0.0 的远程设备控制复用同一个 Provisioning HTTPS 站点，不需要额外开放 Client 端口。Mac 主动访问 /v1/device/*，因此 NAT / CGNAT 后的设备可以正常使用。
 
 若 nginx/Caddy 对 upstream 设置了较短超时，请保证 Device long poll 的响应写超时至少大于 25 秒，建议 35–60 秒。不要记录 Authorization header，也建议对 /v1/device/ 路径关闭敏感 header/body 日志。
 
@@ -70,7 +70,7 @@ Provisioning 建议只监听 loopback，例如 127.0.0.1:8088，再由 nginx/Cad
 
 替换 App 前先停止旧 runtime。
 
-0.10.7 首页有：
+1.0.0 首页有：
 
 - 本地配置；
 - 远端配置。
@@ -94,7 +94,7 @@ MPTCP Desk 的“设置”页包含：
 
 远程管理的本地开关与控制服务器地址不接受 API 下发。关闭开关后 Client 立即停止 long polling；解除配对还会删除本机 Keychain 设备凭据并请求服务端撤销。
 
-App 更新使用 Sparkle EdDSA 签名 Feed。0.10.7 仍为 ad-hoc codesign / 未 notarize，更新真实性由独立 EdDSA 签名校验；后续若切换 Developer ID / notarization，不改变控制协议。
+App 更新使用 Sparkle EdDSA 签名 Feed。1.0.0 继续使用长期固定的本地自签名代码签名证书，未做 Apple Developer ID notarization；更新真实性由独立 EdDSA 签名校验。Keychain Broker v1 必须与 0.10.12 字节完全一致，不允许在 1.0.0 更新时重建或重签。
 
 ## 5. Linux Client
 

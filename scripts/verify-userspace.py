@@ -30,6 +30,21 @@ def run(args: list[str], *, cwd=None, env=None, input=None, timeout=180) -> byte
     return p.stdout
 
 
+def codesign_requirement(path: pathlib.Path) -> str:
+    p=subprocess.run(['codesign','-d','-r-',str(path)],capture_output=True,timeout=30)
+    if p.returncode:
+        raise RuntimeError('Unable to read designated requirement: '+p.stderr.decode(errors='replace')[-1000:])
+    # codesign output placement varies across macOS/Command Line Tools builds:
+    # diagnostics normally use stderr, while some builds emit `designated =>`
+    # on stdout. Parse both without weakening the exact requirement check.
+    output=(p.stdout+b'\n'+p.stderr).decode(errors='replace')
+    for line in output.splitlines():
+        normalized=line.lstrip('#').strip()
+        if normalized.startswith('designated => '):
+            return normalized[len('designated => '):]
+    raise RuntimeError('Unable to find designated requirement in codesign output')
+
+
 def macho_sections(path: pathlib.Path) -> dict[str, dict]:
     """Compare executable/data sections, excluding signing/link-edit metadata.
     Code signing and linker UUIDs need not be byte-identical to prove section
@@ -170,16 +185,8 @@ def main() -> None:
         try:
             app=mount/'MPTCP Desk.app'
             run(['codesign','--verify','--deep','--strict',str(app)])
-            dr_process=subprocess.run(['codesign','-d','-r-',str(app)],capture_output=True,timeout=30)
-            if dr_process.returncode:
-                raise RuntimeError('Unable to read packaged App designated requirement')
-            actual_dr=''
-            for line in dr_process.stderr.decode(errors='replace').splitlines():
-                normalized=line.lstrip('#').strip()
-                if normalized.startswith('designated => '):
-                    actual_dr=normalized[len('designated => '):]
-                    break
-            if not actual_dr or actual_dr!=recorded_dr:
+            actual_dr=codesign_requirement(app)
+            if actual_dr!=recorded_dr:
                 raise ValueError('Packaged App designated requirement differs from BUILDINFO')
             if 'Signing: stable-local self-signed (' in desktop_buildinfo:
                 cert=ROOT/'macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt'
@@ -216,9 +223,8 @@ def main() -> None:
             run(['codesign','--verify','--strict',str(broker)])
             if set(run(['lipo','-archs',str(broker)]).decode().split())!={'arm64','x86_64'}:
                 raise ValueError('Frozen Keychain Broker is not universal')
-            broker_sig=subprocess.run(['codesign','-d','-r-',str(broker)],capture_output=True,timeout=30)
             broker_req='identifier "org.mptcp.desktop.keychainbroker.v1" and certificate root = H"d60f6edc71041789131273af4abe708db2cf0dd7"'
-            if broker_sig.returncode or broker_req not in broker_sig.stderr.decode(errors='replace'):
+            if codesign_requirement(broker)!=broker_req:
                 raise ValueError('Frozen Keychain Broker designated requirement differs')
             engine=resources/'mptcp-desktop-engine';ui=app/'Contents/MacOS/MPTCPDesk'
             for binary in [engine,ui]:
@@ -227,7 +233,7 @@ def main() -> None:
             sdk=run(['xcrun','--sdk','macosx','--show-sdk-path']).decode().strip()
             for arch,goarch in [('arm64','arm64'),('x86_64','amd64')]:
                 event=json.loads(run(['/usr/bin/arch','-'+arch,str(engine),'version'],timeout=30))
-                if event.get('source_id')!=identity or event.get('version')!=version or event.get('wire_protocol')!=4 or event.get('capability_revision')!=4:
+                if event.get('source_id')!=identity or event.get('version')!=version or event.get('wire_protocol')!=4 or event.get('capability_revision')!=6:
                     raise ValueError('Actual packaged engine identity differs')
                 rebuilt=work/('engine-'+goarch)
                 cc=f'clang -arch {arch} -isysroot {sdk} -mmacosx-version-min=13.0'
