@@ -62,6 +62,40 @@ func TestAdaptiveCreditGrowthShrinkAndMonotonicGrant(t *testing.T) {
 	}
 }
 
+func TestSustainedWindowPressureUsesBoundedDoubleRamp(t *testing.T) {
+	s, st := creditFixture()
+	now := time.Now()
+	defer st.Close()
+
+	// A concurrent bulk Stream blocks speculative warm-seed inheritance. The
+	// tested Stream must still be able to accelerate from real consumption.
+	other := s.newStreamLocked(3)
+	other.open = true
+	other.windowTarget = MaxStreamWindow
+	other.lastRead = now
+	defer other.Close()
+	s.windowSeed = MaxStreamWindow
+	s.windowSeedAt = now
+
+	st.windowTarget = SmallStreamWindow
+	st.advertiseCreditLocked(now)
+	st.demandBytes = SmallStreamWindow
+	st.lastRead = now
+	st.readSampleAt = now
+	before := st.windowTarget
+	consumeWindowFixture(t, st, before/2, now.Add(200*time.Millisecond))
+
+	if st.windowTarget != 2*before {
+		t.Fatalf("sustained window pressure did not use bounded 2x ramp: before=%d after=%d", before, st.windowTarget)
+	}
+	if st.windowTarget >= MaxStreamWindow {
+		t.Fatal("pressure ramp bypassed concurrent-bulk warm-seed protection")
+	}
+	if s.receiveCredit > SessionCreditLimit || s.receiveGrowth > GrowthCreditLimit {
+		t.Fatal("pressure ramp escaped Session credit bounds")
+	}
+}
+
 func TestSessionCreditLedgerAndAdmission(t *testing.T) {
 	s, a := creditFixture()
 	a.windowTarget = MaxStreamWindow

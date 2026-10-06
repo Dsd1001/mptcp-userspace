@@ -17,17 +17,17 @@ func TestNewCarrierPriorSurvivesOneLowEpochThenExpires(t *testing.T) {
 	c.startupDone = true
 	now := time.Now()
 	p := &outbound{f: frame{data: make([]byte, MaxPayload)}, sentAt: now.Add(-20 * time.Millisecond)}
-	stamp := uint64(time.Second)
+	stamp := receiverStampUS(time.Second)
 	c.observeDelivery(now, p, stamp)
 	c.sampleBudgetLimited = true
-	stamp += uint64(200 * time.Millisecond)
+	stamp += receiverStampUS(200 * time.Millisecond)
 	c.observeDelivery(now.Add(200*time.Millisecond), p, stamp)
 	if c.goodput != initial {
 		t.Fatalf("one low startup epoch collapsed capacity: got %.0f prior %.0f", c.goodput, initial)
 	}
 	for i := 0; i < 7; i++ {
 		c.sampleBudgetLimited = true
-		stamp += uint64(200 * time.Millisecond)
+		stamp += receiverStampUS(200 * time.Millisecond)
 		c.observeDelivery(now.Add(time.Duration(i+2)*200*time.Millisecond), p, stamp)
 	}
 	expected := float64(MaxPayload) / .2

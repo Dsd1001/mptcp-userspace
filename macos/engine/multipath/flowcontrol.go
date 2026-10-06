@@ -7,16 +7,17 @@ import (
 )
 
 const (
-	MaxStreamWindow      = 16 << 20
-	SessionCreditLimit   = 128 << 20
-	BootstrapCreditLimit = MaxStreams * StreamWindow
-	GrowthCreditLimit    = SessionCreditLimit - BootstrapCreditLimit
-	SmallStreamWindow    = 128 << 10
-	SmallGrowthReserve   = 4 << 20
-	initialPathBudget    = 2 * MaxPayload
-	maxPathBudget        = 8 << 20
-	creditIdle           = 5 * time.Second
-	dataDispatchBatch    = MaxStreams / 4 // preserve ~4 scheduler cycles for a full ready-set sweep as capacity scales
+	MaxStreamWindow           = 16 << 20
+	SessionCreditLimit        = 128 << 20
+	BootstrapCreditLimit      = MaxStreams * StreamWindow
+	GrowthCreditLimit         = SessionCreditLimit - BootstrapCreditLimit
+	SmallStreamWindow         = 128 << 10
+	ContendedWarmStreamWindow = 512 << 10
+	SmallGrowthReserve        = 4 << 20
+	initialPathBudget         = 2 * MaxPayload
+	maxPathBudget             = 8 << 20
+	creditIdle                = 5 * time.Second
+	dataDispatchBatch         = MaxStreams / 4 // preserve ~4 scheduler cycles for a full ready-set sweep as capacity scales
 )
 
 // All methods in this file run with Session.mu held. An absolute grant is
@@ -63,10 +64,23 @@ func (st *Stream) consumeCreditLocked(n int, now time.Time) {
 	st.lastRead = now
 	interval := max(50*time.Millisecond, s.creditRTTLocked()/2)
 	if elapsed := now.Sub(st.readSampleAt); elapsed >= interval {
+		currentTarget := st.windowTarget
 		rate := float64(st.readSampleBytes) / elapsed.Seconds()
 		desired := min(MaxStreamWindow, max(StreamWindow, int(2*rate*(s.creditRTTLocked().Seconds()+.010))+min(4*MaxPayload, st.readSampleBytes)))
 		if st.demandBytes < SmallStreamWindow {
 			desired = min(desired, SmallStreamWindow)
+		}
+		// A sustained bulk receiver can otherwise become self-limited by the
+		// window whose rate it is trying to measure, especially when many
+		// Streams share one Session. If real consumption drains at least half
+		// of an established bulk window within roughly two feedback RTTs, treat
+		// that as direct window-pressure evidence and allow the existing bounded
+		// 2x ramp. This is not speculative inheritance: new/idle/small Streams
+		// still start at StreamWindow and all committed DATA remains bounded by
+		// the unchanged per-Stream and Session credit limits.
+		pressureWindow := max(2*s.creditRTTLocked(), 100*time.Millisecond) + 20*time.Millisecond
+		if currentTarget >= SmallStreamWindow && st.demandBytes >= SmallStreamWindow && elapsed <= pressureWindow && st.readSampleBytes >= currentTarget/2 {
+			desired = max(desired, min(MaxStreamWindow, 2*currentTarget))
 		}
 		if desired > st.windowTarget {
 			st.windowTarget = min(desired, 2*st.windowTarget)
@@ -85,6 +99,16 @@ func (st *Stream) consumeCreditLocked(n int, now time.Time) {
 	// Real full-bootstrap consumption, not OPEN, may accelerate interactive ramp-up.
 	if st.windowTarget < SmallStreamWindow && st.demandBytes >= uint64(st.windowTarget) {
 		st.windowTarget = min(SmallStreamWindow, 2*st.windowTarget)
+	}
+	// When several real bulk Streams compete, the first-bootstrap full-seed
+	// protection deliberately keeps each newcomer small. Once this Stream has
+	// itself consumed a complete SmallStreamWindow, however, a recent measured
+	// bulk seed is no longer speculative. Reuse only a bounded 512 KiB slice so
+	// concurrent bulk flows escape the 128 KiB plateau quickly without allowing
+	// idle/short Streams to reserve a multi-megabyte entitlement.
+	if st.windowTarget == SmallStreamWindow && st.demandBytes >= SmallStreamWindow &&
+		now.Sub(s.windowSeedAt) < creditIdle && s.windowSeed > SmallStreamWindow {
+		st.windowTarget = max(st.windowTarget, min(ContendedWarmStreamWindow, s.windowSeed))
 	}
 	// A fresh stream cannot inherit a bulk window while idle. After consuming
 	// a complete bootstrap it has demonstrated demand and may reuse a recent
@@ -187,13 +211,18 @@ func (c *carrier) observeDelivery(now time.Time, p *outbound, receiverStamp uint
 	if receiverStamp <= c.remoteSampleAt {
 		return
 	}
-	if c.remoteSampleAt == 0 || receiverStamp-c.remoteSampleAt > uint64(10*time.Second) {
+	// TRANSMISSION_ACK carries receiver_timestamp_us. Keep every comparison
+	// and conversion in that wire unit; casting the raw value to time.Duration
+	// would interpret microseconds as nanoseconds and suppress all real delivery
+	// samples by 1000x.
+	const receiverClockResetUS = uint64(10 * time.Second / time.Microsecond)
+	if c.remoteSampleAt == 0 || receiverStamp-c.remoteSampleAt > receiverClockResetUS {
 		c.remoteSampleAt = receiverStamp
 		c.ackBytes = 0
 		return
 	}
 	c.ackBytes += uint64(len(p.f.data))
-	elapsed := time.Duration(receiverStamp - c.remoteSampleAt)
+	elapsed := time.Duration(receiverStamp-c.remoteSampleAt) * time.Microsecond
 	if elapsed < max(100*time.Millisecond, c.minRTT) {
 		return
 	}

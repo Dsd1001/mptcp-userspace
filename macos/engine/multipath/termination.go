@@ -269,7 +269,7 @@ func (s *Session) handleFinalLocked(c *carrier, f frame) error {
 		st.advertiseConsumedLocked(c)
 		s.ensureFinalConsumedLocked(st)
 	}
-	s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart))})
+	s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart) / time.Microsecond)})
 	s.tryRetireStreamLocked(st)
 	s.wakeLocked()
 	return nil

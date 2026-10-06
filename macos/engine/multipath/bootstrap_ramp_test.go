@@ -77,6 +77,46 @@ func TestConcurrentMediumDoesNotInheritBulkSeed(t *testing.T) {
 	}
 }
 
+func TestConcurrentBulkGetsBoundedRecentSeedAfterSmallWindowDemand(t *testing.T) {
+	s := schedulerFixture()
+	s.ctx = context.Background()
+	now := time.Now()
+	s.windowSeed = 8 << 20
+	s.windowSeedAt = now
+
+	other := s.newStreamLocked(1)
+	other.open = true
+	other.windowTarget = MaxStreamWindow
+	other.lastRead = now
+	defer other.Close()
+
+	st := s.newStreamLocked(3)
+	st.open = true
+	st.advertiseCreditLocked(now)
+	defer st.Close()
+
+	// The first bootstrap cannot inherit the full seed while another bulk
+	// Stream is active. After 128 KiB of this Stream's own real consumption,
+	// it may use only the bounded contended warm window.
+	consumeWindowFixture(t, st, StreamWindow, now.Add(time.Millisecond))
+	consumeWindowFixture(t, st, 2*StreamWindow, now.Add(2*time.Millisecond))
+	consumeWindowFixture(t, st, 4*StreamWindow, now.Add(3*time.Millisecond))
+	consumeWindowFixture(t, st, StreamWindow, now.Add(4*time.Millisecond))
+
+	if st.demandBytes < SmallStreamWindow {
+		t.Fatalf("fixture did not establish bulk demand: %d", st.demandBytes)
+	}
+	if st.windowTarget != ContendedWarmStreamWindow {
+		t.Fatalf("contended bulk did not receive bounded warm window: got=%d want=%d", st.windowTarget, ContendedWarmStreamWindow)
+	}
+	if st.windowTarget >= s.windowSeed {
+		t.Fatal("contended bulk inherited the full measured seed")
+	}
+	if s.receiveCredit > SessionCreditLimit || s.receiveGrowth > GrowthCreditLimit {
+		t.Fatal("bounded warm window escaped Session credit limits")
+	}
+}
+
 func consumeWindowFixture(t *testing.T, st *Stream, n int, now time.Time) {
 	t.Helper()
 	old := st.rxRead

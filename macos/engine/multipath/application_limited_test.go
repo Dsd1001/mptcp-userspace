@@ -11,8 +11,8 @@ func TestSparseUnfilledCarrierDoesNotCollapseCapacity(t *testing.T) {
 	c.startupDone = true
 	now := time.Now()
 	p := &outbound{f: frame{data: make([]byte, 1024)}, sentAt: now.Add(-50 * time.Millisecond)}
-	c.observeDelivery(now, p, uint64(time.Second))
-	c.observeDelivery(now.Add(time.Second), p, uint64(2*time.Second))
+	c.observeDelivery(now, p, receiverStampUS(time.Second))
+	c.observeDelivery(now.Add(time.Second), p, receiverStampUS(2*time.Second))
 	if c.goodput != 4<<20 {
 		t.Fatalf("sparse allocation was mistaken for capacity: got %.0f expected %d", c.goodput, 4<<20)
 	}
@@ -25,7 +25,7 @@ func TestBusyCarrierStillLearnsSustainedLowerCapacity(t *testing.T) {
 	c.goodput = 4 << 20
 	c.startupDone = true
 	now := time.Now()
-	stamp := uint64(time.Second)
+	stamp := receiverStampUS(time.Second)
 	p := &outbound{f: frame{data: make([]byte, MaxPayload)}, sentAt: now.Add(-50 * time.Millisecond)}
 	c.observeDelivery(now, p, stamp)
 	for i := 0; i < 10; i++ {
@@ -33,7 +33,7 @@ func TestBusyCarrierStillLearnsSustainedLowerCapacity(t *testing.T) {
 		// not a testing-only injected bandwidth/capacity prior.
 		c.outstanding = c.flightBudget()
 		s.pathLocked(now)
-		stamp += uint64(200 * time.Millisecond)
+		stamp += receiverStampUS(200 * time.Millisecond)
 		now = now.Add(200 * time.Millisecond)
 		p.sentAt = now.Add(-50 * time.Millisecond)
 		c.observeDelivery(now, p, stamp)
