@@ -49,6 +49,24 @@ func productTestClient(t *testing.T, addresses ...string) *Session {
 	return s
 }
 
+func waitProductPool(t *testing.T, s *Session, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		ready, opening := len(s.productPool), s.productPoolOpening
+		s.mu.Unlock()
+		if ready >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+		_ = opening
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.Fatalf("product pre-open pool did not fill: ready=%d opening=%d want=%d", len(s.productPool), s.productPoolOpening, want)
+}
+
 func productTestTCPRoundtrip(t *testing.T, s *Session) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -67,6 +85,91 @@ func productTestTCPRoundtrip(t *testing.T, s *Session) {
 	got := make([]byte, len(payload))
 	if _, err = io.ReadFull(st, got); err != nil || !bytes.Equal(got, payload) {
 		t.Fatalf("TCP changed: %q, %v", got, err)
+	}
+}
+
+func TestProductPreopenMakesConcurrentTCPServiceOpenLocal(t *testing.T) {
+	_, target, _ := productTestServer(t, udpEchoBackend(t))
+	relay := newTestRelay(t, target, 0, 30*time.Millisecond)
+	s := productTestClient(t, relay.listener.Addr().String())
+	waitProductPool(t, s, productPreopenPoolSize)
+
+	const n = productPreopenPoolSize
+	start := make(chan struct{})
+	durations := make(chan time.Duration, n)
+	errorsOut := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			began := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			st, err := s.OpenTCP(ctx)
+			cancel()
+			if err != nil {
+				errorsOut <- err
+				return
+			}
+			durations <- time.Since(began)
+			st.Close()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errorsOut)
+	close(durations)
+	for err := range errorsOut {
+		t.Fatal(err)
+	}
+	var worst time.Duration
+	for d := range durations {
+		worst = max(worst, d)
+	}
+	t.Logf("PRODUCT_PREOPEN_TCP path_rtt_ms=60 concurrent=%d worst_open=%v", n, worst)
+	// The path RTT is about 60 ms. A checked-out pre-open Stream must not wait
+	// another service-negotiation RTT before OpenTCP returns.
+	if worst >= 45*time.Millisecond {
+		t.Fatalf("pre-open TCP service still waited for remote reply: worst=%v", worst)
+	}
+}
+
+func TestProductFirstUOTDatagramAvoidsThreeRTTSetup(t *testing.T) {
+	_, target, _ := productTestServer(t, udpEchoBackend(t))
+	relay := newTestRelay(t, target, 0, 30*time.Millisecond)
+	s := productTestClient(t, relay.listener.Addr().String())
+	u, err := StartClientUOT(s, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer u.Close()
+	waitProductPool(t, s, 1)
+
+	app, err := net.DialUDP("udp", nil, u.Addr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	app.SetDeadline(time.Now().Add(2 * time.Second))
+	payload := []byte("first-uot-datagram")
+	began := time.Now()
+	if _, err = app.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(payload))
+	if _, err = io.ReadFull(app, got); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(began)
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("UoT echo mismatch: %q", got)
+	}
+	t.Logf("PRODUCT_FIRST_UOT path_rtt_ms=60 first_datagram=%v", elapsed)
+	// The shaped path is about 60 ms RTT. RC7 took ~3 RTT for a new UoT flow;
+	// pre-open + optimistic service selection should complete near one RTT.
+	if elapsed >= 110*time.Millisecond {
+		t.Fatalf("first UoT datagram retained multi-RTT setup: %v", elapsed)
 	}
 }
 

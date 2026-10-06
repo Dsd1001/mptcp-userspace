@@ -23,7 +23,7 @@ def sha(path: pathlib.Path) -> str:
 
 def bounds(snapshot: dict) -> None:
     r=snapshot['resources']
-    require(r.get('capability_revision')==7,'Capacity evidence is not the RC7 MPX/4 Stable product capability')
+    require(r.get('capability_revision')==8,'Capacity evidence is not the RC8 MPX/4 Stable product capability')
     for field,limit in CAPS.items():
         require(isinstance(r[field],int) and 0<=r[field]<=limit,'Invalid resource bound: '+field)
     require(r['receive_credit_bytes']==r['bootstrap_credit_bytes']+r['growth_credit_bytes'],'Credit subledger mismatch')

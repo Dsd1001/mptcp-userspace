@@ -105,6 +105,9 @@ func dialClientPolicy(ctx context.Context, addresses []string, token string, req
 	for i, address := range addresses {
 		go s.maintainCarrier(uint64(i+1), address, key)
 	}
+	if productMux {
+		s.startProductStreamPool()
+	}
 	return s, nil
 }
 

@@ -233,7 +233,7 @@ def main() -> None:
             sdk=run(['xcrun','--sdk','macosx','--show-sdk-path']).decode().strip()
             for arch,goarch in [('arm64','arm64'),('x86_64','amd64')]:
                 event=json.loads(run(['/usr/bin/arch','-'+arch,str(engine),'version'],timeout=30))
-                if event.get('source_id')!=identity or event.get('version')!=version or event.get('wire_protocol')!=4 or event.get('capability_revision')!=7:
+                if event.get('source_id')!=identity or event.get('version')!=version or event.get('wire_protocol')!=4 or event.get('capability_revision')!=8:
                     raise ValueError('Actual packaged engine identity differs')
                 rebuilt=work/('engine-'+goarch)
                 cc=f'clang -arch {arch} -isysroot {sdk} -mmacosx-version-min=13.0'

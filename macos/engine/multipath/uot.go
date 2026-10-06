@@ -40,12 +40,13 @@ func writeUOTDatagram(w io.Writer, packet []byte) error {
 	if len(packet) > udpMax {
 		return errors.New("UoT datagram exceeds UDP payload limit")
 	}
-	var header [2]byte
-	binary.BigEndian.PutUint16(header[:], uint16(len(packet)))
-	if err := writeAll(w, header[:]); err != nil {
-		return err
-	}
-	return writeAll(w, packet)
+	// Keep the two-byte length and the common small UDP payload in one Stream
+	// Write. Separate writes may be scheduled on different Carriers and create
+	// avoidable reassembly HOL before the payload can be delivered.
+	framed := make([]byte, 2+len(packet))
+	binary.BigEndian.PutUint16(framed[:2], uint16(len(packet)))
+	copy(framed[2:], packet)
+	return writeAll(w, framed)
 }
 
 type clientUOTFlow struct {

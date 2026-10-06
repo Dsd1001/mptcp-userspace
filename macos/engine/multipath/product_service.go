@@ -14,11 +14,16 @@ import (
 )
 
 const (
-	productCarrierPreface      = "MPTU\x00\x00\x00\x01"
-	productServiceProbe   byte = 0
-	productServiceTCP     byte = 1
-	productServiceUOT     byte = 2
-	productMaxUOTFlows         = 512
+	productCarrierPreface              = "MPTU\x00\x00\x00\x01"
+	productServiceProbe           byte = 0
+	productServiceTCP             byte = 1
+	productServiceUOT             byte = 2
+	productMaxUOTFlows                 = 512
+	productPreopenPoolSize             = 16
+	productPreopenMaxAge               = 2 * time.Minute
+	productPreopenRefillInterval       = 5 * time.Second
+	productServiceSelectTimeout        = 3 * time.Minute
+	productServiceResponseTimeout      = 5 * time.Second
 )
 
 var ErrUOTUnsupported = errors.New("Landing UoT capability is disabled or unsupported")
@@ -106,6 +111,119 @@ func (srv *Server) EnableUOT(backend string) error {
 	return nil
 }
 
+func (s *Session) startProductStreamPool() {
+	s.mu.Lock()
+	if s.server || !s.productMux || s.closed || s.productPoolKick != nil {
+		s.mu.Unlock()
+		return
+	}
+	kick := make(chan struct{}, 1)
+	s.productPoolKick = kick
+	s.mu.Unlock()
+	go s.productStreamPoolLoop(kick)
+	select {
+	case kick <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Session) productStreamPoolLoop(kick <-chan struct{}) {
+	ticker := time.NewTicker(productPreopenRefillInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-kick:
+			s.refillProductStreamPool(time.Now())
+		case now := <-ticker.C:
+			s.refillProductStreamPool(now)
+		}
+	}
+}
+
+func (s *Session) refillProductStreamPool(now time.Time) {
+	var stale []*Stream
+	s.mu.Lock()
+	if s.closed || s.server || !s.productMux {
+		s.mu.Unlock()
+		return
+	}
+	fresh := s.productPool[:0]
+	for _, st := range s.productPool {
+		if st == nil || st.closed || now.Sub(st.createdAt) >= productPreopenMaxAge {
+			if st != nil && !st.closed {
+				stale = append(stale, st)
+			}
+			continue
+		}
+		fresh = append(fresh, st)
+	}
+	s.productPool = fresh
+	missing := max(0, productPreopenPoolSize-len(s.productPool)-s.productPoolOpening)
+	s.productPoolOpening += missing
+	s.mu.Unlock()
+
+	for _, st := range stale {
+		st.Close()
+	}
+	for i := 0; i < missing; i++ {
+		go s.openProductPoolStream()
+	}
+}
+
+func (s *Session) openProductPoolStream() {
+	ctx, cancel := context.WithTimeout(s.ctx, productServiceResponseTimeout)
+	st, err := s.Open(ctx)
+	cancel()
+
+	keep := false
+	s.mu.Lock()
+	s.productPoolOpening = max(0, s.productPoolOpening-1)
+	if err == nil && !s.closed && s.productMux && !s.server && st != nil && !st.closed && len(s.productPool) < productPreopenPoolSize {
+		s.productPool = append(s.productPool, st)
+		keep = true
+	}
+	s.mu.Unlock()
+
+	if err == nil && st != nil && !keep {
+		st.Close()
+	}
+	// Failed pre-opens retry on the bounded periodic refill. Immediate
+	// self-kicking here could turn a hard Stream/admission limit into a tight
+	// retry loop.
+}
+
+func (s *Session) takeProductStream(ctx context.Context) (*Stream, error) {
+	s.startProductStreamPool()
+	for {
+		s.mu.Lock()
+		var st *Stream
+		if len(s.productPool) > 0 {
+			st = s.productPool[0]
+			copy(s.productPool, s.productPool[1:])
+			s.productPool = s.productPool[:len(s.productPool)-1]
+		}
+		kick := s.productPoolKick
+		valid := st != nil && !st.closed && time.Since(st.createdAt) < productPreopenMaxAge
+		s.mu.Unlock()
+
+		if kick != nil {
+			select {
+			case kick <- struct{}{}:
+			default:
+			}
+		}
+		if st == nil {
+			return s.Open(ctx)
+		}
+		if valid {
+			return st, nil
+		}
+		st.Close()
+	}
+}
+
 // OpenTCP preserves raw byte-transparent Streams for legacy sessions.
 func (s *Session) OpenTCP(ctx context.Context) (*Stream, error) {
 	if !s.productMux {
@@ -114,44 +232,48 @@ func (s *Session) OpenTCP(ctx context.Context) (*Stream, error) {
 	return s.openProductService(ctx, productServiceTCP)
 }
 
+func productServiceResponseError(kind byte, response []byte) error {
+	if len(response) != 6 || string(response[:4]) != "MPA1" || response[4] != kind {
+		return errors.New("invalid Landing product service response")
+	}
+	if response[5] == 0 {
+		return nil
+	}
+	if response[5] == 1 && (kind == productServiceProbe || kind == productServiceUOT) {
+		return ErrUOTUnsupported
+	}
+	return fmt.Errorf("Landing rejected product service %d (status %d)", kind, response[5])
+}
+
 func (s *Session) openProductService(parent context.Context, kind byte) (*Stream, error) {
 	if !s.productMux {
 		return nil, ErrUOTUnsupported
 	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, productServiceResponseTimeout)
 	defer cancel()
-	st, err := s.Open(ctx)
+	st, err := s.takeProductStream(ctx)
 	if err != nil {
 		return nil, err
 	}
-	stop := context.AfterFunc(ctx, func() { st.Close() })
-	defer stop()
 	deadline, _ := ctx.Deadline()
-	st.SetDeadline(deadline)
+	replyDeadline := time.Time{}
+	if kind == productServiceProbe {
+		replyDeadline = deadline
+	}
+	st.armProductReply(kind, replyDeadline)
+	st.SetWriteDeadline(deadline)
 	request := []byte{'M', 'P', 'S', '1', kind, 0}
-	var response [6]byte
-	if err = writeAll(st, request); err == nil {
-		_, err = io.ReadFull(st, response[:])
-	}
-	if err == nil && (string(response[:4]) != "MPA1" || response[4] != kind) {
-		err = errors.New("invalid Landing product service response")
-	}
-	if err == nil && response[5] != 0 {
-		if response[5] == 1 {
-			err = ErrUOTUnsupported
-		} else {
-			err = fmt.Errorf("Landing rejected product service %d (status %d)", kind, response[5])
-		}
-	}
-	if err == nil {
-		err = ctx.Err()
+	err = writeAll(st, request)
+	st.SetWriteDeadline(time.Time{})
+	if err == nil && kind == productServiceProbe {
+		err = st.waitProductReply()
 	}
 	if err != nil {
 		st.Close()
 		return nil, err
 	}
-	stop()
-	st.SetDeadline(time.Time{})
+	// TCP/UoT payload may now be sent immediately. The first Stream.Read
+	// consumes and validates MPA1 internally before exposing backend bytes.
 	return st, nil
 }
 
@@ -164,7 +286,7 @@ func (srv *Server) openProductBackend(st *Stream) {
 	if !st.s.accept(st) {
 		return
 	}
-	st.SetDeadline(time.Now().Add(5 * time.Second))
+	st.SetDeadline(time.Now().Add(productServiceSelectTimeout))
 	var request [6]byte
 	if _, err := io.ReadFull(st, request[:]); err != nil || string(request[:4]) != "MPS1" || request[5] != 0 {
 		return

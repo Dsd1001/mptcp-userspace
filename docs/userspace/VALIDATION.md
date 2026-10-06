@@ -61,6 +61,12 @@ RC7 therefore no longer uses measured Stream rate, base/load RTT, warm history o
 
 RC7 also includes the product-level UoT change from PR #1. TCP, native UDP and UoT service selection stay outside the MPX/4 Core wire grammar; UoT payload transport reuses the existing authenticated TCP Carrier Session. The product preface uses the same 1.5-second pre-handshake admission deadline as the existing MPX entry path so slow or silent clients cannot hold source-concurrency slots for the later 5-second authenticated handshake timeout.
 
+RC8 removes the product-service setup RTTs from the hot path without changing MPX/4 Core framing. Product-mux client Sessions maintain a bounded pool of 16 already authenticated and STREAM_OPEN/OPEN_OK-complete Streams. A checkout sends the 6-byte MPS1 service selector immediately and may send TCP/UoT payload without waiting for the 6-byte MPA1 service response. The first Stream Read consumes and validates MPA1 internally before exposing backend bytes, so service rejection and backend failure still surface as errors rather than application payload. The capability probe remains synchronous.
+
+Pre-opened Streams do not connect a backend and do not allocate a Landing UDP socket until MPS1 selects a service. The pool refreshes in the background, retires unused entries after two minutes, and the authenticated Landing product selector permits up to three minutes for an idle pre-opened Stream to receive MPS1. This keeps the optimization bounded while avoiding periodic per-flow setup RTTs. UoT also emits each common small datagram length+payload in one Stream Write, avoiding unnecessary cross-Carrier reassembly head-of-line delay between a two-byte length prefix and its payload.
+
+Controlled 60 ms RTT tests measured the first UoT request/response on a fresh local association at 64.054 ms, 63.858 ms and 71.797 ms; RC7's first packet was approximately three RTTs while subsequent packets were one RTT. Product-mode Weighted 92 Mbps x 6 startup tests open TCP Streams concurrently after timing starts: 53 Streams reached 390.302 Mbps in the first 200 ms and 555.980 Mbps in the second, averaging 541.771 Mbps; 150 Streams reached 378.728 Mbps in the first 200 ms and 552.952 Mbps in the second, averaging 544.067 Mbps, with zero retransmits in both runs.
+
 ## Keychain Broker / updater continuity
 
 The 1.0.0 Mac App preserves the 0.10.12 Broker split.

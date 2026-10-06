@@ -18,7 +18,7 @@ def records():
     for d in capacity['cases']:
         for who in ['client_peak','server_peak']:
             for k in ['receive_credit_bytes','bootstrap_credit_bytes','growth_credit_bytes','receive_allocated_bytes','data_pending_frames','data_pending_bytes','control_pending_frames','control_pending_bytes']:d[who][k]=0
-            d[who]['capability_revision']=7
+            d[who]['capability_revision']=8
         d.update(exchanges=d['target_streams'],churn_reopens=8,bulk_segments=8,typed_next_stream_rejection=d['target_streams']==2048,evidence_sha256='0'*64)
     runtime={'version':G.VERSION,'wire_protocol':4,'source_id':ID,'verified':True,'workload':'segmented-mixed-180s',
              'observed_seconds':180.1,'short_attempts':200,'short_failures':0,'idle_keepalive_connections':6,

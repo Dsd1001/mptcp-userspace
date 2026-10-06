@@ -39,7 +39,7 @@ type Stream struct {
 	readErr                                      error
 	s                                            *Session
 	id                                           uint64
-	writeMu                                      sync.Mutex
+	readMu, writeMu                              sync.Mutex
 	open, closed                                 bool
 	err                                          error
 	openID                                       uint64
@@ -60,6 +60,10 @@ type Stream struct {
 	windowAt                                     time.Time
 	windowSent                                   uint64
 	demandBytes                                  uint64
+	productReplyKind                             byte
+	productReplyPending                          bool
+	productReplyDeadline                         time.Time
+	productReplyErr                              error
 	bulkActive                                   bool
 	warmSeedUsed, warmHistoryUsed                bool
 }
@@ -175,10 +179,77 @@ func (st *Stream) receiveLocked(offset uint64, data []byte) error {
 	return nil
 }
 
+func (st *Stream) armProductReply(kind byte, deadline time.Time) {
+	st.readMu.Lock()
+	st.productReplyKind = kind
+	st.productReplyPending = true
+	st.productReplyDeadline = deadline
+	st.productReplyErr = nil
+	st.readMu.Unlock()
+}
+
+func earlierDeadline(a, b time.Time) time.Time {
+	if a.IsZero() || !b.IsZero() && b.Before(a) {
+		return b
+	}
+	return a
+}
+
+func (st *Stream) effectiveReadDeadlineLocked() time.Time {
+	deadline := st.readDeadline
+	if st.productReplyPending {
+		deadline = earlierDeadline(deadline, st.productReplyDeadline)
+	}
+	return deadline
+}
+
+func (st *Stream) consumeProductReplyLocked() error {
+	if st.productReplyErr != nil {
+		return st.productReplyErr
+	}
+	if !st.productReplyPending {
+		return nil
+	}
+	var response [6]byte
+	for off := 0; off < len(response); {
+		n, err := st.readRaw(response[off:])
+		off += n
+		if err != nil {
+			st.productReplyPending = false
+			st.productReplyErr = err
+			st.Close()
+			return err
+		}
+	}
+	err := productServiceResponseError(st.productReplyKind, response[:])
+	st.productReplyPending = false
+	st.productReplyDeadline = time.Time{}
+	st.productReplyErr = err
+	if err != nil {
+		st.Close()
+	}
+	return err
+}
+
+func (st *Stream) waitProductReply() error {
+	st.readMu.Lock()
+	defer st.readMu.Unlock()
+	return st.consumeProductReplyLocked()
+}
+
 func (st *Stream) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+	st.readMu.Lock()
+	defer st.readMu.Unlock()
+	if err := st.consumeProductReplyLocked(); err != nil {
+		return 0, err
+	}
+	return st.readRaw(p)
+}
+
+func (st *Stream) readRaw(p []byte) (int, error) {
 	s := st.s
 	s.mu.Lock()
 	for {
@@ -198,7 +269,8 @@ func (st *Stream) Read(p []byte) (int, error) {
 			s.mu.Unlock()
 			return 0, err
 		}
-		if !st.readDeadline.IsZero() && !time.Now().Before(st.readDeadline) {
+		deadline := st.effectiveReadDeadlineLocked()
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			s.mu.Unlock()
 			return 0, os.ErrDeadlineExceeded
 		}
@@ -238,7 +310,8 @@ func (st *Stream) Read(p []byte) (int, error) {
 			s.mu.Unlock()
 			return 0, io.EOF
 		}
-		ch, deadline := s.changed, st.readDeadline
+		ch := s.changed
+		deadline = st.effectiveReadDeadlineLocked()
 		s.mu.Unlock()
 		if err := waitChange(s.ctx, ch, deadline); err != nil {
 			return 0, err
