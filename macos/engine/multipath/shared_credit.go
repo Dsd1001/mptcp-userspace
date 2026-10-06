@@ -217,8 +217,12 @@ func (s *Session) writerTurnLocked(st *Stream) bool {
 	// Do not serialize writers when every waiter can receive a full DATA turn.
 	// DATA dispatch remains per-stream round-robin; scarce credit uses FIFO.
 	if GrowthCreditLimit-s.credit.txGrowth >= count*MaxPayload &&
-		growthPendingBytes-s.dataPendingBytes >= count*(MaxPayload+64) &&
 		growthPendingFrames-s.dataPendingFrames >= count {
+		// Pending-byte bootstrap reserve is still enforced by
+		// writeAllowanceLocked for every frame. Do not use that static reserve
+		// to serialize otherwise-credit-eligible writers up front; with a
+		// 32 KiB bootstrap its metadata margin is intentionally tighter than
+		// one simultaneous growth frame for every possible Stream.
 		return true
 	}
 	for e := s.writerReady.Front(); e != nil; e = e.Next() {

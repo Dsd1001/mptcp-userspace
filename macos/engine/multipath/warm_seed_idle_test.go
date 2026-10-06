@@ -35,7 +35,7 @@ func TestWarmSeedIdleBackgroundNeedsRealConsumption(t *testing.T) {
 	}
 	consumeWindowFixture(t, st, StreamWindow-1, now.Add(3*time.Millisecond))
 	if st.windowTarget != 8<<20 {
-		t.Fatalf("idle background disabled measured seed: %d", st.windowTarget)
+		t.Fatalf("idle background disabled uncontended measured seed: %d", st.windowTarget)
 	}
 	if s.receiveAllocated != 0 || s.receiveCredit > SessionCreditLimit || s.receiveGrowth > GrowthCreditLimit {
 		t.Fatal("allocation or credit escaped bounds")
@@ -63,8 +63,9 @@ func TestWarmSeedKeepsActiveAndUnreadBulkProtected(t *testing.T) {
 				s.windowSeedAt = now.Add(-10 * time.Second)
 			}
 			consumeWindowFixture(t, st, StreamWindow, now.Add(time.Millisecond))
-			if st.windowTarget > SmallStreamWindow {
-				t.Fatalf("unsafe warm seed for %s: %d", mode, st.windowTarget)
+			ceiling := s.streamWindowCeilingLocked(st, now.Add(time.Millisecond))
+			if st.windowTarget > ceiling || st.windowTarget >= 8<<20 {
+				t.Fatalf("unsafe warm seed for %s: target=%d ceiling=%d", mode, st.windowTarget, ceiling)
 			}
 		})
 	}
@@ -76,7 +77,7 @@ func TestWarmSeedConcurrentDemandStillProtected(t *testing.T) {
 	other.advertiseCreditLocked(now)
 	consumeWindowFixture(t, st, StreamWindow, now.Add(time.Millisecond))
 	consumeWindowFixture(t, other, StreamWindow, now.Add(2*time.Millisecond))
-	if st.windowTarget != 8<<20 || other.windowTarget > SmallStreamWindow {
-		t.Fatal("competing bulk inherited speculative seed")
+	if st.windowTarget != 8<<20 || other.windowTarget > s.streamWindowCeilingLocked(other, now.Add(2*time.Millisecond)) {
+		t.Fatal("first uncontended bulk did not retain warm seed or competing bulk escaped dynamic ceiling")
 	}
 }

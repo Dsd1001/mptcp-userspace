@@ -28,7 +28,7 @@ const (
 	ProtocolReleaseSHA  = "44f587fd279ed2238b070dd68114c76822353f4d"
 	MaxPayload          = 32768
 	MaxRecordSize       = 65536
-	StreamWindow        = 16 << 10
+	StreamWindow        = 32 << 10
 	MaxStreams          = 2048
 	MaxCarriers         = 8 // local active-Carrier implementation limit; Carrier IDs use the full MPX VarInt space
 	MaxPending          = 8192

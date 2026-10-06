@@ -47,9 +47,14 @@ Passing unit tests alone does not prove WAN throughput or production behavior.
 - CARRIER_ID wire space: non-zero MPX VarInt, 1 through 2^62-1;
 - 2048 active peer-initiated Streams;
 - 32 KiB STREAM_DATA maximum;
+- 32 KiB initial per-Stream receive window;
 - 16 MiB per-Stream receive-credit maximum;
-- 128 MiB Session receive-credit;
+- 128 MiB Session receive-credit, split into a 64 MiB maximum bootstrap pool and 64 MiB growth pool at the 2048-Stream bound;
 - 128 MiB physical receive-page accounting.
+
+RC3 keeps these wire and memory limits unchanged while changing the local receive-credit controller. Weighted sessions, and non-Weighted sessions with real multi-Stream demand, use a continuous BDP-aware target driven by measured application consumption and capacity-weighted base RTT. WINDOW is refreshed at roughly 50% remaining credit or earlier when predicted exhaustion would precede the next feedback opportunity. Uncontended single-Stream Auto/Aggregate/Protect retains the proven RC2 ramp/seed path to avoid a single-stream performance regression. A fresh bulk Stream may reuse a recent uncontended high-water seed only after consuming real bootstrap bytes; concurrent bulk Streams remain bounded by demand and Session fair-share.
+
+DATA receipt timeout handling also has hysteresis in RC3: one timeout retransmits without removing a healthy Carrier from scheduling. A Carrier is temporarily deprioritized only after a second timeout epoch without intervening DATA progress; successful DATA progress clears the timeout suspicion. This is endpoint-local behavior and does not change MPX/4 wire semantics.
 
 ## Keychain Broker / updater continuity
 

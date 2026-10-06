@@ -7,22 +7,49 @@ import (
 )
 
 const (
-	MaxStreamWindow           = 16 << 20
-	SessionCreditLimit        = 128 << 20
-	BootstrapCreditLimit      = MaxStreams * StreamWindow
-	GrowthCreditLimit         = SessionCreditLimit - BootstrapCreditLimit
-	SmallStreamWindow         = 128 << 10
-	ContendedWarmStreamWindow = 512 << 10
-	SmallGrowthReserve        = 4 << 20
-	initialPathBudget         = 2 * MaxPayload
-	maxPathBudget             = 8 << 20
-	creditIdle                = 5 * time.Second
-	dataDispatchBatch         = MaxStreams / 4 // preserve ~4 scheduler cycles for a full ready-set sweep as capacity scales
+	MaxStreamWindow      = 16 << 20
+	SessionCreditLimit   = 128 << 20
+	BootstrapCreditLimit = MaxStreams * StreamWindow
+	GrowthCreditLimit    = SessionCreditLimit - BootstrapCreditLimit
+	SmallStreamWindow    = 128 << 10
+	SmallGrowthReserve   = 4 << 20
+	initialPathBudget    = 2 * MaxPayload
+	maxPathBudget        = 8 << 20
+	creditIdle           = 5 * time.Second
+	dataDispatchBatch    = MaxStreams / 4 // preserve ~4 scheduler cycles for a full ready-set sweep as capacity scales
 )
 
 // All methods in this file run with Session.mu held. An absolute grant is
 // irrevocable; windowTarget may shrink but rxLimit can only increase.
 func (s *Session) creditRTTLocked() time.Duration {
+	now := time.Now()
+	weightedNS, totalWeight := 0.0, 0.0
+	for _, c := range s.paths {
+		if !c.active || now.Before(c.penaltyUntil) {
+			continue
+		}
+		rtt := c.minRTT
+		if rtt <= 0 {
+			rtt = c.rtt
+		}
+		if rtt <= 0 {
+			continue
+		}
+		rtt = min(500*time.Millisecond, max(time.Millisecond, rtt))
+		weight := max(c.goodput, float64(65536))
+		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
+			weight = c.configuredRateBPS
+		}
+		weightedNS += float64(rtt) * weight
+		totalWeight += weight
+	}
+	if totalWeight == 0 {
+		return 10 * time.Millisecond
+	}
+	return time.Duration(weightedNS / totalWeight)
+}
+
+func (s *Session) legacyCreditRTTLocked() time.Duration {
 	rtt := 10 * time.Millisecond
 	for _, c := range s.paths {
 		if c.active && time.Now().After(c.penaltyUntil) {
@@ -30,6 +57,34 @@ func (s *Session) creditRTTLocked() time.Duration {
 		}
 	}
 	return rtt
+}
+
+func (s *Session) activeDemandStreamsLocked(now time.Time) int {
+	count := 0
+	for _, st := range s.streams {
+		if st == nil || st.closed || st.receiveStopped || now.Sub(st.lastRead) > creditIdle {
+			continue
+		}
+		if st.demandBytes >= uint64(StreamWindow/2) {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Session) streamWindowCeilingLocked(st *Stream, now time.Time) int {
+	active := max(1, s.activeDemandStreamsLocked(now))
+	// Entitlement itself does not reserve memory; committed DATA remains bounded
+	// by the Session ledger. Still keep an opportunistic 2x fair share so a
+	// high-fanout workload cannot let every Stream race straight to 16 MiB.
+	fair := StreamWindow + 2*GrowthCreditLimit/active
+	demand := StreamWindow
+	if st.demandBytes >= uint64(MaxStreamWindow/8) {
+		demand = MaxStreamWindow
+	} else {
+		demand = max(StreamWindow, int(8*st.demandBytes))
+	}
+	return min(MaxStreamWindow, max(StreamWindow, min(fair, demand)))
 }
 
 // Called only once after the new receiver has consumed a full bootstrap.
@@ -52,41 +107,41 @@ func (s *Session) warmSeedUncontendedLocked(st *Stream, now time.Time) bool {
 
 func (st *Stream) consumeCreditLocked(n int, now time.Time) {
 	s := st.s
+	if s.scheduler.configured != SchedulerWeighted && s.activeDemandStreamsLocked(now) <= 1 {
+		st.consumeLegacySingleCreditLocked(n, now)
+		return
+	}
+	st.consumeAdaptiveCreditLocked(n, now)
+}
+
+func (st *Stream) consumeLegacySingleCreditLocked(n int, now time.Time) {
+	s := st.s
 	if now.Sub(st.lastRead) > creditIdle {
 		st.demandBytes = 0
 		st.windowTarget = StreamWindow
 		st.warmSeedUsed = false
 		st.readSampleBytes = 0
+		st.readRateBPS = 0
 		st.readSampleAt = now
 	}
 	st.demandBytes += uint64(n)
 	st.readSampleBytes += n
 	st.lastRead = now
-	interval := max(50*time.Millisecond, s.creditRTTLocked()/2)
+	interval := max(50*time.Millisecond, s.legacyCreditRTTLocked()/2)
 	if elapsed := now.Sub(st.readSampleAt); elapsed >= interval {
 		currentTarget := st.windowTarget
 		rate := float64(st.readSampleBytes) / elapsed.Seconds()
-		desired := min(MaxStreamWindow, max(StreamWindow, int(2*rate*(s.creditRTTLocked().Seconds()+.010))+min(4*MaxPayload, st.readSampleBytes)))
+		desired := min(MaxStreamWindow, max(StreamWindow, int(2*rate*(s.legacyCreditRTTLocked().Seconds()+.010))+min(4*MaxPayload, st.readSampleBytes)))
 		if st.demandBytes < SmallStreamWindow {
 			desired = min(desired, SmallStreamWindow)
 		}
-		// A sustained bulk receiver can otherwise become self-limited by the
-		// window whose rate it is trying to measure, especially when many
-		// Streams share one Session. If real consumption drains at least half
-		// of an established bulk window within roughly two feedback RTTs, treat
-		// that as direct window-pressure evidence and allow the existing bounded
-		// 2x ramp. This is not speculative inheritance: new/idle/small Streams
-		// still start at StreamWindow and all committed DATA remains bounded by
-		// the unchanged per-Stream and Session credit limits.
-		pressureWindow := max(2*s.creditRTTLocked(), 100*time.Millisecond) + 20*time.Millisecond
+		pressureWindow := max(2*s.legacyCreditRTTLocked(), 100*time.Millisecond) + 20*time.Millisecond
 		if currentTarget >= SmallStreamWindow && st.demandBytes >= SmallStreamWindow && elapsed <= pressureWindow && st.readSampleBytes >= currentTarget/2 {
 			desired = max(desired, min(MaxStreamWindow, 2*currentTarget))
 		}
 		if desired > st.windowTarget {
 			st.windowTarget = min(desired, 2*st.windowTarget)
 		} else {
-			// Reordering creates bursty consumption. A single quiet sample
-			// must not collapse a warmed window; idle still resets it promptly.
 			st.windowTarget = max(desired, st.windowTarget*3/4)
 		}
 		st.readSampleBytes = 0
@@ -96,32 +151,132 @@ func (st *Stream) consumeCreditLocked(n int, now time.Time) {
 			s.windowSeedAt = now
 		}
 	}
-	// Real full-bootstrap consumption, not OPEN, may accelerate interactive ramp-up.
 	if st.windowTarget < SmallStreamWindow && st.demandBytes >= uint64(st.windowTarget) {
 		st.windowTarget = min(SmallStreamWindow, 2*st.windowTarget)
 	}
-	// When several real bulk Streams compete, the first-bootstrap full-seed
-	// protection deliberately keeps each newcomer small. Once this Stream has
-	// itself consumed a complete SmallStreamWindow, however, a recent measured
-	// bulk seed is no longer speculative. Reuse only a bounded 512 KiB slice so
-	// concurrent bulk flows escape the 128 KiB plateau quickly without allowing
-	// idle/short Streams to reserve a multi-megabyte entitlement.
-	if st.windowTarget == SmallStreamWindow && st.demandBytes >= SmallStreamWindow &&
-		now.Sub(s.windowSeedAt) < creditIdle && s.windowSeed > SmallStreamWindow {
-		st.windowTarget = max(st.windowTarget, min(ContendedWarmStreamWindow, s.windowSeed))
-	}
-	// A fresh stream cannot inherit a bulk window while idle. After consuming
-	// a complete bootstrap it has demonstrated demand and may reuse a recent
-	// measured seed. A single keepalive byte or OPEN alone can never do so.
 	if !st.warmSeedUsed && st.demandBytes >= StreamWindow {
-		st.warmSeedUsed = true
-		if s.warmSeedUncontendedLocked(st, now) && now.Sub(s.windowSeedAt) < creditIdle {
+		if s.windowSeedAt.IsZero() || now.Sub(s.windowSeedAt) >= creditIdle {
+			st.warmSeedUsed = true
+		} else if s.warmSeedUncontendedLocked(st, now) {
 			st.windowTarget = max(st.windowTarget, min(MaxStreamWindow, s.windowSeed))
+			st.warmSeedUsed = true
 		}
 	}
-	// Batched credit is still sent well before the available grant runs out.
 	threshold := uint64(min(128<<10, max(MaxPayload, st.windowTarget/4)))
 	if st.rxRead-st.windowSent >= threshold || st.rxLimit-st.rxRead <= uint64(st.windowTarget/2) {
+		st.advertiseCreditLocked(now)
+	}
+}
+
+func (st *Stream) consumeAdaptiveCreditLocked(n int, now time.Time) {
+	s := st.s
+	if now.Sub(st.lastRead) > creditIdle {
+		st.demandBytes = 0
+		st.windowTarget = StreamWindow
+		st.warmSeedUsed = false
+		st.readSampleBytes = 0
+		st.readRateBPS = 0
+		st.readSampleAt = now
+	}
+	st.demandBytes += uint64(n)
+	st.readSampleBytes += n
+	st.lastRead = now
+	priorSeed, priorSeedAt := s.windowSeed, s.windowSeedAt
+
+	feedbackRTT := s.creditRTTLocked()
+	elapsed := now.Sub(st.readSampleAt)
+	remaining := int(st.rxLimit - st.rxRead)
+	pressure := remaining <= max(MaxPayload, st.windowTarget/2)
+
+	// Re-estimate before the sender can run out of credit. Half-window
+	// consumption is the normal trigger; a predicted exhaustion before the next
+	// feedback opportunity can trigger even earlier. This removes the old fixed
+	// 32->64->128->512 KiB staircase while retaining real-consumption evidence.
+	evaluate := elapsed >= max(10*time.Millisecond, feedbackRTT/4) ||
+		st.readSampleBytes >= max(MaxPayload/2, st.windowTarget/2) || pressure
+	if elapsed > 0 && st.readSampleBytes > 0 {
+		sampleRate := float64(st.readSampleBytes) / max(elapsed.Seconds(), .001)
+		if st.readRateBPS == 0 {
+			st.readRateBPS = sampleRate
+		} else if evaluate {
+			st.readRateBPS = .75*st.readRateBPS + .25*sampleRate
+		}
+	}
+	predicted := false
+	if st.readRateBPS > 0 && remaining > 0 {
+		exhaustion := time.Duration(float64(remaining) / st.readRateBPS * float64(time.Second))
+		predicted = exhaustion <= feedbackRTT+20*time.Millisecond
+		if predicted {
+			evaluate = true
+		}
+	}
+	if evaluate {
+		desired := StreamWindow
+		if st.readRateBPS > 0 {
+			// Two base-feedback RTTs plus 20 ms absorbs WINDOW transmission,
+			// scheduling and ordinary jitter without learning from queue-inflated
+			// RTT. The target is continuous, not a discrete window tier.
+			horizon := 2*feedbackRTT + 20*time.Millisecond
+			desired = int(st.readRateBPS*horizon.Seconds()) + 2*MaxPayload
+			if pressure || predicted {
+				// A receive window measures a rate that the receive window itself
+				// may already be limiting. Under real pressure, add one more
+				// feedback interval of observed demand so autotune can escape that
+				// self-limited equilibrium without a fixed 2x step.
+				pressureFloor := st.windowTarget + max(MaxPayload, int(st.readRateBPS*(feedbackRTT+10*time.Millisecond).Seconds()))
+				desired = max(desired, pressureFloor)
+			}
+		}
+		ceiling := s.streamWindowCeilingLocked(st, now)
+		desired = min(ceiling, max(StreamWindow, desired))
+		if desired > st.windowTarget {
+			st.windowTarget = desired
+		} else {
+			// Growth follows demand immediately; shrink slowly so one quiet read
+			// or reordered burst cannot collapse a warmed receive window.
+			st.windowTarget = max(desired, st.windowTarget*7/8)
+		}
+		st.readSampleBytes = 0
+		st.readSampleAt = now
+	}
+
+	// A recent uncontended bulk Stream may immediately reuse the full measured
+	// seed after consuming one real bootstrap. This preserves the fast single-
+	// stream path. Competing Streams are excluded here and use the continuous
+	// BDP/fair-share controller above instead.
+	if !st.warmSeedUsed && st.demandBytes >= StreamWindow {
+		switch {
+		case priorSeedAt.IsZero() || now.Sub(priorSeedAt) >= creditIdle:
+			st.warmSeedUsed = true
+		case s.warmSeedUncontendedLocked(st, now):
+			st.windowTarget = max(st.windowTarget, min(MaxStreamWindow, priorSeed))
+			st.warmSeedUsed = true
+			// Temporary contention is not a permanent decision. Keep retry
+			// eligibility so a just-closed warmup Stream cannot suppress the seed
+			// for the lifetime of the new Stream. Real concurrent bulk Streams stay
+			// on the BDP/fair-share controller while they remain active.
+		}
+	}
+	if st.windowTarget > SmallStreamWindow {
+		// Keep a recent high-water seed; a transient contended/small sample must
+		// not erase a proven bulk entitlement before it can be reused. Lower
+		// demand can replace it only after the old seed naturally expires.
+		if s.windowSeedAt.IsZero() || now.Sub(s.windowSeedAt) >= creditIdle || st.windowTarget >= s.windowSeed {
+			s.windowSeed = st.windowTarget
+			s.windowSeedAt = now
+		}
+	}
+
+	remaining = int(st.rxLimit - st.rxRead)
+	predictedExhaustion := false
+	if st.readRateBPS > 0 && remaining > 0 {
+		exhaustion := time.Duration(float64(remaining) / st.readRateBPS * float64(time.Second))
+		predictedExhaustion = exhaustion <= feedbackRTT+20*time.Millisecond
+	}
+	// Keep the advertised limit rolling ahead of DATA. Fifty-percent remaining
+	// credit is the normal refill point; prediction can refresh sooner.
+	if st.rxRead-st.windowSent >= uint64(min(128<<10, max(MaxPayload, st.windowTarget/4))) ||
+		remaining <= st.windowTarget/2 || predictedExhaustion {
 		st.advertiseCreditLocked(now)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"runtime"
@@ -174,7 +175,18 @@ func highBDPCase(t *testing.T, name string, rates []int64, rtts []time.Duration,
 	for i := range rates {
 		addresses[i] = highBDPRelay(t, l.Addr().String(), rates[i], rtts[i]/2)
 	}
-	client, err := DialClientWithScheduler(ctx, addresses, testToken, testSchedulerMode(t))
+	mode := testSchedulerMode(t)
+	var client *Session
+	if mode == SchedulerWeighted {
+		capacities := make([]PathCapacity, len(rates))
+		for i, rate := range rates {
+			mbps := math.Round(float64(rate)*8/1e5) / 10
+			capacities[i] = PathCapacity{DownloadMbps: mbps, UploadMbps: mbps}
+		}
+		client, err = DialClientWithPolicy(ctx, addresses, testToken, mode, capacities)
+	} else {
+		client, err = DialClientWithScheduler(ctx, addresses, testToken, mode)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

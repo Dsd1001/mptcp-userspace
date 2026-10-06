@@ -46,6 +46,7 @@ type Stream struct {
 	txNext, peerConsumed, peerCreditConsumed uint64
 	peerLimit, rxLimit                       uint64
 	windowTarget, readSampleBytes            int
+	readRateBPS                              float64
 	createdAt, lastActivity                  time.Time
 	readSampleAt, lastRead                   time.Time
 	writeFIN, finACK                         bool

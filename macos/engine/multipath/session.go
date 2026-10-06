@@ -61,6 +61,10 @@ type Stats struct {
 	PathStats        []PathStats    `json:"path_stats"`
 	ReceiveCredit    int            `json:"receive_credit_bytes"`
 	WindowTarget     int            `json:"max_stream_window_target"`
+	WindowSeed       int            `json:"window_seed_bytes"`
+	WindowSeedAgeMS  float64        `json:"window_seed_age_ms"`
+	CreditRTTMS      float64        `json:"credit_rtt_ms"`
+	DemandStreams    int            `json:"active_demand_streams"`
 	ReadyFrames      int            `json:"ready_frames"`
 	Resources        ResourceStats  `json:"resources"`
 	Lifecycle        LifecycleStats `json:"lifecycle"`
@@ -99,7 +103,8 @@ type carrier struct {
 	budgetLimited, startupDone        bool
 	sampleBudgetLimited               bool
 	minRTT                            time.Duration
-	lastACK                           time.Time
+	lastACK, lastTimeoutAt            time.Time
+	timeoutStreak                     int
 	rtt                               time.Duration
 	goodput                           float64
 	configuredRateBPS                 float64
@@ -788,6 +793,10 @@ func (s *Session) ackLocked(c *carrier, f frame) error {
 	if p.f.kind == kindData && len(p.f.data) > 0 && p.path == c {
 		now := time.Now()
 		c.scheduler.lastProgressAt = now
+		// Any real DATA progress clears transient timeout suspicion. A healthy
+		// Carrier must not carry a startup-burst penalty into the next epoch.
+		c.timeoutStreak = 0
+		c.lastTimeoutAt = time.Time{}
 		if p.attempts == 1 {
 			c.observeDelivery(now, p, f.offset)
 			s.schedulerReceiptLocked(c, p, now)
@@ -1052,18 +1061,30 @@ func (s *Session) sweepLocked(now time.Time) {
 			rto := max(500*time.Millisecond, 4*c.rtt)
 			if now.Sub(p.sentAt) > rto {
 				c.releaseFlight(p)
-				if p.f.kind == kindData && !now.Before(c.penaltyUntil) {
-					c.goodput = max(65536, c.goodput*.5)
-					c.capacitySamples = [8]float64{}
-					c.capacityIndex = 0
-					c.budget = max(initialPathBudget, c.flightBudget()/2)
-					c.startupDone = true
-					c.errors++
-					c.lastError = "delivery timeout; temporarily deprioritized"
-				}
 				if p.f.kind == kindData {
-					c.penaltyUntil = now.Add(2 * time.Second)
-					s.schedulerFailureLocked(c, "delivery_timeout", now)
+					// One delayed receipt can be reverse-path compression or a
+					// multi-Stream startup burst. Count at most one timeout epoch per
+					// RTO/2 and require two epochs without intervening DATA progress
+					// before removing a Carrier from scheduling.
+					epochGap := max(100*time.Millisecond, rto/2)
+					newEpoch := c.lastTimeoutAt.IsZero() || now.Sub(c.lastTimeoutAt) >= epochGap
+					if newEpoch {
+						c.timeoutStreak++
+						c.lastTimeoutAt = now
+						c.errors++
+						c.lastError = "delivery timeout; retransmitted without path penalty"
+					}
+					if newEpoch && c.timeoutStreak >= 2 && !now.Before(c.penaltyUntil) {
+						c.goodput = max(65536, c.goodput*.5)
+						c.capacitySamples = [8]float64{}
+						c.capacityIndex = 0
+						c.budget = max(initialPathBudget, c.flightBudget()/2)
+						c.startupDone = true
+						c.lastError = "repeated delivery timeout; temporarily deprioritized"
+						c.penaltyUntil = now.Add(2 * time.Second)
+						c.timeoutStreak = 1
+						s.schedulerFailureLocked(c, "delivery_timeout", now)
+					}
 				}
 				p.path = nil
 				p.generation++
@@ -1123,6 +1144,13 @@ func (s *Session) Snapshot() Stats {
 	out := Stats{Connections: len(s.streams), Sent: s.sent, Received: s.received, Retransmits: s.retransmits, WindowWaits: s.windowWaits, ReorderPeak: s.reorderPeak, PendingBytes: s.pendingBytes, BufferedBytes: s.bufferedBytes, ReceiveAllocated: s.receiveAllocated}
 	out.SchedulerStats = s.schedulerSnapshotLocked()
 	out.ReceiveCredit = s.receiveCredit
+	now := time.Now()
+	out.WindowSeed = s.windowSeed
+	if !s.windowSeedAt.IsZero() {
+		out.WindowSeedAgeMS = float64(max(time.Duration(0), now.Sub(s.windowSeedAt))) / float64(time.Millisecond)
+	}
+	out.CreditRTTMS = float64(s.creditRTTLocked()) / float64(time.Millisecond)
+	out.DemandStreams = s.activeDemandStreamsLocked(now)
 	out.Resources = s.resourceSnapshotLocked()
 	out.Lifecycle = s.lifecycleSnapshotLocked()
 	out.ReadyFrames = s.controlReady.Len()

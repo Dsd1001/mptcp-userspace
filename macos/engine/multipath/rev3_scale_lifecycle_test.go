@@ -11,8 +11,8 @@ func TestRev4ScaleConstantsAndNextRefusal(t *testing.T) {
 	if MaxStreams != 2048 || SessionCreditLimit != 128<<20 {
 		t.Fatalf("unexpected scale: streams=%d credit=%d", MaxStreams, SessionCreditLimit)
 	}
-	if BootstrapCreditLimit != 32<<20 || GrowthCreditLimit != 96<<20 {
-		t.Fatalf("unexpected pools: bootstrap=%d growth=%d", BootstrapCreditLimit, GrowthCreditLimit)
+	if StreamWindow != 32<<10 || BootstrapCreditLimit != 64<<20 || GrowthCreditLimit != 64<<20 {
+		t.Fatalf("unexpected RC3 window/pools: initial=%d bootstrap=%d growth=%d", StreamWindow, BootstrapCreditLimit, GrowthCreditLimit)
 	}
 	if MaxDataPending != 8192 || MaxDataPendingBytes != 128<<20 || MaxBuffered != 128<<20 {
 		t.Fatalf("pending/physical limits not separated: pending=%d physical=%d", MaxDataPendingBytes, MaxBuffered)
@@ -31,7 +31,7 @@ func TestRev4ScaleConstantsAndNextRefusal(t *testing.T) {
 		t.Fatalf("%dth refusal not typed: %v", MaxStreams+1, err)
 	}
 	r := s.Snapshot().Resources
-	if r.StreamLimit != 2048 || r.ReceiveCreditLimit != 128<<20 || r.BootstrapLimit != 32<<20 || r.GrowthLimit != 96<<20 {
+	if r.StreamLimit != 2048 || r.ReceiveCreditLimit != 128<<20 || r.BootstrapLimit != 64<<20 || r.GrowthLimit != 64<<20 {
 		t.Fatalf("telemetry limits mismatch: %+v", r)
 	}
 	if r.DataPendingLimit != 8192 || r.DataPendingByteLimit != 128<<20 || r.ReceiveAllocatedLimit != 128<<20 {
