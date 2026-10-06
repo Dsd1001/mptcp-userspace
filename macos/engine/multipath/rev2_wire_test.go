@@ -215,49 +215,59 @@ func TestRev2LateOpenRejectCannotRevokeAcceptedStream(t *testing.T) {
 		t.Fatal("unrelated OPEN id accepted")
 	}
 }
-func TestRev4FairWriterTurnsSkipBlockedStreams(t *testing.T) {
+func TestRC7FairWriterTurnsAtTrueSessionScarcity(t *testing.T) {
 	s, _ := rev2Fixture()
-	n := growthSaturationStreamCount()
-	streams := make([]*Stream, n)
-	base := GrowthCreditLimit / n
-	extra := GrowthCreditLimit % n
-	for i := range streams {
-		growth := base
-		if i < extra {
-			growth++
-		}
-		streams[i] = rev2Stream(s, uint64(2*i+1))
-		commit := growth + StreamWindow
-		if i == 0 {
-			commit -= MaxPayload
-		}
-		streams[i].commitSendCreditLocked(commit)
+	nextID := uint64(1)
+
+	// Put both competing writers at the end of their bootstrap first, so the
+	// existing newcomer bootstrap priority does not bypass scarce-credit FIFO.
+	a := rev2Stream(s, nextID)
+	nextID += 2
+	b := rev2Stream(s, nextID)
+	nextID += 2
+	a.commitSendCreditLocked(StreamWindow)
+	b.commitSendCreditLocked(StreamWindow)
+
+	// Fill actual sender commitment to exactly one DATA frame below the global
+	// Session limit. Nominal 64 MiB growth saturation is no longer scarcity.
+	remaining := SessionCreditLimit - MaxPayload - 2*StreamWindow
+	for remaining > 0 {
+		st := rev2Stream(s, nextID)
+		nextID += 2
+		n := min(MaxStreamWindow, remaining)
+		st.commitSendCreditLocked(n)
+		remaining -= n
 	}
-	a, b := streams[0], streams[1]
+
 	a.writeRemaining, b.writeRemaining = MaxPayload, MaxPayload
 	ea := s.writerReady.PushBack(a)
 	s.writerReady.PushBack(b)
 	if !s.writerTurnLocked(a) || s.writerTurnLocked(b) {
-		t.Fatal("scarce growth did not preserve FIFO")
+		t.Fatal("true Session scarcity did not preserve FIFO")
 	}
+
 	a.commitSendCreditLocked(MaxPayload)
 	if err := a.releaseSendCreditLocked(MaxPayload); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.receiveSessionCreditLocked(frame{kind: kindSessionWindow, offset: MaxPayload, id: SessionCreditLimit + MaxPayload}); err != nil {
+		t.Fatal(err)
+	}
 	s.writerReady.MoveToBack(ea)
 	if !s.writerTurnLocked(b) || s.writerTurnLocked(a) {
-		t.Fatal("bulk retained the next scarce-credit turn")
+		t.Fatal("writer fairness did not rotate after consumed Session credit")
 	}
 	b.peerLimit = b.txNext
 	if !s.writerTurnLocked(a) {
 		t.Fatal("blocked writer stopped an eligible writer")
 	}
-	// A newcomer retains bootstrap even when it is behind growth waiters.
-	small := rev2Stream(s, uint64(2*len(streams)+1))
+
+	// A newcomer still retains bootstrap priority when global credit is scarce.
+	small := rev2Stream(s, nextID)
 	small.writeRemaining = StreamWindow
 	s.writerReady.PushBack(small)
 	if !s.writerTurnLocked(small) {
-		t.Fatal("small flow lost bootstrap to growth fairness")
+		t.Fatal("small flow lost bootstrap priority at true Session scarcity")
 	}
 }
 

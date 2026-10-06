@@ -63,7 +63,7 @@ type productReadConn struct {
 func (c *productReadConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
 func readProductCarrier(c net.Conn) (net.Conn, bool, error) {
-	if err := c.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+	if err := c.SetReadDeadline(time.Now().Add(preHandshakeTimeout)); err != nil {
 		return nil, false, err
 	}
 	var first [4]byte

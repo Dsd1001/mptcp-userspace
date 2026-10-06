@@ -123,8 +123,8 @@ func TestOpenWhileCreditFullPreservesSixCarriers(t *testing.T) {
 	s.receiveGrowth = originalGrowth
 	st.advertiseCreditLocked(time.Now())
 	s.mu.Unlock()
-	if rx != StreamWindow {
-		t.Fatal("explicit stream entitlement was tied to actual DATA usage")
+	if rx != MaxStreamWindow {
+		t.Fatalf("open Stream did not receive optimistic entitlement: %d", rx)
 	}
 	defer st.Close()
 	if _, e = st.Write([]byte("ok")); e != nil {
@@ -258,10 +258,9 @@ func TestBootstrapGuaranteeAtMaxStreamsWithBulkGrowth(t *testing.T) {
 		}
 		st := s.newStreamLocked(id)
 		st.open = true
-		want := s.initialWindowLocked()
 		st.advertiseCreditLocked(time.Now())
-		if st.rxLimit != uint64(want) || want < StreamWindow || want > StandbyStreamWindow || st.peerLimit != 0 {
-			t.Fatalf("bounded initial/bootstrap missing or implicit send grant: got=%d want=%d", st.rxLimit, want)
+		if st.rxLimit != MaxStreamWindow || st.windowTarget != MaxStreamWindow || st.peerLimit != 0 {
+			t.Fatalf("optimistic entitlement or send-credit isolation missing: limit=%d target=%d peer=%d", st.rxLimit, st.windowTarget, st.peerLimit)
 		}
 	}
 	r := s.Snapshot().Resources

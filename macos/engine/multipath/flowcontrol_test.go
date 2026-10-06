@@ -42,45 +42,21 @@ func TestCreditRTTUsesBoundedWeightedLoadRTT(t *testing.T) {
 	}
 }
 
-func TestAdaptiveCreditGrowthShrinkAndMonotonicGrant(t *testing.T) {
+func TestOptimisticCreditRemainsMonotonicAcrossIdle(t *testing.T) {
 	s, st := creditFixture()
 	now := time.Now()
-	st.readSampleAt = now.Add(-100 * time.Millisecond)
-	for i := 0; i < 12; i++ {
-		before := st.windowTarget
-		n := int(st.rxLimit - st.rxRead)
-		oldRead := st.rxRead
-		if err := st.receiveCommitLocked(st.rxRead + uint64(n)); err != nil {
-			t.Fatal(err)
-		}
-		st.rxRead += uint64(n)
-		st.releaseReadCreditLocked(oldRead)
-		st.consumeCreditLocked(n, now)
-		ceiling := s.streamWindowCeilingLocked(st, now)
-		if st.windowTarget > ceiling || st.windowTarget > MaxStreamWindow || s.receiveCredit > SessionCreditLimit || s.receiveCredit < 0 {
-			t.Fatalf("unbounded credit growth: before=%d target=%d ceiling=%d", before, st.windowTarget, ceiling)
-		}
-		now = now.Add(100 * time.Millisecond)
+	if st.windowTarget != MaxStreamWindow || st.rxLimit-st.rxRead != MaxStreamWindow {
+		t.Fatalf("initial optimistic allowance missing: target=%d remaining=%d", st.windowTarget, st.rxLimit-st.rxRead)
 	}
-	if st.windowTarget <= 1<<20 {
-		t.Fatalf("window did not adapt beyond old fixed window: %d", st.windowTarget)
-	}
+
+	consumeWindowFixture(t, st, streamCreditRefreshBatch, now.Add(time.Millisecond))
 	limit := st.rxLimit
 	st.advertiseCreditLocked(now.Add(creditIdle + time.Second))
-	standby := s.standbyWindowLocked()
-	if st.windowTarget != standby || st.rxLimit != limit {
-		t.Fatalf("idle standby retracted already advertised bytes: target=%d standby=%d", st.windowTarget, standby)
+	if st.windowTarget != MaxStreamWindow || st.rxLimit < limit || st.rxLimit-st.rxRead != MaxStreamWindow {
+		t.Fatalf("idle changed optimistic allowance: target=%d limit=%d remaining=%d", st.windowTarget, st.rxLimit, st.rxLimit-st.rxRead)
 	}
-	n := int(st.rxLimit - st.rxRead)
-	oldRead := st.rxRead
-	if err := st.receiveCommitLocked(st.rxRead + uint64(n)); err != nil {
-		t.Fatal(err)
-	}
-	st.rxRead += uint64(n)
-	st.releaseReadCreditLocked(oldRead)
-	st.advertiseCreditLocked(now.Add(creditIdle + time.Second))
-	if st.rxLimit-st.rxRead != uint64(standby) || s.receiveCredit != 0 {
-		t.Fatalf("old grant did not drain into standby target: remaining=%d standby=%d", st.rxLimit-st.rxRead, standby)
+	if s.receiveCredit != 0 || s.receiveAllocated != 0 {
+		t.Fatalf("consumed allowance left actual resources: credit=%d allocated=%d", s.receiveCredit, s.receiveAllocated)
 	}
 	st.Close()
 	if s.receiveCredit != 0 {
@@ -88,39 +64,23 @@ func TestAdaptiveCreditGrowthShrinkAndMonotonicGrant(t *testing.T) {
 	}
 }
 
-func TestSustainedWindowPressureUsesContinuousTarget(t *testing.T) {
+func TestPerStreamWindowDoesNotRateLimitBelowSessionPressure(t *testing.T) {
 	s, st := creditFixture()
 	s.initScheduler(SchedulerWeighted)
 	now := time.Now()
 	defer st.Close()
 
-	// A concurrent bulk Stream blocks speculative warm-seed inheritance. The
-	// tested Stream must still be able to accelerate from real consumption.
-	other := s.newStreamLocked(3)
-	other.open = true
-	other.windowTarget = MaxStreamWindow
-	other.lastRead = now
-	defer other.Close()
-	s.windowSeed = MaxStreamWindow
-	s.windowSeedAt = now
-
-	st.windowTarget = SmallStreamWindow
-	st.advertiseCreditLocked(now)
-	st.demandBytes = SmallStreamWindow
-	st.lastRead = now
-	st.readSampleAt = now
-	before := st.windowTarget
-	consumeWindowFixture(t, st, before/2, now.Add(200*time.Millisecond))
-
-	ceiling := s.streamWindowCeilingLocked(st, now.Add(200*time.Millisecond))
-	if st.windowTarget <= before || st.windowTarget > ceiling {
-		t.Fatalf("sustained pressure did not produce a bounded continuous target: before=%d after=%d ceiling=%d", before, st.windowTarget, ceiling)
+	for i := 0; i < 8; i++ {
+		consumeWindowFixture(t, st, streamCreditRefreshBatch, now.Add(time.Duration(i+1)*time.Millisecond))
+		if st.windowTarget != MaxStreamWindow || st.rxLimit-st.rxRead != MaxStreamWindow {
+			t.Fatalf("per-Stream allowance became a rate gate: target=%d remaining=%d", st.windowTarget, st.rxLimit-st.rxRead)
+		}
 	}
-	if st.windowTarget == 2*before {
-		t.Fatal("continuous autotune regressed to the old fixed 2x tier")
+	if s.receivePressurePercentLocked() != 0 || s.sessionRefillTargetLocked() != SessionCreditLimit {
+		t.Fatalf("low-pressure Session unexpectedly throttled: pressure=%d refill=%d", s.receivePressurePercentLocked(), s.sessionRefillTargetLocked())
 	}
 	if s.receiveCredit > SessionCreditLimit || s.receiveGrowth > GrowthCreditLimit {
-		t.Fatal("pressure ramp escaped Session credit bounds")
+		t.Fatal("optimistic Stream allowance escaped Session hard bounds")
 	}
 }
 

@@ -33,7 +33,9 @@ const (
 var creditWaitNames = [...]string{"none", "stream_window_or_open", "session_window", "bootstrap", "growth", "pending_frames", "pending_bytes", "writer_turn"}
 
 const (
-	sharedWindowBatch = 128 << 10
+	sharedWindowBatch          = 128 << 10
+	sessionRefillStartPressure = 70
+	sessionRefillStopPressure  = 95
 	// Do not allow ordinary growth frames to consume the pending storage
 	// required for one full bootstrap frame per admitted stream.
 	growthPendingFrames = MaxDataPending - MaxStreams
@@ -49,18 +51,39 @@ func (s *Session) initCreditLocked() {
 	s.terminal = make(map[uint64]terminalStream)
 }
 
+func (s *Session) sessionRefillTargetLocked() int {
+	pressure := s.receivePressurePercentLocked()
+	switch {
+	case pressure <= sessionRefillStartPressure:
+		return SessionCreditLimit
+	case pressure >= sessionRefillStopPressure:
+		return 0
+	default:
+		// Linear governor: 128 MiB target headroom at 70% pressure, tapering
+		// continuously to zero additional refill at 95%. Already advertised
+		// absolute credit is never revoked.
+		return SessionCreditLimit * (sessionRefillStopPressure - pressure) /
+			(sessionRefillStopPressure - sessionRefillStartPressure)
+	}
+}
+
 func (s *Session) advertiseSessionCreditLocked(now time.Time, force bool) {
 	fc := &s.credit
 	if s.closed {
 		return
 	}
-	if !force && now.Sub(fc.windowAt) < time.Second && fc.rxConsumed-fc.windowConsumed < sharedWindowBatch && fc.rxLimit-fc.rxCommitted > SessionCreditLimit/2 {
+	target := s.sessionRefillTargetLocked()
+	oldLimit := fc.rxLimit
+	if target > 0 && fc.rxConsumed <= ^uint64(0)-uint64(target) {
+		fc.rxLimit = max(fc.rxLimit, fc.rxConsumed+uint64(target))
+	}
+	limitChanged := fc.rxLimit != oldLimit
+	consumedChanged := fc.rxConsumed-fc.windowConsumed >= sharedWindowBatch
+	if !force && !limitChanged && !consumedChanged && now.Sub(fc.windowAt) < time.Second {
 		return
 	}
-	if fc.rxConsumed > ^uint64(0)-SessionCreditLimit {
-		return // no wrap; exhaustion cannot grant more credit
-	}
-	fc.rxLimit = max(fc.rxLimit, fc.rxConsumed+SessionCreditLimit)
+	// Even when pressure prevents a larger limit, transmit the newer consumed
+	// offset periodically so the peer can retire historic Session commitment.
 	s.controlLocked(nil, frame{kind: kindSessionWindow, offset: fc.rxConsumed, id: fc.rxLimit})
 	fc.windowAt, fc.windowConsumed = now, fc.rxConsumed
 }
@@ -86,6 +109,12 @@ func (s *Session) receiveSessionCreditLocked(f frame) error {
 
 // A high offset proves commitment of the preceding range, even when its DATA
 // is reordered. A repeated/overlapping DATA or final-size declaration adds zero.
+func sharedGrowthRoom(used, growth int) int {
+	bootstrapUsed := used - growth
+	unusedBootstrap := max(0, BootstrapCreditLimit-bootstrapUsed)
+	return max(0, GrowthCreditLimit+unusedBootstrap-growth)
+}
+
 func (st *Stream) receiveCommitLocked(end uint64) error {
 	s, fc := st.s, &st.s.credit
 	if st.hasFIN && end > st.rxFIN {
@@ -104,7 +133,13 @@ func (st *Stream) receiveCommitLocked(end uint64) error {
 	old := int(st.rxHigh - st.rxRead)
 	newGrowth := s.receiveGrowth + growthOf(old+int(delta)) - growthOf(old)
 	newUsed := s.receiveCredit + int(delta)
-	if newGrowth > GrowthCreditLimit || newUsed-newGrowth > BootstrapCreditLimit || newUsed > SessionCreditLimit {
+	bootstrapUsed := newUsed - newGrowth
+	// RC7 keeps the historic 64/64 MiB labels for accounting, but unused
+	// bootstrap share is borrowable by active growth. The only effective DATA
+	// ceiling is the 128 MiB Session hard limit; bootstrap itself can never
+	// exceed 64 MiB because MaxStreams*StreamWindow is bounded.
+	borrowedGrowthLimit := GrowthCreditLimit + max(0, BootstrapCreditLimit-bootstrapUsed)
+	if bootstrapUsed > BootstrapCreditLimit || newGrowth > borrowedGrowthLimit || newUsed > SessionCreditLimit {
 		return flowControlFailure("Session committed-byte accounting exceeds advertised limit")
 	}
 	fc.rxCommitted += delta
@@ -173,7 +208,9 @@ func (st *Stream) writeAllowanceLocked() (int, int) {
 	u := int(st.txNext - st.peerConsumed)
 	baseRoom := max(0, StreamWindow-u)
 	baseRoom = min(baseRoom, max(0, BootstrapCreditLimit-(fc.txUsed-fc.txGrowth)))
-	growthRoom := max(0, GrowthCreditLimit-fc.txGrowth)
+	// RC7 lets growth borrow bootstrap share that is not occupied by actual
+	// DATA. SessionCreditLimit remains the aggregate hard ceiling.
+	growthRoom := sharedGrowthRoom(fc.txUsed, fc.txGrowth)
 	if baseRoom+growthRoom == 0 {
 		if u < StreamWindow {
 			return 0, waitBootstrap
@@ -216,7 +253,7 @@ func (s *Session) writerTurnLocked(st *Stream) bool {
 	}
 	// Do not serialize writers when every waiter can receive a full DATA turn.
 	// DATA dispatch remains per-stream round-robin; scarce credit uses FIFO.
-	if GrowthCreditLimit-s.credit.txGrowth >= count*MaxPayload &&
+	if sharedGrowthRoom(s.credit.txUsed, s.credit.txGrowth) >= count*MaxPayload &&
 		growthPendingFrames-s.dataPendingFrames >= count {
 		// Pending-byte bootstrap reserve is still enforced by
 		// writeAllowanceLocked for every frame. Do not use that static reserve

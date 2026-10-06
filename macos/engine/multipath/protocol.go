@@ -36,6 +36,7 @@ const (
 	MaxBuffered         = 128 << 20
 	frameHeader         = 32
 	helloSize           = 5
+	preHandshakeTimeout = 1500 * time.Millisecond
 	handshakeTimeout    = 5 * time.Second
 	mpx4RecordLimit     = 1 << 24
 	mpx4VarIntMax       = uint64(1<<62 - 1)
@@ -1297,7 +1298,7 @@ func readHandshake(c net.Conn, key []byte) (incomingHandshake, error) {
 	if len(key) != 32 {
 		return out, ErrAuthentication
 	}
-	if err := c.SetDeadline(time.Now().Add(1500 * time.Millisecond)); err != nil {
+	if err := c.SetDeadline(time.Now().Add(preHandshakeTimeout)); err != nil {
 		return out, err
 	}
 	r := bufio.NewReaderSize(c, 64<<10)

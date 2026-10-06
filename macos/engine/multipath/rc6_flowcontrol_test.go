@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestRC6BulkActivationJumpsToSessionHeadroom(t *testing.T) {
+func TestRC7LoadRTTIsTelemetryNotStreamCreditGate(t *testing.T) {
 	s := schedulerFixture()
 	s.ctx = context.Background()
 	s.initScheduler(SchedulerWeighted)
@@ -23,20 +23,16 @@ func TestRC6BulkActivationJumpsToSessionHeadroom(t *testing.T) {
 	defer st.Close()
 	st.advertiseCreditLocked(now)
 
-	if st.initialWindow != StandbyStreamWindow || st.windowTarget != StandbyStreamWindow {
-		t.Fatalf("unexpected RC6 Weighted initial window: initial=%d target=%d", st.initialWindow, st.windowTarget)
+	base, load := s.creditRTTsLocked()
+	if base != 30*time.Millisecond || load != 100*time.Millisecond {
+		t.Fatalf("load RTT telemetry mismatch: base=%v load=%v", base, load)
 	}
-	st.readSampleAt = now.Add(-20 * time.Millisecond)
-	consumeWindowFixture(t, st, StandbyStreamWindow/2, now)
-
-	if !st.bulkActive {
-		t.Fatal("Stream did not enter bulk-active state after consuming half of the initial window")
+	if st.windowTarget != MaxStreamWindow || st.rxLimit != MaxStreamWindow {
+		t.Fatalf("RTT gated optimistic Stream allowance: target=%d limit=%d", st.windowTarget, st.rxLimit)
 	}
-	if st.windowTarget < BulkWindowMaxFloor {
-		t.Fatalf("bulk Stream did not jump to Session headroom: target=%d floor=%d", st.windowTarget, BulkWindowMaxFloor)
-	}
-	if st.windowTarget > MaxStreamWindow {
-		t.Fatalf("bulk target escaped per-Stream cap: %d", st.windowTarget)
+	consumeWindowFixture(t, st, StandbyStreamWindow/2, now.Add(time.Millisecond))
+	if st.windowTarget != MaxStreamWindow {
+		t.Fatalf("consumption reintroduced RTT/BDP Stream gating: %d", st.windowTarget)
 	}
 }
 

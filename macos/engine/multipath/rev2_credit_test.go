@@ -139,21 +139,21 @@ func TestRev4GrowthFullStillPermitsAllRemainingBootstrap(t *testing.T) {
 	}
 }
 
-func TestRev4GrowthAndPendingWaitsAreIndependent(t *testing.T) {
+func TestRC7GrowthBorrowsUnusedBootstrapWhilePendingBoundStaysIndependent(t *testing.T) {
 	s, _ := rev2Fixture()
 	ids := saturateGrowthSend(t, s)
+	if sharedGrowthRoom(s.credit.txUsed, s.credit.txGrowth) <= 0 {
+		t.Fatal("nominal 64 MiB growth pool did not expose borrowable unused bootstrap share")
+	}
 	st := rev2Stream(s, uint64(2*len(ids)+1))
 	st.SetWriteDeadline(time.Now().Add(time.Second))
-	if _, err := st.Write(make([]byte, StreamWindow)); err != nil {
-		t.Fatal(err)
+	if n, err := st.Write(make([]byte, StreamWindow+1)); err != nil || n != StreamWindow+1 {
+		t.Fatalf("borrowed growth was blocked before Session pressure: n=%d err=%v", n, err)
 	}
-	st.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
-	if _, err := st.Write([]byte{1}); !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatal(err)
+	if s.credit.waits[waitGrowth].Count != 0 {
+		t.Fatal("nominal growth split still acted as a hard limit")
 	}
-	if s.credit.waits[waitGrowth].Count == 0 || s.credit.waits[waitStreamWindow].Count != 0 {
-		t.Fatal("did not independently exercise growth blocking")
-	}
+
 	// A different fixture isolates DATA metadata reservation from flow credit.
 	s2, _ := rev2Fixture()
 	s2.dataPendingFrames = growthPendingFrames
@@ -205,18 +205,31 @@ func TestRev2ReceivedOffsetsAreChargedOnce(t *testing.T) {
 	}
 }
 
-func TestRev4ReceivePoolValidationAndNoPartialDebit(t *testing.T) {
+func TestRC7ReceiveValidationUsesGlobalSessionLimitAndNoPartialDebit(t *testing.T) {
 	s, _ := rev2Fixture()
 	bulk := saturateGrowthReceive(t, s)
-	c := rev2Stream(s, uint64(2*len(bulk)+1))
-	if e := c.receiveCommitLocked(StreamWindow); e != nil {
-		t.Fatal("new receiver bootstrap lost", e)
+	nextID := uint64(2*len(bulk) + 1)
+
+	// RC7 may borrow unused bootstrap share beyond the old 64 MiB nominal
+	// growth pool. Fill real DATA all the way to the 128 MiB Session limit.
+	for s.receiveCredit < SessionCreditLimit {
+		st := rev2Stream(s, nextID)
+		nextID += 2
+		n := min(MaxStreamWindow, SessionCreditLimit-s.receiveCredit)
+		if e := st.receiveCommitLocked(uint64(n)); e != nil {
+			t.Fatal("borrowed growth stopped before Session hard limit", e)
+		}
 	}
+	if s.receiveCredit != SessionCreditLimit {
+		t.Fatalf("fixture did not fill Session: %d", s.receiveCredit)
+	}
+
+	c := rev2Stream(s, nextID)
 	before := s.credit.rxCommitted
-	if e := c.receiveCommitLocked(StreamWindow + 1); !errors.Is(e, ErrProtocol) {
+	if e := c.receiveCommitLocked(1); !errors.Is(e, ErrProtocol) {
 		t.Fatal("over-budget DATA accepted", e)
 	}
-	if before != s.credit.rxCommitted || c.rxHigh != StreamWindow {
+	if before != s.credit.rxCommitted || c.rxHigh != 0 {
 		t.Fatal("invalid DATA partly debited")
 	}
 }

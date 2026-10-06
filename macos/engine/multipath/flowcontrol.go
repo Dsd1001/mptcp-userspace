@@ -22,6 +22,7 @@ const (
 	creditIdle               = 5 * time.Second
 	warmHistoryHalfLife      = 30 * time.Second
 	warmHistoryTTL           = 2 * time.Minute
+	streamCreditRefreshBatch = 128 << 10
 	dataDispatchBatch        = MaxStreams / 4 // preserve ~4 scheduler cycles for a full ready-set sweep as capacity scales
 )
 
@@ -270,12 +271,23 @@ func (s *Session) warmSeedUncontendedLocked(st *Stream, now time.Time) bool {
 }
 
 func (st *Stream) consumeCreditLocked(n int, now time.Time) {
-	s := st.s
-	if s.scheduler.configured != SchedulerWeighted && s.activeDemandStreamsLocked(now) <= 1 {
-		st.consumeLegacySingleCreditLocked(n, now)
-		return
+	// RC7 treats Stream WINDOW as optimistic receive entitlement, not as a
+	// per-Stream rate controller. Actual committed DATA remains bounded by the
+	// Session ledger (128 MiB), bootstrap/growth accounting and physical pages.
+	st.demandBytes += uint64(n)
+	st.readSampleBytes += n
+	st.lastRead = now
+	st.windowTarget = MaxStreamWindow
+	if st.demandBytes >= StreamWindow {
+		st.bulkActive = true // telemetry only; no longer gates credit growth.
 	}
-	st.consumeAdaptiveCreditLocked(n, now)
+	// WINDOW.offset is also how the sender learns application consumption and
+	// releases its Session txUsed/txGrowth accounting. Keep this update fairly
+	// frequent even though the per-Stream entitlement itself is a full 16 MiB.
+	if st.rxRead-st.windowSent >= streamCreditRefreshBatch ||
+		st.rxLimit-st.rxRead <= MaxStreamWindow/2 {
+		st.advertiseCreditLocked(now)
+	}
 }
 
 func (st *Stream) consumeLegacySingleCreditLocked(n int, now time.Time) {
@@ -476,20 +488,13 @@ func (st *Stream) advertiseCreditLocked(now time.Time) {
 		st.advertiseConsumedLocked(nil)
 		return
 	}
-	standby := st.s.standbyWindowLocked()
-	if st.rxLimit == 0 && st.rxRead == 0 && st.demandBytes == 0 && st.windowTarget <= StreamWindow {
-		st.initialWindow = st.s.initialWindowLocked()
-		st.windowTarget = st.initialWindow
-	}
-	if now.Sub(st.lastRead) > creditIdle {
-		st.rememberWarmHistoryLocked(st.lastRead)
-		st.windowTarget = standby
-		st.bulkActive = false
-		st.warmHistoryUsed = false
-	}
-	if st.rxRead <= ^uint64(0)-uint64(st.windowTarget) {
-		desired := st.rxRead + uint64(st.windowTarget)
-		st.grantCreditLocked(desired)
+	// RC7 gives every open Stream the full protocol-local allowance. This is an
+	// entitlement only: grantCreditLocked allocates no receive pages and the
+	// shared Session ledger still caps actual unconsumed DATA at 128 MiB.
+	st.initialWindow = MaxStreamWindow
+	st.windowTarget = MaxStreamWindow
+	if st.rxRead <= ^uint64(0)-MaxStreamWindow {
+		st.grantCreditLocked(st.rxRead + MaxStreamWindow)
 	}
 	st.s.controlLocked(nil, frame{kind: kindWindow, stream: st.id, offset: st.rxRead, id: st.rxLimit})
 	st.windowAt = now

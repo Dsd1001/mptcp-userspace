@@ -60,45 +60,27 @@ func TestRC4InitialWindowScalesUnderConnectionStorm(t *testing.T) {
 	}
 }
 
-func TestRC4IdleBurstRestoresPerStreamWarmHistory(t *testing.T) {
+func TestRC7OptimisticAllowanceSupersedesWarmHistoryGate(t *testing.T) {
 	s := schedulerFixture()
 	s.ctx = context.Background()
-	s.initScheduler(SchedulerWeighted)
 	now := time.Now()
 	st := s.newStreamLocked(1)
 	st.open = true
 	defer st.Close()
 
-	st.advertiseCreditLocked(now)
-	if st.windowTarget != StandbyStreamWindow {
-		t.Fatalf("initial standby target=%d want=%d", st.windowTarget, StandbyStreamWindow)
-	}
-
-	const proven = 4 << 20
-	st.windowTarget = proven
-	st.warmTarget = proven
+	st.warmTarget = 4 << 20 // historical state must not cap the RC7 allowance.
 	st.warmAt = now
-	st.lastRead = now
 	st.advertiseCreditLocked(now)
-	if st.rxLimit < proven {
-		t.Fatalf("fixture did not advertise proven target: %d", st.rxLimit)
+	if st.windowTarget != MaxStreamWindow || st.rxLimit != MaxStreamWindow {
+		t.Fatalf("warm history capped optimistic allowance: target=%d limit=%d", st.windowTarget, st.rxLimit)
 	}
 
-	idleAt := now.Add(creditIdle + time.Second)
-	st.advertiseCreditLocked(idleAt)
-	if st.windowTarget != StandbyStreamWindow {
-		t.Fatalf("idle established Stream did not settle at standby: %d", st.windowTarget)
+	consumeWindowFixture(t, st, StreamWindow, now.Add(time.Millisecond))
+	if st.windowTarget != MaxStreamWindow || st.rxLimit-st.rxRead > MaxStreamWindow {
+		t.Fatalf("real consumption changed optimistic allowance semantics: target=%d remaining=%d", st.windowTarget, st.rxLimit-st.rxRead)
 	}
-	if st.warmTarget != proven {
-		t.Fatalf("idle lost warm history: %d", st.warmTarget)
-	}
-
-	consumeWindowFixture(t, st, StreamWindow, idleAt.Add(time.Millisecond))
-	if !st.warmHistoryUsed {
-		t.Fatal("burst did not consume warm-history eligibility")
-	}
-	if st.windowTarget != proven {
-		t.Fatalf("burst did not rapidly restore warm target: got=%d want=%d", st.windowTarget, proven)
+	if s.receiveCredit != 0 || s.receiveGrowth != 0 {
+		t.Fatalf("consumed allowance pinned actual Session credit: credit=%d growth=%d", s.receiveCredit, s.receiveGrowth)
 	}
 }
 
@@ -122,15 +104,14 @@ func TestRC4WarmHistoryDecaysAndExpires(t *testing.T) {
 	}
 }
 
-func TestRC4InitialStandbyDoesNotCommitCredit(t *testing.T) {
+func TestRC7OptimisticInitialAllowanceDoesNotCommitCredit(t *testing.T) {
 	s := schedulerFixture()
 	s.ctx = context.Background()
-	s.initScheduler(SchedulerWeighted)
 	st := s.newStreamLocked(1)
 	st.open = true
 	st.advertiseCreditLocked(time.Now())
-	if st.rxLimit != StandbyStreamWindow {
-		t.Fatalf("unexpected initial standby grant: %d", st.rxLimit)
+	if st.rxLimit != MaxStreamWindow {
+		t.Fatalf("unexpected optimistic initial grant: %d", st.rxLimit)
 	}
 	if s.receiveCredit != 0 || s.receiveGrowth != 0 || s.receiveAllocated != 0 {
 		t.Fatalf("WINDOW entitlement reserved receive resources: credit=%d growth=%d pages=%d", s.receiveCredit, s.receiveGrowth, s.receiveAllocated)

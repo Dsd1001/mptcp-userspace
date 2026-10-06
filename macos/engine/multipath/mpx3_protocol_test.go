@@ -97,11 +97,9 @@ func TestWindowBeforeOpenOKDoesNotCompleteOpen(t *testing.T) {
 	}
 }
 
-func TestKeepaliveNeverInheritsBulkGrowth(t *testing.T) {
+func TestKeepaliveOptimisticEntitlementDoesNotConsumeGrowth(t *testing.T) {
 	s := schedulerFixture()
 	s.ctx = context.Background()
-	s.windowSeed = MaxStreamWindow
-	s.windowSeedAt = time.Now()
 	st := s.newStreamLocked(1)
 	st.open = true
 	defer st.Close()
@@ -116,10 +114,10 @@ func TestKeepaliveNeverInheritsBulkGrowth(t *testing.T) {
 		st.rxRead++
 		st.releaseReadCreditLocked(oldRead)
 		st.consumeCreditLocked(1, now)
-		st.advertiseCreditLocked(now)
-		if st.windowTarget < StreamWindow || st.windowTarget > StandbyStreamWindow || s.receiveGrowth != 0 || int(st.rxLimit-st.rxRead) > StandbyStreamWindow {
-			t.Fatalf("keepalive escaped bounded standby: target=%d remaining=%d growth=%d", st.windowTarget, st.rxLimit-st.rxRead, s.receiveGrowth)
-		}
+	}
+	st.advertiseCreditLocked(now)
+	if st.windowTarget != MaxStreamWindow || st.rxLimit-st.rxRead != MaxStreamWindow || s.receiveGrowth != 0 || s.receiveCredit != 0 {
+		t.Fatalf("keepalive entitlement consumed actual growth: target=%d remaining=%d growth=%d credit=%d", st.windowTarget, st.rxLimit-st.rxRead, s.receiveGrowth, s.receiveCredit)
 	}
 }
 
@@ -144,12 +142,12 @@ func TestBulkCreditNaturallyRebalancesAndIdleNeverRevokes(t *testing.T) {
 	}
 	a.advertiseCreditLocked(now.Add(creditIdle + time.Second))
 	for i, st := range streams {
-		if st.rxLimit != first[i] {
+		if st.rxLimit < first[i] {
 			t.Fatal("idle revoked WINDOW")
 		}
 	}
-	if want := s.standbyWindowLocked(); a.windowTarget != want {
-		t.Fatalf("idle target did not shrink to standby: got=%d want=%d", a.windowTarget, want)
+	if a.windowTarget != MaxStreamWindow {
+		t.Fatalf("idle shrank optimistic Stream target: got=%d", a.windowTarget)
 	}
 	for _, st := range streams {
 		st.discardReceiveLocked()

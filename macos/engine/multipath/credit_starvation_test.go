@@ -68,7 +68,7 @@ func errString(err error) string {
 	return err.Error()
 }
 
-func TestIdleNewStreamsUseBoundedStandbyGrant(t *testing.T) {
+func TestIdleNewStreamsUseOptimisticEntitlement(t *testing.T) {
 	s := schedulerFixture()
 	s.ctx = context.Background()
 	s.windowSeed = MaxStreamWindow
@@ -82,12 +82,11 @@ func TestIdleNewStreamsUseBoundedStandbyGrant(t *testing.T) {
 	b.advertiseCreditLocked(time.Now())
 	defer a.Close()
 	defer b.Close()
-	want := s.standbyWindowLocked()
-	if b.rxLimit != uint64(want) || want > StandbyStreamWindow || b.rxLimit >= MaxStreamWindow {
-		t.Fatalf("idle new stream escaped bounded standby: got=%d want=%d", b.rxLimit, want)
+	if a.rxLimit != MaxStreamWindow || b.rxLimit != MaxStreamWindow {
+		t.Fatalf("idle Stream entitlement mismatch: a=%d b=%d", a.rxLimit, b.rxLimit)
 	}
-	if s.receiveCredit > SessionCreditLimit {
-		t.Fatal("credit ledger exceeded hard bound")
+	if s.receiveCredit != 0 || s.receiveAllocated != 0 {
+		t.Fatalf("idle entitlements consumed actual resources: credit=%d allocated=%d", s.receiveCredit, s.receiveAllocated)
 	}
 }
 

@@ -6,78 +6,79 @@ import (
 	"time"
 )
 
-func seedFixture(t *testing.T) (*Session, *Stream, time.Time) {
-	t.Helper()
+func TestIdleBackgroundEntitlementsRemainAccountingOnly(t *testing.T) {
 	s := schedulerFixture()
 	s.ctx = context.Background()
 	now := time.Now()
-	s.windowSeed = 8 << 20
-	s.windowSeedAt = now
+
+	for i := 0; i < 129; i++ {
+		st := s.newStreamLocked(uint64(1 + 2*i))
+		st.open = true
+		st.advertiseCreditLocked(now)
+		if st.windowTarget != MaxStreamWindow || st.rxLimit != MaxStreamWindow {
+			t.Fatalf("stream %d did not receive full entitlement: target=%d limit=%d", i, st.windowTarget, st.rxLimit)
+		}
+	}
+
+	if s.receiveCredit != 0 || s.receiveGrowth != 0 || s.receiveAllocated != 0 {
+		t.Fatalf("idle background entitlements consumed actual resources: credit=%d growth=%d allocated=%d", s.receiveCredit, s.receiveGrowth, s.receiveAllocated)
+	}
+}
+
+func TestIdleDoesNotShrinkOptimisticEntitlement(t *testing.T) {
+	s := schedulerFixture()
+	s.ctx = context.Background()
+	now := time.Now()
 	st := s.newStreamLocked(1)
 	st.open = true
 	st.advertiseCreditLocked(now)
-	return s, st, now
+
+	before := st.rxLimit
+	st.advertiseCreditLocked(now.Add(10 * time.Second))
+	if st.rxLimit < before || st.windowTarget != MaxStreamWindow {
+		t.Fatalf("idle shrank entitlement: before=%d after=%d target=%d", before, st.rxLimit, st.windowTarget)
+	}
+
+	consumeWindowFixture(t, st, streamCreditRefreshBatch, now.Add(11*time.Second))
+	if st.rxLimit-st.rxRead != MaxStreamWindow {
+		t.Fatalf("post-idle consumption did not restore full rolling allowance: remaining=%d", st.rxLimit-st.rxRead)
+	}
 }
-func TestWarmSeedIdleBackgroundNeedsRealConsumption(t *testing.T) {
-	s, st, now := seedFixture(t)
-	for i := 0; i < 128; i++ {
-		other := s.newStreamLocked(uint64(3 + 2*i))
-		other.open = true
-		other.advertiseCreditLocked(now)
-		consumeWindowFixture(t, other, 1, now.Add(time.Millisecond))
+
+func TestConcurrentDemandStillBoundedBySessionLedger(t *testing.T) {
+	s := schedulerFixture()
+	s.ctx = context.Background()
+	now := time.Now()
+	streams := make([]*Stream, 8)
+	for i := range streams {
+		st := s.newStreamLocked(uint64(1 + 2*i))
+		st.open = true
+		st.advertiseCreditLocked(now)
+		streams[i] = st
 	}
-	if st.windowTarget != StreamWindow || st.rxLimit != StreamWindow {
-		t.Fatalf("single non-Weighted initial stream lost cold bootstrap: target=%d limit=%d", st.windowTarget, st.rxLimit)
-	}
-	consumeWindowFixture(t, st, 1, now.Add(2*time.Millisecond))
-	if st.windowTarget != StreamWindow {
-		t.Fatal("one-byte read inherited bulk seed")
-	}
-	consumeWindowFixture(t, st, StreamWindow-1, now.Add(3*time.Millisecond))
-	if st.windowTarget != 8<<20 {
-		t.Fatalf("idle background disabled uncontended measured seed: %d", st.windowTarget)
-	}
-	if s.receiveAllocated != 0 || s.receiveCredit > SessionCreditLimit || s.receiveGrowth > GrowthCreditLimit {
-		t.Fatal("allocation or credit escaped bounds")
-	}
-	for id, other := range s.streams {
-		if id != 1 && other.windowTarget > StandbyStreamWindow {
-			t.Fatal("background was enlarged beyond standby")
+
+	// Commit real DATA, not merely WINDOW entitlement, until the Session hard
+	// ledger is full. Each Stream has 16 MiB entitlement but the aggregate
+	// unconsumed bytes still cannot exceed 128 MiB.
+	for _, st := range streams {
+		if err := st.receiveCommitLocked(st.rxHigh + MaxStreamWindow); err != nil {
+			t.Fatal(err)
 		}
 	}
-}
-func TestWarmSeedKeepsActiveAndUnreadBulkProtected(t *testing.T) {
-	for _, mode := range []string{"active", "unread", "expired-seed"} {
-		t.Run(mode, func(t *testing.T) {
-			s, st, now := seedFixture(t)
-			other := s.newStreamLocked(3)
-			other.open = true
-			switch mode {
-			case "active":
-				other.windowTarget = MaxStreamWindow
-				other.lastRead = now
-			case "unread":
-				other.rxHigh = StreamWindow
-				other.lastRead = now.Add(-10 * time.Second)
-			case "expired-seed":
-				s.windowSeedAt = now.Add(-10 * time.Second)
-			}
-			consumeWindowFixture(t, st, StreamWindow, now.Add(time.Millisecond))
-			ceiling := s.streamWindowCeilingLocked(st, now.Add(time.Millisecond))
-			if st.windowTarget > ceiling || st.windowTarget >= 8<<20 {
-				t.Fatalf("unsafe warm seed for %s: target=%d ceiling=%d", mode, st.windowTarget, ceiling)
-			}
-		})
+	if s.receiveCredit != SessionCreditLimit {
+		t.Fatalf("actual Session credit=%d want=%d", s.receiveCredit, SessionCreditLimit)
 	}
-}
-func TestWarmSeedConcurrentDemandStillProtected(t *testing.T) {
-	s, st, now := seedFixture(t)
-	other := s.newStreamLocked(3)
-	other.open = true
-	other.advertiseCreditLocked(now)
-	consumeWindowFixture(t, st, StreamWindow, now.Add(time.Millisecond))
-	consumeWindowFixture(t, other, StreamWindow, now.Add(2*time.Millisecond))
-	if st.windowTarget != 8<<20 || other.windowTarget > s.streamWindowCeilingLocked(other, now.Add(2*time.Millisecond)) {
-		t.Fatal("first uncontended bulk did not retain warm seed or competing bulk escaped dynamic ceiling")
+	extra := s.newStreamLocked(99)
+	extra.open = true
+	extra.advertiseCreditLocked(now)
+	if err := extra.receiveCommitLocked(1); err == nil {
+		t.Fatal("Session hard receive-credit limit accepted extra DATA")
+	}
+
+	for _, st := range streams {
+		st.discardReceiveLocked()
+	}
+	if s.receiveCredit != 0 || s.receiveGrowth != 0 {
+		t.Fatalf("actual receive credit did not drain: credit=%d growth=%d", s.receiveCredit, s.receiveGrowth)
 	}
 }
