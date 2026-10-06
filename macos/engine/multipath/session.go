@@ -140,6 +140,8 @@ type Session struct {
 	writerReady                                     list.List
 	scheduler                                       schedulerState
 	udpStarted                                      bool
+	productMux                                      bool // immutable product service binding; absent from MPX/4 wire state
+	uotActiveFlows                                  int
 	ctx                                             context.Context
 	cancel                                          context.CancelFunc
 	id                                              sessionID

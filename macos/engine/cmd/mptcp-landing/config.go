@@ -23,6 +23,7 @@ type Config struct {
 	BackendTCP    string `json:"backend_tcp"`
 	BackendUDP    string `json:"backend_udp"`
 	UDPEnabled    bool   `json:"udp_enabled"`
+	UOTEnabled    bool   `json:"uot_enabled,omitempty"`
 	TransportKey  string `json:"transport_key"`
 	MaxSessions   int    `json:"max_sessions"`
 	SchedulerMode string `json:"scheduler_mode,omitempty"`
@@ -64,6 +65,11 @@ func (c Config) validate() error {
 	}
 	if _, err := multipath.ParseSchedulerMode(c.SchedulerMode); err != nil {
 		return fmt.Errorf("scheduler_mode: %w", err)
+	}
+	if c.UOTEnabled {
+		if err := endpoint(c.BackendUDP, false); err != nil {
+			return fmt.Errorf("UoT backend_udp: %w", err)
+		}
 	}
 	pairs := [][2]string{{c.ListenTCP, c.BackendTCP}}
 	if c.UDPEnabled {
@@ -134,6 +140,11 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 		return err
 	}
 	defer srv.Close()
+	if c.UOTEnabled {
+		if err := srv.EnableUOT(c.BackendUDP); err != nil {
+			return err
+		}
+	}
 	listener, err := multipath.PlainListen(ctx, c.ListenTCP)
 	if err != nil {
 		return err
@@ -155,7 +166,7 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 		return err
 	}
 	mode, _ := multipath.ParseSchedulerMode(c.SchedulerMode)
-	fmt.Fprintf(out, "MPTCP Landing %s：Userspace TCP=%s UDP=%t；Scheduler=%s（本地策略）；不使用内核 MPTCP。\n", multipath.Version, listener.Addr(), c.UDPEnabled, mode)
+	fmt.Fprintf(out, "MPTCP Landing %s：Userspace TCP=%s 原生UDP=%t UoT=%t；Scheduler=%s（本地策略）；不使用内核 MPTCP。\n", multipath.Version, listener.Addr(), c.UDPEnabled, c.UOTEnabled, mode)
 	started := time.Now()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -178,6 +189,7 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 		case <-ticker.C:
 			if statusFile != "" {
 				status := struct {
+					UOTEnabled    bool                     `json:"uot_enabled"`
 					Version       string                   `json:"version"`
 					SourceID      string                   `json:"source_id"`
 					WireProtocol  int                      `json:"wire_protocol"`
@@ -186,7 +198,7 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 					UptimeSeconds int64                    `json:"uptime_seconds"`
 					TCP           []multipath.Stats        `json:"tcp"`
 					UDP           []multipath.UDPStats     `json:"udp,omitempty"`
-				}{Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Admission: srv.AdmissionSnapshot(), Updated: time.Now().UTC().Format(time.RFC3339), UptimeSeconds: int64(time.Since(started).Seconds()), TCP: srv.Snapshots()}
+				}{UOTEnabled: c.UOTEnabled, Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Admission: srv.AdmissionSnapshot(), Updated: time.Now().UTC().Format(time.RFC3339), UptimeSeconds: int64(time.Since(started).Seconds()), TCP: srv.Snapshots()}
 				if udp != nil {
 					status.UDP = udp.Snapshots()
 				}

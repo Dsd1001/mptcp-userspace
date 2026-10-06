@@ -44,6 +44,7 @@ type Config struct {
 	ListenPort    int     `json:"listen_port"`
 	Relays        []Relay `json:"relays"`
 	UDPEnabled    bool    `json:"udp_enabled,omitempty"`
+	UOTEnabled    bool    `json:"uot_enabled,omitempty"`
 	TCPEnabled    *bool   `json:"tcp_enabled,omitempty"`
 	TransportKey  string  `json:"transport_key,omitempty"`
 }
@@ -58,6 +59,7 @@ type BundleProfile struct {
 	SchedulerMode      string  `json:"scheduler_mode,omitempty"`
 	TCPEnabled         bool    `json:"tcp_enabled"`
 	UDPEnabled         bool    `json:"udp_enabled"`
+	UOTEnabled         bool    `json:"uot_enabled,omitempty"`
 	BackgroundResident bool    `json:"background_resident"`
 	TransportKey       string  `json:"transport_key,omitempty"`
 	Relays             []Relay `json:"relays"`
@@ -93,7 +95,7 @@ func (p BundleProfile) config() Config {
 		scheduler = &value
 	}
 	tcp := p.TCPEnabled
-	return Config{SchemaVersion: 3, Mode: p.Mode, ListenPort: p.ListenPort, Relays: p.Relays, UDPEnabled: p.UDPEnabled, TCPEnabled: &tcp, TransportKey: p.TransportKey, SchedulerMode: scheduler}
+	return Config{SchemaVersion: 3, Mode: p.Mode, ListenPort: p.ListenPort, Relays: p.Relays, UDPEnabled: p.UDPEnabled, UOTEnabled: p.UOTEnabled, TCPEnabled: &tcp, TransportKey: p.TransportKey, SchedulerMode: scheduler}
 }
 
 func (c Config) schedulerMode() (multipath.SchedulerMode, error) {
@@ -210,8 +212,14 @@ func (c Config) validateForOS(goos string) error {
 			return err
 		}
 	}
-	if !c.tcpEnabled() && !c.UDPEnabled {
-		return errors.New("TCP 和 UDP 不能同时关闭")
+	if c.UDPEnabled && c.UOTEnabled {
+		return errors.New("原生 UDP 和 UoT 只能选择一个")
+	}
+	if !c.tcpEnabled() && !c.UDPEnabled && !c.UOTEnabled {
+		return errors.New("TCP、原生 UDP 和 UoT 至少启用一个")
+	}
+	if !c.userspace() && c.UOTEnabled {
+		return errors.New("UoT 仅支持 Userspace 模式")
 	}
 	if !c.userspace() && !c.tcpEnabled() {
 		return errors.New("Native 兼容模式需保留 TCP；仅 UDP 可使用 Userspace 模式")
@@ -589,7 +597,7 @@ func preflightBundlePorts(selected []BundleProfile) error {
 			}
 			closers = append(closers, ln)
 		}
-		if cfg.UDPEnabled {
+		if cfg.UDPEnabled || cfg.UOTEnabled {
 			udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: cfg.ListenPort})
 			if err != nil {
 				return fmt.Errorf("Profile %s UDP 端口 %d 不可用: %w", p.DisplayName, cfg.ListenPort, err)

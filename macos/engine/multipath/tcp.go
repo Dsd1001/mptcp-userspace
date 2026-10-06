@@ -25,6 +25,10 @@ func DialClientWithScheduler(ctx context.Context, addresses []string, token stri
 }
 
 func DialClientWithPolicy(ctx context.Context, addresses []string, token string, requested SchedulerMode, capacities []PathCapacity) (*Session, error) {
+	return dialClientPolicy(ctx, addresses, token, requested, capacities, false)
+}
+
+func dialClientPolicy(ctx context.Context, addresses []string, token string, requested SchedulerMode, capacities []PathCapacity, productMux bool) (*Session, error) {
 	mode, modeErr := ParseSchedulerMode(string(requested))
 	if modeErr != nil {
 		return nil, modeErr
@@ -48,11 +52,15 @@ func DialClientWithPolicy(ctx context.Context, addresses []string, token string,
 	if err != nil {
 		return nil, err
 	}
+	if productMux {
+		key = productServiceKey(key)
+	}
 	var id sessionID
 	if _, err = rand.Read(id[:]); err != nil {
 		return nil, err
 	}
 	s := newSession(ctx, id, false, nil, mode)
+	s.productMux = productMux
 	if mode == SchedulerWeighted {
 		for i, capacity := range capacities {
 			s.pathCapacities[uint64(i+1)] = capacity
@@ -62,7 +70,7 @@ func DialClientWithPolicy(ctx context.Context, addresses []string, token string,
 	var last error
 	for i, address := range addresses {
 		s.recordDialAttempt(uint64(i+1), address)
-		c, e := PlainDial(ctx, address)
+		c, e := dialProductCarrier(ctx, address, productMux)
 		if e == nil {
 			stopClose := context.AfterFunc(ctx, func() { c.Close() })
 			capacity := PathCapacity{}
@@ -134,7 +142,7 @@ func (s *Session) maintainCarrier(id uint64, address string, key []byte) {
 		}
 
 		s.recordDialAttempt(id, address)
-		conn, err := PlainDial(s.ctx, address)
+		conn, err := dialProductCarrier(s.ctx, address, s.productMux)
 		if err == nil {
 			var sc *secureConn
 			stopClose := context.AfterFunc(s.ctx, func() { conn.Close() })
@@ -181,6 +189,7 @@ type Server struct {
 	cancel                               context.CancelFunc
 	key                                  []byte
 	backend                              string
+	uotBackend                           *net.UDPAddr
 	maxSessions                          int
 	schedulerDefault                     SchedulerMode
 	mu                                   sync.Mutex
@@ -309,7 +318,15 @@ func (srv *Server) Serve(listener net.Listener) error {
 }
 
 func (srv *Server) attach(c net.Conn) error {
-	h, err := readHandshake(c, srv.key)
+	carrier, productMux, err := readProductCarrier(c)
+	key := srv.key
+	if productMux {
+		key = productServiceKey(key)
+	}
+	var h incomingHandshake
+	if err == nil {
+		h, err = readHandshake(carrier, key)
+	}
 	if err != nil {
 		reason := "io_error"
 		var ne net.Error
@@ -351,6 +368,8 @@ func (srv *Server) attach(c net.Conn) error {
 		}
 	} else if existing == nil {
 		rejectCode = mpx4ErrSessionNotFound
+	} else if existing.productMux != productMux {
+		rejectCode = mpx4ErrSessionConflict
 	} else if err := existing.validateCarrierAdmission(h.carrier, h.generation, h.client.limits()); err != nil {
 		rejectCode = mpx4ErrCarrierConflict
 		var failure *mpx4Failure
@@ -360,7 +379,7 @@ func (srv *Server) attach(c net.Conn) error {
 	}
 	srv.mu.Unlock()
 
-	sc, err := h.finish(srv.key, rejectCode)
+	sc, err := h.finish(key, rejectCode)
 	if err != nil {
 		srv.mu.Lock()
 		switch rejectCode {
@@ -402,11 +421,16 @@ func (srv *Server) attach(c net.Conn) error {
 			// ignorable. Auto may use it as local evidence and select Weighted.
 			serverMode = SchedulerWeighted
 		}
-		s = newSession(srv.ctx, h.id, true, srv.openBackend, serverMode)
+		handler := srv.openBackend
+		if productMux {
+			handler = srv.openProductBackend
+		}
+		s = newSession(srv.ctx, h.id, true, handler, serverMode)
+		s.productMux = productMux
 		srv.sessions[h.id] = s
 		srv.handshakeOutcomeLocked("session_created")
 	} else {
-		if s == nil {
+		if s == nil || s.productMux != productMux {
 			srv.handshakeOutcomeLocked("session_missing")
 			srv.mu.Unlock()
 			sc.Close()

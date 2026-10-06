@@ -260,7 +260,7 @@ func TestConfigValidationPrivacyAndCLI(t *testing.T) {
 func TestInteractiveInstallAndCancel(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "interactive")
 	var out bytes.Buffer
-	input := "1\n" + strings.Repeat("\n", 8) + "yes\n7\n0\n"
+	input := "1\n" + strings.Repeat("\n", 9) + "yes\n7\n0\n"
 	if err := runCLI(context.Background(), []string{"--root", root}, strings.NewReader(input), &out); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestInteractiveInstallAndCancel(t *testing.T) {
 		t.Fatal("interactive install key leaked")
 	}
 	other := filepath.Join(t.TempDir(), "cancelled")
-	input = "1\n" + strings.Repeat("\n", 8) + "no\n0\n"
+	input = "1\n" + strings.Repeat("\n", 9) + "no\n0\n"
 	if err = runCLI(context.Background(), []string{"--root", other}, strings.NewReader(input), io.Discard); err != nil {
 		t.Fatal(err)
 	}

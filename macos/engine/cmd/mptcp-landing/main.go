@@ -63,7 +63,7 @@ func (t *terminal) configure(c Config) (Config, error) {
 	if c.UDPEnabled {
 		defaultUDP = "y"
 	}
-	udp, err := t.line("启用独立 UDP 多路径？y/n", defaultUDP)
+	udp, err := t.line("启用原生 UDP 多路径？y/n", defaultUDP)
 	if err != nil {
 		return c, err
 	}
@@ -71,10 +71,24 @@ func (t *terminal) configure(c Config) (Config, error) {
 		return c, errors.New("请输入 y 或 n")
 	}
 	c.UDPEnabled = udp == "y"
+	defaultUOT := "n"
+	if c.UOTEnabled {
+		defaultUOT = "y"
+	}
+	uot, err := t.line("允许客户端使用 UoT（UDP 经 TCP 传输）？y/n", defaultUOT)
+	if err != nil {
+		return c, err
+	}
+	if uot != "y" && uot != "n" {
+		return c, errors.New("请输入 y 或 n")
+	}
+	c.UOTEnabled = uot == "y"
 	if c.UDPEnabled {
 		if c.ListenUDP, err = t.line("UDP 聚合监听", c.ListenUDP); err != nil {
 			return c, err
 		}
+	}
+	if c.UDPEnabled || c.UOTEnabled {
 		if c.BackendUDP, err = t.line("已有 SS UDP backend", c.BackendUDP); err != nil {
 			return c, err
 		}
@@ -297,7 +311,10 @@ func doctor(ctx context.Context, m *manager, c Config, out io.Writer) error {
 		backend.Close()
 		fmt.Fprintln(out, "TCP backend 接受连接；尚未验证 SS 密码、算法或应用请求。")
 	}
-	if c.UDPEnabled {
+	if c.UOTEnabled {
+		fmt.Fprintln(out, "UoT 已启用：复用 TCP 聚合监听；客户端需选择 UoT，不需要 Relay 的 UDP 转发端口。")
+	}
+	if c.UDPEnabled || c.UOTEnabled {
 		fmt.Fprintln(out, "UDP backend 的可达性不能由 UDP dial 证明；需要通过实际 SS UDP 请求验收。")
 	}
 	if m.active() {
