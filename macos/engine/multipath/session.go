@@ -47,33 +47,35 @@ type PathStats struct {
 
 type Stats struct {
 	SchedulerStats
-	Paths            int            `json:"paths"`
-	Connections      int            `json:"connections"`
-	Sent             uint64         `json:"sent"`
-	Received         uint64         `json:"received"`
-	Retransmits      uint64         `json:"retransmits"`
-	WindowWaits      uint64         `json:"window_waits"`
-	ReorderBytes     int            `json:"reorder_bytes"`
-	ReorderPeak      int            `json:"reorder_peak"`
-	PendingBytes     int            `json:"pending_bytes"`
-	BufferedBytes    int            `json:"buffered_bytes"`
-	ReceiveAllocated int            `json:"receive_allocated_bytes"`
-	PathStats        []PathStats    `json:"path_stats"`
-	ReceiveCredit    int            `json:"receive_credit_bytes"`
-	WindowTarget     int            `json:"max_stream_window_target"`
-	WarmTarget       int            `json:"max_stream_warm_target_bytes"`
-	StandbyWindow    int            `json:"standby_window_bytes"`
-	WindowSeed       int            `json:"window_seed_bytes"`
-	WindowSeedAgeMS  float64        `json:"window_seed_age_ms"`
-	CreditRTTMS      float64        `json:"credit_rtt_ms"`
-	CreditBaseRTTMS  float64        `json:"credit_base_rtt_ms"`
-	DemandStreams    int            `json:"active_demand_streams"`
-	BulkStreams      int            `json:"active_bulk_streams"`
-	BulkWindowFloor  int            `json:"bulk_window_floor_bytes"`
-	ReceivePressure  int            `json:"receive_pressure_percent"`
-	ReadyFrames      int            `json:"ready_frames"`
-	Resources        ResourceStats  `json:"resources"`
-	Lifecycle        LifecycleStats `json:"lifecycle"`
+	Paths               int            `json:"paths"`
+	Connections         int            `json:"connections"`
+	Sent                uint64         `json:"sent"`
+	Received            uint64         `json:"received"`
+	Retransmits         uint64         `json:"retransmits"`
+	WindowWaits         uint64         `json:"window_waits"`
+	ReorderBytes        int            `json:"reorder_bytes"`
+	ReorderPeak         int            `json:"reorder_peak"`
+	PendingBytes        int            `json:"pending_bytes"`
+	BufferedBytes       int            `json:"buffered_bytes"`
+	ReceiveAllocated    int            `json:"receive_allocated_bytes"`
+	PathStats           []PathStats    `json:"path_stats"`
+	ReceiveCredit       int            `json:"receive_credit_bytes"`
+	WindowTarget        int            `json:"max_stream_window_target"`
+	WarmTarget          int            `json:"max_stream_warm_target_bytes"`
+	StandbyWindow       int            `json:"standby_window_bytes"`
+	WindowSeed          int            `json:"window_seed_bytes"`
+	WindowSeedAgeMS     float64        `json:"window_seed_age_ms"`
+	CreditRTTMS         float64        `json:"credit_rtt_ms"`
+	CreditBaseRTTMS     float64        `json:"credit_base_rtt_ms"`
+	DemandStreams       int            `json:"active_demand_streams"`
+	BulkStreams         int            `json:"active_bulk_streams"`
+	BulkWindowFloor     int            `json:"bulk_window_floor_bytes"`
+	ReceivePressure     int            `json:"receive_pressure_percent"`
+	StreamAllowance     int            `json:"stream_allowance_bytes"`
+	SessionRefillTarget int            `json:"session_refill_target_bytes"`
+	ReadyFrames         int            `json:"ready_frames"`
+	Resources           ResourceStats  `json:"resources"`
+	Lifecycle           LifecycleStats `json:"lifecycle"`
 }
 
 type outbound struct {
@@ -1164,6 +1166,8 @@ func (s *Session) Snapshot() Stats {
 	out.BulkStreams = s.activeBulkStreamsLocked(now)
 	out.BulkWindowFloor = s.bulkWindowFloorLocked(now)
 	out.ReceivePressure = s.receivePressurePercentLocked()
+	out.StreamAllowance = MaxStreamWindow
+	out.SessionRefillTarget = s.sessionRefillTargetLocked()
 	out.StandbyWindow = s.standbyWindowLocked()
 	out.Resources = s.resourceSnapshotLocked()
 	out.Lifecycle = s.lifecycleSnapshotLocked()

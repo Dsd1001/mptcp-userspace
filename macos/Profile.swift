@@ -239,6 +239,17 @@ struct EngineEvent: Decodable {
     var pending_bytes: Int?
     var retransmits: UInt64?
     var dropped: UInt64?
+    var window_waits: UInt64?
+    var receive_credit_bytes: Int?
+    var receive_allocated_bytes: Int?
+    var max_stream_window_target: Int?
+    var stream_allowance_bytes: Int?
+    var session_refill_target_bytes: Int?
+    var receive_pressure_percent: Int?
+    var credit_rtt_ms: Double?
+    var credit_base_rtt_ms: Double?
+    var active_demand_streams: Int?
+    var active_bulk_streams: Int?
     var resource_reason: String?
     var resources: ResourceMetric?
     var lifecycle: LifecycleMetric?

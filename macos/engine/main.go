@@ -147,30 +147,37 @@ type Event struct {
 	RetryAfterSeconds    int    `json:"retry_after_seconds,omitempty"`
 	RetryAttempt         int    `json:"retry_attempt,omitempty"`
 	multipath.SchedulerStats
-	Kind             string                    `json:"kind"`
-	Message          string                    `json:"message,omitempty"`
-	Paths            int                       `json:"paths"`
-	Connections      int64                     `json:"connections"`
-	Sent             int64                     `json:"sent"`
-	Received         int64                     `json:"received"`
-	Mode             string                    `json:"mode,omitempty"`
-	PathStats        []multipath.PathStats     `json:"path_stats,omitempty"`
-	ReorderBytes     int                       `json:"reorder_bytes,omitempty"`
-	ReorderPeak      int                       `json:"reorder_peak,omitempty"`
-	PendingBytes     int                       `json:"pending_bytes,omitempty"`
-	Retransmits      uint64                    `json:"retransmits,omitempty"`
-	Dropped          uint64                    `json:"dropped,omitempty"`
-	WindowWaits      uint64                    `json:"window_waits,omitempty"`
-	ReceiveCredit    int                       `json:"receive_credit_bytes,omitempty"`
-	ReceiveAllocated int                       `json:"receive_allocated_bytes,omitempty"`
-	WindowTarget     int                       `json:"max_stream_window_target,omitempty"`
-	ReadyFrames      int                       `json:"ready_frames,omitempty"`
-	Version          string                    `json:"version,omitempty"`
-	SourceID         string                    `json:"source_id,omitempty"`
-	WireProtocol     int                       `json:"wire_protocol,omitempty"`
-	ResourceReason   string                    `json:"resource_reason,omitempty"`
-	Resources        *multipath.ResourceStats  `json:"resources,omitempty"`
-	Lifecycle        *multipath.LifecycleStats `json:"lifecycle,omitempty"`
+	Kind                string                    `json:"kind"`
+	Message             string                    `json:"message,omitempty"`
+	Paths               int                       `json:"paths"`
+	Connections         int64                     `json:"connections"`
+	Sent                int64                     `json:"sent"`
+	Received            int64                     `json:"received"`
+	Mode                string                    `json:"mode,omitempty"`
+	PathStats           []multipath.PathStats     `json:"path_stats,omitempty"`
+	ReorderBytes        int                       `json:"reorder_bytes,omitempty"`
+	ReorderPeak         int                       `json:"reorder_peak,omitempty"`
+	PendingBytes        int                       `json:"pending_bytes,omitempty"`
+	Retransmits         uint64                    `json:"retransmits,omitempty"`
+	Dropped             uint64                    `json:"dropped,omitempty"`
+	WindowWaits         uint64                    `json:"window_waits,omitempty"`
+	ReceiveCredit       int                       `json:"receive_credit_bytes,omitempty"`
+	ReceiveAllocated    int                       `json:"receive_allocated_bytes,omitempty"`
+	WindowTarget        int                       `json:"max_stream_window_target,omitempty"`
+	StreamAllowance     int                       `json:"stream_allowance_bytes,omitempty"`
+	SessionRefillTarget int                       `json:"session_refill_target_bytes,omitempty"`
+	ReceivePressure     int                       `json:"receive_pressure_percent,omitempty"`
+	CreditRTTMS         float64                   `json:"credit_rtt_ms,omitempty"`
+	CreditBaseRTTMS     float64                   `json:"credit_base_rtt_ms,omitempty"`
+	DemandStreams       int                       `json:"active_demand_streams,omitempty"`
+	BulkStreams         int                       `json:"active_bulk_streams,omitempty"`
+	ReadyFrames         int                       `json:"ready_frames,omitempty"`
+	Version             string                    `json:"version,omitempty"`
+	SourceID            string                    `json:"source_id,omitempty"`
+	WireProtocol        int                       `json:"wire_protocol,omitempty"`
+	ResourceReason      string                    `json:"resource_reason,omitempty"`
+	Resources           *multipath.ResourceStats  `json:"resources,omitempty"`
+	Lifecycle           *multipath.LifecycleStats `json:"lifecycle,omitempty"`
 }
 
 var eventMu sync.Mutex
