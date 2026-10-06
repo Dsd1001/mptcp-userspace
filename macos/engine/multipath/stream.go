@@ -28,39 +28,40 @@ type receivePage struct {
 // Stream satisfies net.Conn and TCP-style CloseWrite. Both byte credit and
 // actual allocated receive pages have independent hard bounds.
 type Stream struct {
-	receivedReset                            bool
-	finalConsumedQueued                      bool
-	writeEntry                               *list.Element
-	writeRemaining                           int
-	sendReset, sendResetQueued, sendResetACK bool
-	sendResetCode                            uint64
-	receiveStopped, stopQueued               bool
-	stopCode                                 uint64
-	readErr                                  error
-	s                                        *Session
-	id                                       uint64
-	writeMu                                  sync.Mutex
-	open, closed                             bool
-	err                                      error
-	openID                                   uint64
-	txNext, peerConsumed, peerCreditConsumed uint64
-	peerLimit, rxLimit                       uint64
-	windowTarget, readSampleBytes            int
-	warmTarget                               int
-	readRateBPS                              float64
-	createdAt, lastActivity                  time.Time
-	readSampleAt, lastRead, warmAt           time.Time
-	writeFIN, finACK                         bool
-	rxRead, rxContiguous, rxHigh             uint64
-	hasFIN                                   bool
-	rxFIN                                    uint64
-	pages                                    map[uint64]*receivePage
-	buffered                                 int
-	readDeadline, writeDeadline              time.Time
-	windowAt                                 time.Time
-	windowSent                               uint64
-	demandBytes                              uint64
-	warmSeedUsed, warmHistoryUsed            bool
+	receivedReset                                bool
+	finalConsumedQueued                          bool
+	writeEntry                                   *list.Element
+	writeRemaining                               int
+	sendReset, sendResetQueued, sendResetACK     bool
+	sendResetCode                                uint64
+	receiveStopped, stopQueued                   bool
+	stopCode                                     uint64
+	readErr                                      error
+	s                                            *Session
+	id                                           uint64
+	writeMu                                      sync.Mutex
+	open, closed                                 bool
+	err                                          error
+	openID                                       uint64
+	txNext, peerConsumed, peerCreditConsumed     uint64
+	peerLimit, rxLimit                           uint64
+	windowTarget, initialWindow, readSampleBytes int
+	warmTarget                                   int
+	readRateBPS                                  float64
+	createdAt, lastActivity                      time.Time
+	readSampleAt, lastRead, warmAt               time.Time
+	writeFIN, finACK                             bool
+	rxRead, rxContiguous, rxHigh                 uint64
+	hasFIN                                       bool
+	rxFIN                                        uint64
+	pages                                        map[uint64]*receivePage
+	buffered                                     int
+	readDeadline, writeDeadline                  time.Time
+	windowAt                                     time.Time
+	windowSent                                   uint64
+	demandBytes                                  uint64
+	bulkActive                                   bool
+	warmSeedUsed, warmHistoryUsed                bool
 }
 
 var _ net.Conn = (*Stream)(nil)

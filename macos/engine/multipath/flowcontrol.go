@@ -14,6 +14,8 @@ const (
 	SmallStreamWindow        = 128 << 10
 	StandbyStreamWindow      = 192 << 10
 	InitialWindowShareBudget = 16 << 20
+	BulkWindowFloor          = 512 << 10
+	BulkWindowMaxFloor       = 4 << 20
 	SmallGrowthReserve       = 4 << 20
 	initialPathBudget        = 2 * MaxPayload
 	maxPathBudget            = 8 << 20
@@ -25,32 +27,55 @@ const (
 
 // All methods in this file run with Session.mu held. An absolute grant is
 // irrevocable; windowTarget may shrink but rxLimit can only increase.
-func (s *Session) creditRTTLocked() time.Duration {
+func (s *Session) creditRTTsLocked() (time.Duration, time.Duration) {
 	now := time.Now()
-	weightedNS, totalWeight := 0.0, 0.0
+	weightedBaseNS, weightedLoadNS, totalWeight := 0.0, 0.0, 0.0
 	for _, c := range s.paths {
 		if !c.active || now.Before(c.penaltyUntil) {
 			continue
 		}
-		rtt := c.minRTT
-		if rtt <= 0 {
-			rtt = c.rtt
+		base := c.minRTT
+		if base <= 0 {
+			base = c.rtt
 		}
-		if rtt <= 0 {
+		if base <= 0 {
 			continue
 		}
-		rtt = min(500*time.Millisecond, max(time.Millisecond, rtt))
+		base = min(500*time.Millisecond, max(time.Millisecond, base))
+		load := c.rtt
+		if load <= 0 {
+			load = base
+		}
+		// DATA receipt feedback sees queueing that the empty-link minimum does
+		// not. Use the carrier's already-smoothed RTT under load, but bound the
+		// queue contribution so a transient 500-800 ms spike cannot make Stream
+		// WINDOW autotune run away. The effective RTT can rise to four base RTTs
+		// and normally no higher than 150 ms; a genuinely higher base RTT is
+		// never forced below its propagation floor.
+		loadCap := max(base, min(150*time.Millisecond, 4*base))
+		load = min(loadCap, max(base, load))
 		weight := max(c.goodput, float64(65536))
 		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
 			weight = c.configuredRateBPS
 		}
-		weightedNS += float64(rtt) * weight
+		weightedBaseNS += float64(base) * weight
+		weightedLoadNS += float64(load) * weight
 		totalWeight += weight
 	}
 	if totalWeight == 0 {
-		return 10 * time.Millisecond
+		return 10 * time.Millisecond, 10 * time.Millisecond
 	}
-	return time.Duration(weightedNS / totalWeight)
+	return time.Duration(weightedBaseNS / totalWeight), time.Duration(weightedLoadNS / totalWeight)
+}
+
+func (s *Session) creditRTTLocked() time.Duration {
+	_, load := s.creditRTTsLocked()
+	return load
+}
+
+func (s *Session) baseCreditRTTLocked() time.Duration {
+	base, _ := s.creditRTTsLocked()
+	return base
 }
 
 func (s *Session) legacyCreditRTTLocked() time.Duration {
@@ -101,6 +126,69 @@ func (s *Session) activeDemandStreamsLocked(now time.Time) int {
 	return count
 }
 
+func (s *Session) activeBulkStreamsLocked(now time.Time) int {
+	count := 0
+	for _, st := range s.streams {
+		if st == nil || st.closed || st.receiveStopped || !st.bulkActive || now.Sub(st.lastRead) > creditIdle {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func (s *Session) receivePressurePercentLocked() int {
+	credit := 0
+	if SessionCreditLimit > 0 {
+		credit = 100 * s.receiveCredit / SessionCreditLimit
+	}
+	allocated := 0
+	if MaxBuffered > 0 {
+		allocated = 100 * s.receiveAllocated / MaxBuffered
+	}
+	return min(100, max(credit, allocated))
+}
+
+func (s *Session) bulkWindowFloorLocked(now time.Time) int {
+	active := max(1, s.activeDemandStreamsLocked(now))
+	minFloor := BulkWindowFloor
+	// Below 512 live Streams, real demand is the useful fair-share signal and
+	// keeps the production 50-150 Stream case aggressive. At 512+ live Streams
+	// we are in connection-storm territory: use every admitted receiver in the
+	// denominator and let the floor fall with the existing standby policy.
+	live := s.liveReceiveStreamsLocked()
+	if live >= InitialWindowShareBudget/StreamWindow {
+		active = max(active, live)
+		minFloor = s.standbyWindowLocked()
+	}
+	floor := min(BulkWindowMaxFloor, max(minFloor, GrowthCreditLimit/active))
+	switch pressure := s.receivePressurePercentLocked(); {
+	case pressure >= 90:
+		return 0
+	case pressure >= 75:
+		floor /= 2
+	case pressure >= 50:
+		floor = 3 * floor / 4
+	}
+	return max(StreamWindow, floor)
+}
+
+func (st *Stream) maybeActivateBulkLocked() bool {
+	if st.bulkActive {
+		return false
+	}
+	initial := st.initialWindow
+	if initial <= 0 {
+		initial = st.s.initialWindowLocked()
+	}
+	threshold := max(StreamWindow, initial/2)
+	if st.demandBytes < uint64(threshold) {
+		return false
+	}
+	st.bulkActive = true
+	return true
+}
+
 func (s *Session) streamFairCeilingLocked(now time.Time) int {
 	active := max(1, s.activeDemandStreamsLocked(now))
 	return min(MaxStreamWindow, s.standbyWindowLocked()+2*GrowthCreditLimit/active)
@@ -112,7 +200,7 @@ func (s *Session) streamWindowCeilingLocked(st *Stream, now time.Time) int {
 	// high-fanout workload cannot let every Stream race straight to 16 MiB.
 	fair := s.streamFairCeilingLocked(now)
 	demand := s.standbyWindowLocked()
-	if st.demandBytes >= uint64(MaxStreamWindow/8) {
+	if st.bulkActive || st.demandBytes >= uint64(MaxStreamWindow/8) {
 		demand = MaxStreamWindow
 	} else {
 		demand = max(demand, int(8*st.demandBytes))
@@ -254,6 +342,7 @@ func (st *Stream) consumeAdaptiveCreditLocked(n int, now time.Time) {
 		st.rememberWarmHistoryLocked(st.lastRead)
 		st.demandBytes = 0
 		st.windowTarget = s.standbyWindowLocked()
+		st.bulkActive = false
 		st.warmSeedUsed = false
 		st.warmHistoryUsed = false
 		st.readSampleBytes = 0
@@ -264,6 +353,7 @@ func (st *Stream) consumeAdaptiveCreditLocked(n int, now time.Time) {
 	st.readSampleBytes += n
 	st.lastRead = now
 	st.restoreWarmHistoryLocked(now)
+	bulkActivated := st.maybeActivateBulkLocked()
 	priorSeed, priorSeedAt := s.windowSeed, s.windowSeedAt
 
 	feedbackRTT := s.creditRTTLocked()
@@ -275,7 +365,7 @@ func (st *Stream) consumeAdaptiveCreditLocked(n int, now time.Time) {
 	// consumption is the normal trigger; a predicted exhaustion before the next
 	// feedback opportunity can trigger even earlier. This removes the old fixed
 	// 32->64->128->512 KiB staircase while retaining real-consumption evidence.
-	evaluate := elapsed >= max(10*time.Millisecond, feedbackRTT/4) ||
+	evaluate := bulkActivated || elapsed >= max(10*time.Millisecond, feedbackRTT/4) ||
 		st.readSampleBytes >= max(MaxPayload/2, st.windowTarget/2) || pressure
 	if elapsed > 0 && st.readSampleBytes > 0 {
 		sampleRate := float64(st.readSampleBytes) / max(elapsed.Seconds(), .001)
@@ -296,9 +386,9 @@ func (st *Stream) consumeAdaptiveCreditLocked(n int, now time.Time) {
 	if evaluate {
 		desired := StreamWindow
 		if st.readRateBPS > 0 {
-			// Two base-feedback RTTs plus 20 ms absorbs WINDOW transmission,
-			// scheduling and ordinary jitter without learning from queue-inflated
-			// RTT. The target is continuous, not a discrete window tier.
+			// Two bounded load-aware feedback RTTs plus 20 ms absorbs WINDOW
+			// transmission, scheduling and sustained queueing without reacting to
+			// extreme transient RTT spikes. The target is continuous, not a tier.
 			horizon := 2*feedbackRTT + 20*time.Millisecond
 			desired = int(st.readRateBPS*horizon.Seconds()) + 2*MaxPayload
 			if pressure || predicted {
@@ -310,8 +400,21 @@ func (st *Stream) consumeAdaptiveCreditLocked(n int, now time.Time) {
 				desired = max(desired, pressureFloor)
 			}
 		}
+		if st.bulkActive {
+			// Once real consumption proves a sustained bulk Stream, flow control
+			// should provide headroom rather than become a second congestion
+			// controller. Use a pressure-scaled Session fair-share floor; Carrier
+			// TCP congestion control, pacing and the MPX scheduler still determine
+			// the actual sending rate.
+			desired = max(desired, s.bulkWindowFloorLocked(now))
+		}
 		ceiling := s.streamWindowCeilingLocked(st, now)
 		desired = min(ceiling, max(StreamWindow, desired))
+		if s.receivePressurePercentLocked() >= 90 && desired > st.windowTarget {
+			// At hard memory pressure, stop issuing additional per-Stream
+			// headroom. Already advertised absolute credit is never revoked.
+			desired = st.windowTarget
+		}
 		if desired > st.windowTarget {
 			st.windowTarget = desired
 		} else {
@@ -375,11 +478,13 @@ func (st *Stream) advertiseCreditLocked(now time.Time) {
 	}
 	standby := st.s.standbyWindowLocked()
 	if st.rxLimit == 0 && st.rxRead == 0 && st.demandBytes == 0 && st.windowTarget <= StreamWindow {
-		st.windowTarget = st.s.initialWindowLocked()
+		st.initialWindow = st.s.initialWindowLocked()
+		st.windowTarget = st.initialWindow
 	}
 	if now.Sub(st.lastRead) > creditIdle {
 		st.rememberWarmHistoryLocked(st.lastRead)
 		st.windowTarget = standby
+		st.bulkActive = false
 		st.warmHistoryUsed = false
 	}
 	if st.rxRead <= ^uint64(0)-uint64(st.windowTarget) {

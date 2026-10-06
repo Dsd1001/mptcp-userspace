@@ -66,7 +66,11 @@ type Stats struct {
 	WindowSeed       int            `json:"window_seed_bytes"`
 	WindowSeedAgeMS  float64        `json:"window_seed_age_ms"`
 	CreditRTTMS      float64        `json:"credit_rtt_ms"`
+	CreditBaseRTTMS  float64        `json:"credit_base_rtt_ms"`
 	DemandStreams    int            `json:"active_demand_streams"`
+	BulkStreams      int            `json:"active_bulk_streams"`
+	BulkWindowFloor  int            `json:"bulk_window_floor_bytes"`
+	ReceivePressure  int            `json:"receive_pressure_percent"`
 	ReadyFrames      int            `json:"ready_frames"`
 	Resources        ResourceStats  `json:"resources"`
 	Lifecycle        LifecycleStats `json:"lifecycle"`
@@ -1151,8 +1155,13 @@ func (s *Session) Snapshot() Stats {
 	if !s.windowSeedAt.IsZero() {
 		out.WindowSeedAgeMS = float64(max(time.Duration(0), now.Sub(s.windowSeedAt))) / float64(time.Millisecond)
 	}
-	out.CreditRTTMS = float64(s.creditRTTLocked()) / float64(time.Millisecond)
+	baseCreditRTT, loadCreditRTT := s.creditRTTsLocked()
+	out.CreditBaseRTTMS = float64(baseCreditRTT) / float64(time.Millisecond)
+	out.CreditRTTMS = float64(loadCreditRTT) / float64(time.Millisecond)
 	out.DemandStreams = s.activeDemandStreamsLocked(now)
+	out.BulkStreams = s.activeBulkStreamsLocked(now)
+	out.BulkWindowFloor = s.bulkWindowFloorLocked(now)
+	out.ReceivePressure = s.receivePressurePercentLocked()
 	out.StandbyWindow = s.standbyWindowLocked()
 	out.Resources = s.resourceSnapshotLocked()
 	out.Lifecycle = s.lifecycleSnapshotLocked()

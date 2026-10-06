@@ -18,20 +18,27 @@ func creditFixture() (*Session, *Stream) {
 	return s, st
 }
 
-func TestCreditRTTUsesWeightedBaseRTT(t *testing.T) {
+func TestCreditRTTUsesBoundedWeightedLoadRTT(t *testing.T) {
 	s := schedulerFixture()
 	s.scheduler.configured = SchedulerWeighted
 	fast := schedulerPath(1)
 	fast.minRTT = 20 * time.Millisecond
-	fast.rtt = 400 * time.Millisecond // queue-inflated RTT must not drive credit
+	fast.rtt = 400 * time.Millisecond // capped at 4x base = 80 ms
 	fast.configuredRateBPS = 30e6
 	slow := schedulerPath(2)
 	slow.minRTT = 100 * time.Millisecond
-	slow.rtt = 500 * time.Millisecond
+	slow.rtt = 500 * time.Millisecond // capped at 150 ms absolute ceiling
 	slow.configuredRateBPS = 10e6
 	s.paths[1], s.paths[2] = fast, slow
-	if got := s.creditRTTLocked(); got != 40*time.Millisecond {
-		t.Fatalf("weighted base RTT mismatch: got=%v want=40ms", got)
+	base, load := s.creditRTTsLocked()
+	if base != 40*time.Millisecond {
+		t.Fatalf("weighted base RTT mismatch: got=%v want=40ms", base)
+	}
+	if load != 97500*time.Microsecond {
+		t.Fatalf("weighted bounded load RTT mismatch: got=%v want=97.5ms", load)
+	}
+	if got := s.creditRTTLocked(); got != load {
+		t.Fatalf("credit RTT did not use bounded load estimate: got=%v want=%v", got, load)
 	}
 }
 
