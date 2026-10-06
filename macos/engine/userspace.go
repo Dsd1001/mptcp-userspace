@@ -17,6 +17,13 @@ import (
 // backend TCP sockets in this path explicitly disable native MPTCP.
 const userspaceDesiredNOFILE = 16384
 
+type userspaceUDPClient interface {
+	Done() <-chan struct{}
+	Err() error
+	Close() error
+	Snapshot() multipath.UDPStats
+}
+
 func ensureUserspaceFileLimit() error {
 	var lim syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
@@ -81,7 +88,11 @@ func runUserspace(parent context.Context, c Config) (runErr error) {
 			return err
 		}
 	}
-	session, err := multipath.DialClientWithPolicy(ctx, addresses, c.TransportKey, mode, capacities)
+	dial := multipath.DialClientWithPolicy
+	if c.UOTEnabled {
+		dial = multipath.DialClientWithUOTPolicy
+	}
+	session, err := dial(ctx, addresses, c.TransportKey, mode, capacities)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -99,16 +110,18 @@ func runUserspace(parent context.Context, c Config) (runErr error) {
 	}()
 	// Startup can succeed with one surviving path. Remaining paths reconnect;
 	// telemetry distinguishes partial availability from aggregation success.
-	var udp *multipath.UDPClient
+	var udp userspaceUDPClient
 	var udpDone <-chan struct{}
 	if c.UDPEnabled {
-		udp, err = multipath.StartClientUDP(session, c.TransportKey, address, addresses)
+		nativeUDP, startErr := multipath.StartClientUDP(session, c.TransportKey, address, addresses)
+		err = startErr
 		if err != nil {
 			return fmt.Errorf("UDP 入口启动失败: %w", err)
 		}
+		udp = nativeUDP
 		defer udp.Close()
 		probe, stop := context.WithTimeout(ctx, 6*time.Second)
-		err = udp.WaitPaths(probe, 1)
+		err = nativeUDP.WaitPaths(probe, 1)
 		stop()
 		if err != nil {
 			if ctx.Err() != nil {
@@ -118,6 +131,17 @@ func runUserspace(parent context.Context, c Config) (runErr error) {
 		}
 		udpDone = udp.Done()
 		emit(Event{Kind: "udp_listening", Mode: c.Mode, Message: "UDP 独立数据报入口 " + address})
+	} else if c.UOTEnabled {
+		udp, err = multipath.StartClientUOT(session, address)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("UoT 入口启动失败；需要支持并启用 UoT 的 Landing: %w", err)
+		}
+		defer udp.Close()
+		udpDone = udp.Done()
+		emit(Event{Kind: "udp_listening", Mode: c.Mode, Message: "UoT 数据报入口 " + address + "；通过 TCP Carrier 传输"})
 	}
 	emitStats := func() {
 		s := session.Snapshot()
@@ -239,7 +263,7 @@ func serveUserspace(parent context.Context, listener net.Listener, session *mult
 			}
 			// OPEN consumes only identity/control resources. The reliable OPEN
 			// lifetime and backend dial remain bounded; credit waits occur in Write.
-			stream, err := session.Open(ctx)
+			stream, err := session.OpenTCP(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
 					emit(Event{Kind: "warning", Mode: "userspace_multipath", Message: err.Error(), ResourceReason: multipath.ResourceReason(err)})

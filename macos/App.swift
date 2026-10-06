@@ -28,6 +28,9 @@ struct ProfileDiagnosticState {
     var pendingBytes = 0
     var retransmits: UInt64 = 0
     var udpDropped: UInt64 = 0
+    var udpConnections = 0
+    var udpSent: Int64 = 0
+    var udpReceived: Int64 = 0
     var resources: ResourceMetric?
     var lifecycle: LifecycleMetric?
     var tcpPaths: [PathMetric] = []
@@ -77,6 +80,42 @@ final class Model: ObservableObject {
     var provisioningManaged: Bool { remoteConfigurationSelected && !provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     @Published var tcpEnabled = true
     @Published var udpEnabled = true
+    @Published var uotEnabled = false
+    var activeDatagramProfiles: [ProvisioningProfileChoice] {
+        provisioningProfiles.filter { provisioningSelectedProfileIDs.contains($0.id) }
+    }
+    var datagramEnabled: Bool {
+        remoteConfigurationSelected && provisioningIsBundle
+            ? activeDatagramProfiles.contains { $0.udpEnabled || $0.uotEnabled }
+            : udpEnabled || uotEnabled
+    }
+    var hasUOT: Bool {
+        remoteConfigurationSelected && provisioningIsBundle
+            ? activeDatagramProfiles.contains { $0.uotEnabled } : uotEnabled
+    }
+    var datagramLabel: String {
+        if remoteConfigurationSelected && provisioningIsBundle {
+            let native = activeDatagramProfiles.contains { $0.udpEnabled }
+            return hasUOT ? (native ? "UDP / UoT" : "UoT") : "UDP"
+        }
+        return uotEnabled ? "UoT" : "UDP"
+    }
+    var listeningStatus: String {
+        userspace ? (tcpEnabled ? "Userspace 入口已启动" : "Userspace \(datagramLabel) 入口已启动") : "Native 入口已启动"
+    }
+    func setNativeUDPEnabled(_ enabled: Bool) {
+        guard !configurationLocked else { return }
+        udpEnabled = enabled
+        if enabled { uotEnabled = false }
+    }
+    func setUOTEnabled(_ enabled: Bool) {
+        guard !configurationLocked, userspace || !enabled else { return }
+        uotEnabled = enabled
+        if enabled { udpEnabled = false }
+    }
+    func applyModeSelection(_ value: String) {
+        if value == "native_mptcp" { tcpEnabled = true; uotEnabled = false }
+    }
     @Published var tcpPaths: [PathMetric] = []
     @Published var udpPaths: [PathMetric] = []
     @Published var udpHealthyPaths = 0
@@ -339,6 +378,7 @@ final class Model: ObservableObject {
         guard !configurationLocked else { return }
         relays = p.relays; listenPort = String(p.listen_port)
         udpEnabled = p.udp_enabled ?? false
+        uotEnabled = p.uot_enabled ?? false
         tcpEnabled = p.tcp_enabled ?? true
         mode = p.userspace ? "userspace_multipath" : "native_mptcp"
         schedulerMode = p.userspace ? p.schedulerMode : "auto"
@@ -386,6 +426,7 @@ final class Model: ObservableObject {
         relays = provisioned.relays
         listenPort = String(provisioned.listen_port)
         udpEnabled = provisioned.udp_enabled ?? false
+        uotEnabled = provisioned.uot_enabled ?? false
         tcpEnabled = provisioned.tcp_enabled ?? true
         mode = provisioned.userspace ? "userspace_multipath" : "native_mptcp"
         schedulerMode = provisioned.userspace ? provisioned.schedulerMode : "auto"
@@ -398,7 +439,7 @@ final class Model: ObservableObject {
         provisioningSelectedProfileIDs = ids
         provisioningProfiles = bundle.profiles.compactMap { payload in
             guard let id = payload.profile_id else { return nil }
-            return ProvisioningProfileChoice(id: id, name: payload.display_name ?? id, listenPort: payload.listen_port, relayCount: payload.relays.count, mode: payload.mode, backgroundResident: payload.background_resident ?? false)
+            return ProvisioningProfileChoice(id: id, name: payload.display_name ?? id, listenPort: payload.listen_port, relayCount: payload.relays.count, mode: payload.mode, backgroundResident: payload.background_resident ?? false, udpEnabled: payload.udp_enabled, uotEnabled: payload.uot_enabled ?? false)
         }
         let resident = selected.contains { $0.background_resident ?? false }
         if updateResident && resident != backgroundResident { setBackgroundResident(resident) }
@@ -829,9 +870,9 @@ final class Model: ObservableObject {
     }
 
     func profile() throws -> Profile {
-        guard let port = Int(listenPort) else {throw Message("请输入本地 TCP 端口")}
+        guard let port = Int(listenPort) else {throw Message("请输入本地入口端口")}
         let cleaned = relays.map {RelayRow(host:$0.host.trimmingCharacters(in:.whitespacesAndNewlines),port:$0.port,download_mbps:$0.download_mbps,upload_mbps:$0.upload_mbps)}
-        let p = Profile(schema_version:3,mode:mode,listen_port:port,relays:cleaned,udp_enabled:udpEnabled,tcp_enabled:tcpEnabled,transport_key:userspace ? transportKey.trimmingCharacters(in:.whitespacesAndNewlines) : nil,scheduler_mode:userspace ? schedulerMode : nil)
+        let p = Profile(schema_version:3,mode:mode,listen_port:port,relays:cleaned,udp_enabled:udpEnabled,tcp_enabled:tcpEnabled,transport_key:userspace ? transportKey.trimmingCharacters(in:.whitespacesAndNewlines) : nil,scheduler_mode:userspace ? schedulerMode : nil,uot_enabled:uotEnabled)
         try p.validate()
         return p
     }
@@ -1030,6 +1071,9 @@ final class Model: ObservableObject {
             if let current = event.path_stats { diagnostic.tcpPaths = current; provisioningTCPPaths[profileID] = current }
         }
         if event.kind == "udp_stats" {
+            diagnostic.udpConnections = event.connections ?? diagnostic.udpConnections
+            diagnostic.udpSent = event.sent ?? diagnostic.udpSent
+            diagnostic.udpReceived = event.received ?? diagnostic.udpReceived
             diagnostic.udpDropped = event.dropped ?? diagnostic.udpDropped
             if let current = event.path_stats { diagnostic.udpPaths = current; provisioningUDPPaths[profileID] = current }
         }
@@ -1096,7 +1140,7 @@ final class Model: ObservableObject {
             case "listening":
                 running = true; busy = false
                 recoveryAttempt = 0; needsRecovery = false; problem = nil
-                status = userspace ? (tcpEnabled ? "Userspace 入口已启动" : "Userspace UDP 入口已启动") : "Native 入口已启动"
+                status = listeningStatus
             case "error": problem = remoteConfigurationSelected ? customerFacingRemoteError(event.message) : event.message; status = "连接失败"
             case "connecting": status = event.message ?? "连接中"
             case "ready": status = event.message ?? "环境可用"
@@ -1406,7 +1450,7 @@ struct DesktopView: View {
                     Picker("传输模式", selection: $model.mode) {
                         Text("Userspace Multipath").tag("userspace_multipath")
                         Text("Native MPTCP（兼容）").tag("native_mptcp")
-                    }.pickerStyle(.segmented).onChange(of: model.mode) { value in if value == "native_mptcp" { model.tcpEnabled = true } }.disabled(locked)
+                    }.pickerStyle(.segmented).onChange(of: model.mode) { model.applyModeSelection($0) }.disabled(locked)
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 5) { Text("本地入口").font(.system(size: 10)).foregroundColor(.secondary); HStack { Text("127.0.0.1").foregroundColor(.secondary); TextField("端口", text: $model.listenPort).frame(width: 76); Button { copy("127.0.0.1:\(model.listenPort)") } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless) } }
                         if model.userspace { VStack(alignment: .leading, spacing: 5) { Text("Scheduler").font(.system(size: 10)).foregroundColor(.secondary); Picker("Scheduler", selection: $model.schedulerMode) { ForEach(SchedulerPolicy.allCases) { Text($0.title).tag($0.rawValue) } }.labelsHidden().frame(width: 140).accessibilityIdentifier("scheduler-policy") } }
@@ -1414,8 +1458,13 @@ struct DesktopView: View {
                     }
                     HStack(spacing: 18) {
                         Toggle("TCP", isOn: $model.tcpEnabled).toggleStyle(.switch).disabled(!model.userspace || locked)
-                        Toggle(model.userspace ? "UDP 独立多路径" : "UDP 逐包轮询", isOn: $model.udpEnabled).toggleStyle(.switch).disabled(locked)
-                        if model.userspace { Text(model.schedulerExplanation).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2) }
+                        Toggle(model.userspace ? "原生 UDP" : "UDP 逐包轮询", isOn: Binding(get: { model.udpEnabled }, set: { model.setNativeUDPEnabled($0) })).toggleStyle(.switch).disabled(locked)
+                        Toggle("UoT", isOn: Binding(get: { model.uotEnabled }, set: { model.setUOTEnabled($0) })).toggleStyle(.switch).disabled(!model.userspace || locked)
+                    }
+                    if model.userspace {
+                        Text(model.uotEnabled ? "UoT 经 TCP 多路径转发 UDP；需 Landing 支持，与原生 UDP 互斥。" : "原生 UDP 与 UoT 二选一；TCP 可独立开启。")
+                            .font(.system(size: 10)).foregroundColor(.secondary)
+                        Text(model.schedulerExplanation).font(.system(size: 10)).foregroundColor(.secondary)
                     }
                     if model.userspace {
                         SecureField("Transport Key（64 位十六进制）", text: $model.transportKey).textFieldStyle(.roundedBorder).disabled(locked)
@@ -1486,8 +1535,15 @@ struct DesktopView: View {
                 DeskMetricTile(label: "上传", value: Self.bytes(model.sent), detail: "累计发送")
                 DeskMetricTile(label: "下载", value: Self.bytes(model.received), detail: "累计接收")
             }
-            if model.udpEnabled {
-                HStack(spacing: 9) { DeskMetricTile(label: "UDP 路径", value: model.userspace ? "\(model.udpHealthyPaths) / \(model.udpConnections)" : String(model.udpConnections), detail: "健康 / 映射"); DeskMetricTile(label: "UDP 上传", value: Self.bytes(model.udpSent), detail: "累计发送"); DeskMetricTile(label: "UDP 下载", value: Self.bytes(model.udpReceived), detail: "累计接收"); Spacer() }
+            if model.datagramEnabled {
+                HStack(spacing: 9) {
+                    DeskMetricTile(label: "\(model.datagramLabel) 映射", value: String(model.udpConnections), detail: "活跃映射")
+                    DeskMetricTile(label: "\(model.datagramLabel) 上传", value: Self.bytes(model.udpSent), detail: "UDP 载荷")
+                    DeskMetricTile(label: "\(model.datagramLabel) 下载", value: Self.bytes(model.udpReceived), detail: "UDP 载荷")
+                    Spacer()
+                }
+                if model.hasUOT { Text("UoT 共用 TCP Carrier；UoT 载荷已计入上方上传、下载流量。").font(.system(size: 10)).foregroundColor(.secondary) }
+                else if model.userspace { Text("原生 UDP 健康路径：\(model.udpHealthyPaths)").font(.system(size: 10)).foregroundColor(.secondary) }
             }
         }
     }
@@ -1504,7 +1560,7 @@ struct DesktopView: View {
                 pathOverview(model.tcpPaths)
                 HStack(spacing: 9) { DeskMetricTile(label: "当前重排", value: Self.bytes(model.reorderBytes), detail: "正在等待有序数据"); DeskMetricTile(label: "重排峰值", value: Self.bytes(model.reorderPeak), detail: "会话峰值"); DeskMetricTile(label: "等待确认", value: Self.bytes(model.pendingBytes), detail: "可靠数据"); Spacer() }
                 resourcePanels(model.resources, streamExpanded: $model.localStreamResourceExpanded, windowExpanded: $model.localWindowResourceExpanded)
-                pathSection("TCP 路径", model.tcpPaths, hideEndpoint: model.remoteConfigurationSelected)
+                pathSection(model.uotEnabled ? "TCP / UoT 共用路径" : "TCP 路径", model.tcpPaths, hideEndpoint: model.remoteConfigurationSelected)
                 if model.udpEnabled { pathSection("UDP 路径", model.udpPaths, hideEndpoint: model.remoteConfigurationSelected) }
             } else {
                 DeskCard { Label("Native MPTCP 路径统计由系统提供。", systemImage: "info.circle").font(.system(size: 12)).foregroundColor(.secondary) }
@@ -1522,8 +1578,16 @@ struct DesktopView: View {
                 HStack(spacing: 9) { DeskMetricTile(label: "Carrier", value: String(diagnostic.paths), detail: "在线路径"); DeskMetricTile(label: "连接", value: String(diagnostic.connections), detail: "逻辑连接"); DeskMetricTile(label: "上传", value: Self.bytes(diagnostic.sent), detail: "累计"); DeskMetricTile(label: "下载", value: Self.bytes(diagnostic.received), detail: "累计") }
                 HStack(spacing: 9) { DeskMetricTile(label: "重排", value: Self.bytes(diagnostic.reorderBytes), detail: "当前"); DeskMetricTile(label: "峰值", value: Self.bytes(diagnostic.reorderPeak), detail: "历史峰值"); DeskMetricTile(label: "重传", value: String(diagnostic.retransmits), detail: "TCP"); Spacer() }
                 resourcePanels(diagnostic.resources, streamExpanded: profileStreamBinding(choice.id), windowExpanded: profileWindowBinding(choice.id))
-                pathSection("TCP 路径", diagnostic.tcpPaths, hideEndpoint: true)
-                if !diagnostic.udpPaths.isEmpty { pathSection("UDP 路径", diagnostic.udpPaths, hideEndpoint: true) }
+                if choice.udpEnabled || choice.uotEnabled {
+                    HStack(spacing: 9) {
+                        DeskMetricTile(label: choice.uotEnabled ? "UoT 映射" : "UDP 映射", value: String(diagnostic.udpConnections), detail: "活跃映射")
+                        DeskMetricTile(label: "UDP 上传", value: Self.bytes(diagnostic.udpSent), detail: "UDP 载荷")
+                        DeskMetricTile(label: "UDP 下载", value: Self.bytes(diagnostic.udpReceived), detail: "UDP 载荷")
+                    }
+                }
+                if choice.uotEnabled { Text("UoT 共用 TCP Carrier；载荷已计入上方上传、下载流量。").font(.system(size: 10)).foregroundColor(.secondary) }
+                pathSection(choice.uotEnabled ? "TCP / UoT 共用路径" : "TCP 路径", diagnostic.tcpPaths, hideEndpoint: true)
+                if !choice.uotEnabled && !diagnostic.udpPaths.isEmpty { pathSection("UDP 路径", diagnostic.udpPaths, hideEndpoint: true) }
             }
         }
     }
@@ -1662,8 +1726,8 @@ struct StatusMenu: View {
         Text(model.status)
         if let problem = model.problem { Text(problem) }
         if model.running {
-            Text("TCP 连接：\(model.connections)")
-            if model.udpEnabled { Text("UDP 映射：\(model.udpConnections)") }
+            Text("逻辑连接：\(model.connections)")
+            if model.datagramEnabled { Text("\(model.datagramLabel) 映射：\(model.udpConnections)") }
         }
         Text("后台常驻：\(model.backgroundResident ? model.backgroundResidentStatus : "关闭")")
         Text("远程管理：\(model.remoteManagementEnabled ? model.remoteControlStatus : "关闭")")

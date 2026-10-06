@@ -52,6 +52,7 @@ type provisionConfig struct {
 	SchedulerMode      string  `json:"scheduler_mode,omitempty"`
 	TCPEnabled         bool    `json:"tcp_enabled"`
 	UDPEnabled         bool    `json:"udp_enabled"`
+	UOTEnabled         bool    `json:"uot_enabled,omitempty"`
 	BackgroundResident bool    `json:"background_resident"`
 	TransportKey       string  `json:"transport_key,omitempty"`
 	Relays             []relay `json:"relays"`
@@ -82,6 +83,7 @@ type publicPayload struct {
 	SchedulerMode      string  `json:"scheduler_mode,omitempty"`
 	TCPEnabled         bool    `json:"tcp_enabled"`
 	UDPEnabled         bool    `json:"udp_enabled"`
+	UOTEnabled         bool    `json:"uot_enabled,omitempty"`
 	BackgroundResident bool    `json:"background_resident"`
 	TransportKey       string  `json:"transport_key,omitempty"`
 	Relays             []relay `json:"relays"`
@@ -142,6 +144,7 @@ type bundlePublicProfile struct {
 	SchedulerMode      string  `json:"scheduler_mode,omitempty"`
 	TCPEnabled         bool    `json:"tcp_enabled"`
 	UDPEnabled         bool    `json:"udp_enabled"`
+	UOTEnabled         bool    `json:"uot_enabled,omitempty"`
 	BackgroundResident bool    `json:"background_resident"`
 	TransportKey       string  `json:"transport_key,omitempty"`
 	Relays             []relay `json:"relays"`
@@ -759,8 +762,14 @@ func validateInput(name string, cfg provisionConfig) error {
 	if len(cfg.Relays) < 2 || len(cfg.Relays) > 8 {
 		return errors.New("relays must contain 2-8 entries")
 	}
-	if !cfg.TCPEnabled && !cfg.UDPEnabled {
-		return errors.New("TCP and UDP cannot both be disabled")
+	if cfg.UDPEnabled && cfg.UOTEnabled {
+		return errors.New("native UDP and UoT are mutually exclusive")
+	}
+	if !cfg.TCPEnabled && !cfg.UDPEnabled && !cfg.UOTEnabled {
+		return errors.New("at least one of TCP, native UDP or UoT must be enabled")
+	}
+	if cfg.Mode == "native_mptcp" && cfg.UOTEnabled {
+		return errors.New("UoT requires userspace_multipath")
 	}
 	if cfg.Mode == "native_mptcp" && !cfg.TCPEnabled {
 		return errors.New("native_mptcp requires TCP")
@@ -963,7 +972,7 @@ func (a *app) adminBundleView(r *http.Request, rec bundleRecord) adminBundle {
 }
 
 func profilePublic(rec record) bundlePublicProfile {
-	return bundlePublicProfile{SchemaVersion: 1, ProfileID: rec.ID, Revision: fmt.Sprintf("r%d-%s", rec.Revision, rec.UpdatedAt.Format("20060102T150405Z")), DisplayName: rec.Name, Mode: rec.Config.Mode, ListenPort: rec.Config.ListenPort, SchedulerMode: rec.Config.SchedulerMode, TCPEnabled: rec.Config.TCPEnabled, UDPEnabled: rec.Config.UDPEnabled, BackgroundResident: rec.Config.BackgroundResident, TransportKey: rec.Config.TransportKey, Relays: rec.Config.Relays}
+	return bundlePublicProfile{SchemaVersion: 1, ProfileID: rec.ID, Revision: fmt.Sprintf("r%d-%s", rec.Revision, rec.UpdatedAt.Format("20060102T150405Z")), DisplayName: rec.Name, Mode: rec.Config.Mode, ListenPort: rec.Config.ListenPort, SchedulerMode: rec.Config.SchedulerMode, TCPEnabled: rec.Config.TCPEnabled, UDPEnabled: rec.Config.UDPEnabled, UOTEnabled: rec.Config.UOTEnabled, BackgroundResident: rec.Config.BackgroundResident, TransportKey: rec.Config.TransportKey, Relays: rec.Config.Relays}
 }
 
 func (a *app) publicBundle(w http.ResponseWriter, r *http.Request) {
@@ -1104,7 +1113,7 @@ func (a *app) publicConfig(w http.ResponseWriter, r *http.Request) {
 	p := publicPayload{
 		SchemaVersion: 1, Revision: fmt.Sprintf("r%d-%s", rec.Revision, rec.UpdatedAt.Format("20060102T150405Z")), DisplayName: rec.Name,
 		Mode: rec.Config.Mode, ListenPort: rec.Config.ListenPort, SchedulerMode: rec.Config.SchedulerMode,
-		TCPEnabled: rec.Config.TCPEnabled, UDPEnabled: rec.Config.UDPEnabled, BackgroundResident: rec.Config.BackgroundResident,
+		TCPEnabled: rec.Config.TCPEnabled, UDPEnabled: rec.Config.UDPEnabled, UOTEnabled: rec.Config.UOTEnabled, BackgroundResident: rec.Config.BackgroundResident,
 		TransportKey: rec.Config.TransportKey, Relays: rec.Config.Relays,
 	}
 	w.Header().Set("Pragma", "no-cache")

@@ -41,6 +41,7 @@ struct Profile: Codable {
     var tcp_enabled: Bool?
     var transport_key: String?
     var scheduler_mode: String? = nil
+    var uot_enabled: Bool? = nil
     var schedulerMode: String { scheduler_mode ?? SchedulerPolicy.auto.rawValue }
     var userspace: Bool { schema_version == 3 && mode == "userspace_multipath" }
     func validate() throws {
@@ -58,7 +59,9 @@ struct Profile: Codable {
                 throw ProfileError("请输入 Landing 生成的 64 位十六进制传输密钥，不是 SS 密码")
             }
         }
-        guard (tcp_enabled ?? true) || (udp_enabled ?? false) else { throw ProfileError("TCP 和 UDP 不能同时关闭") }
+        guard !((udp_enabled ?? false) && (uot_enabled ?? false)) else { throw ProfileError("原生 UDP 与 UoT 只能启用一个") }
+        guard userspace || !(uot_enabled ?? false) else { throw ProfileError("UoT 仅支持 Userspace 模式") }
+        guard (tcp_enabled ?? true) || (udp_enabled ?? false) || (uot_enabled ?? false) else { throw ProfileError("TCP、原生 UDP 和 UoT 至少启用一个") }
         guard userspace || (tcp_enabled ?? true) else { throw ProfileError("Native 兼容模式需保留 TCP") }
         var identities = Set<String>()
         for (index, relay) in relays.enumerated() {
@@ -268,6 +271,7 @@ struct RelayProvisioningPayload: Codable {
     var scheduler_mode: String?
     var tcp_enabled: Bool
     var udp_enabled: Bool
+    var uot_enabled: Bool? = nil
     var background_resident: Bool?
     var transport_key: String?
     var relays: [RelayRow]
@@ -285,7 +289,8 @@ struct RelayProvisioningPayload: Codable {
             udp_enabled: udp_enabled,
             tcp_enabled: tcp_enabled,
             transport_key: mode == "userspace_multipath" ? transport_key : nil,
-            scheduler_mode: mode == "userspace_multipath" ? (scheduler_mode ?? SchedulerPolicy.auto.rawValue) : nil
+            scheduler_mode: mode == "userspace_multipath" ? (scheduler_mode ?? SchedulerPolicy.auto.rawValue) : nil,
+            uot_enabled: uot_enabled
         )
         try p.validate()
         return p
@@ -486,6 +491,8 @@ struct ProvisioningProfileChoice: Identifiable {
     var relayCount: Int
     var mode: String
     var backgroundResident: Bool
+    var udpEnabled: Bool = false
+    var uotEnabled: Bool = false
 }
 
 private final class RelayProvisioningNoRedirectDelegate: NSObject, URLSessionTaskDelegate {
