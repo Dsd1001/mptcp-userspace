@@ -333,6 +333,7 @@ func (st *Stream) Write(p []byte) (int, error) {
 		s.writerReady.Remove(st.writeEntry)
 		st.writeEntry = nil
 		st.writeRemaining = 0
+		s.signalPendingWriterLocked()
 		s.wakeLocked()
 		s.mu.Unlock()
 	}()
@@ -387,10 +388,26 @@ func (st *Stream) Write(p []byte) (int, error) {
 		}
 		s.credit.waits[reason].Count++
 		started := time.Now()
-		ch, deadline := s.changed, st.writeDeadline
+		deadline := st.writeDeadline
+		pendingBlocked := reason == waitPendingFrames || reason == waitPendingBytes
+		if reason == waitWriterTurn {
+			s.writerTurnWaiters++
+		}
+		var ch <-chan struct{}
+		if pendingBlocked {
+			ch = s.beginPendingWaitLocked()
+		} else {
+			ch = s.changed
+		}
 		s.mu.Unlock()
 		err := waitChange(s.ctx, ch, deadline)
 		s.mu.Lock()
+		if pendingBlocked {
+			s.endPendingWaitLocked()
+		}
+		if reason == waitWriterTurn && s.writerTurnWaiters > 0 {
+			s.writerTurnWaiters--
+		}
 		s.credit.waits[reason].NS += uint64(time.Since(started))
 		if blocked {
 			s.windowBlockedWriters--

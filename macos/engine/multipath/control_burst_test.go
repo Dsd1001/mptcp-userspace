@@ -57,7 +57,7 @@ func TestControlBurstPairBatchBoundAndDataProgress(t *testing.T) {
 			seenOpen++
 		case kindWindow:
 			seenWindow++
-			if f.id != StreamWindow || f.offset != 0 {
+			if f.id != OpenBootstrapWindow || f.offset != 0 {
 				t.Fatal("invalid explicit bootstrap")
 			}
 		case kindData:

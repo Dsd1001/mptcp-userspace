@@ -36,11 +36,33 @@ const (
 	sharedWindowBatch          = 128 << 10
 	sessionRefillStartPressure = 70
 	sessionRefillStopPressure  = 95
-	// Do not allow ordinary growth frames to consume the pending storage
-	// required for one full bootstrap frame per admitted stream.
-	growthPendingFrames = MaxDataPending - MaxStreams
-	growthPendingBytes  = MaxDataPendingBytes - BootstrapCreditLimit - 64*MaxStreams
 )
+
+// pendingBootstrapReserveLocked reserves pending capacity only for Streams that
+// are actively trying to write and have not yet completed their first 32 KiB of
+// peer-consumed DATA. It deliberately does not reserve for every admitted
+// Stream: idle identities cost no pending capacity. exclude lets the current
+// writer consume the same frame that carries its remaining bootstrap bytes.
+func (s *Session) pendingBootstrapReserveLocked(exclude *Stream) (int, int) {
+	frames := 0
+	for e := s.writerReady.Front(); e != nil; e = e.Next() {
+		st, _ := e.Value.(*Stream)
+		if st == nil || st == exclude || st.closed || st.writeFIN || st.sendReset || st.writeRemaining <= 0 {
+			continue
+		}
+		if !st.open || st.txNext-st.peerConsumed < StreamWindow {
+			frames++
+		}
+	}
+	frames = min(frames, MaxDataPending)
+	return frames, min(MaxDataPendingBytes, frames*(MaxPayload+64))
+}
+
+func (s *Session) growthPendingRoomLocked(exclude *Stream) (int, int) {
+	reserveFrames, reserveBytes := s.pendingBootstrapReserveLocked(exclude)
+	return max(0, MaxDataPending-reserveFrames-s.dataPendingFrames),
+		max(0, MaxDataPendingBytes-reserveBytes-s.dataPendingBytes)
+}
 
 func (s *Session) initCreditLocked() {
 	s.credit.rxLimit = SessionCreditLimit
@@ -227,13 +249,14 @@ func (st *Stream) writeAllowanceLocked() (int, int) {
 	}
 	n = min(n, room)
 	if n > baseRoom {
-		if s.dataPendingFrames >= growthPendingFrames {
+		growthFrames, growthBytes := s.growthPendingRoomLocked(st)
+		if growthFrames <= 0 {
 			n = min(n, baseRoom)
 			if n == 0 {
 				return 0, waitPendingFrames
 			}
-		} else if s.dataPendingBytes+n+64 > growthPendingBytes {
-			n = min(n, max(baseRoom, max(0, growthPendingBytes-s.dataPendingBytes-64)))
+		} else if growthBytes < n+64 {
+			n = min(n, max(baseRoom, max(0, growthBytes-64)))
 			if n == 0 {
 				return 0, waitPendingBytes
 			}
@@ -253,13 +276,9 @@ func (s *Session) writerTurnLocked(st *Stream) bool {
 	}
 	// Do not serialize writers when every waiter can receive a full DATA turn.
 	// DATA dispatch remains per-stream round-robin; scarce credit uses FIFO.
+	growthFrames, growthBytes := s.growthPendingRoomLocked(nil)
 	if sharedGrowthRoom(s.credit.txUsed, s.credit.txGrowth) >= count*MaxPayload &&
-		growthPendingFrames-s.dataPendingFrames >= count {
-		// Pending-byte bootstrap reserve is still enforced by
-		// writeAllowanceLocked for every frame. Do not use that static reserve
-		// to serialize otherwise-credit-eligible writers up front; with a
-		// 32 KiB bootstrap its metadata margin is intentionally tighter than
-		// one simultaneous growth frame for every possible Stream.
+		growthFrames >= count && growthBytes >= count*(MaxPayload+64) {
 		return true
 	}
 	for e := s.writerReady.Front(); e != nil; e = e.Next() {

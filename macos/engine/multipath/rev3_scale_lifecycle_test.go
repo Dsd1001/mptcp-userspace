@@ -14,7 +14,7 @@ func TestRev4ScaleConstantsAndNextRefusal(t *testing.T) {
 	if StreamWindow != 32<<10 || BootstrapCreditLimit != 64<<20 || GrowthCreditLimit != 64<<20 {
 		t.Fatalf("unexpected RC3 window/pools: initial=%d bootstrap=%d growth=%d", StreamWindow, BootstrapCreditLimit, GrowthCreditLimit)
 	}
-	if MaxDataPending != 8192 || MaxDataPendingBytes != 128<<20 || MaxBuffered != 128<<20 {
+	if MaxDataPending != 32768 || MaxDataPendingBytes != 1024<<20 || MaxBuffered != 128<<20 {
 		t.Fatalf("pending/physical limits not separated: pending=%d physical=%d", MaxDataPendingBytes, MaxBuffered)
 	}
 	s := schedulerFixture()
@@ -35,7 +35,7 @@ func TestRev4ScaleConstantsAndNextRefusal(t *testing.T) {
 		r.GrowthBaseLimit != 64<<20 || r.GrowthLimit != 128<<20 {
 		t.Fatalf("telemetry limits mismatch: %+v", r)
 	}
-	if r.DataPendingLimit != 8192 || r.DataPendingByteLimit != 128<<20 || r.ReceiveAllocatedLimit != 128<<20 {
+	if r.DataPendingLimit != 32768 || r.DataPendingByteLimit != 1024<<20 || r.ReceiveAllocatedLimit != 128<<20 {
 		t.Fatalf("pending/physical telemetry conflated: %+v", r)
 	}
 }

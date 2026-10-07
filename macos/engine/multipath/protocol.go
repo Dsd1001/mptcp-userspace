@@ -31,8 +31,8 @@ const (
 	StreamWindow        = 32 << 10
 	MaxStreams          = 2048
 	MaxCarriers         = 8 // local active-Carrier implementation limit; Carrier IDs use the full MPX VarInt space
-	MaxPending          = 8192
-	MaxDataPendingBytes = 128 << 20
+	MaxPending          = 32768
+	MaxDataPendingBytes = 1024 << 20
 	MaxBuffered         = 128 << 20
 	frameHeader         = 32
 	helloSize           = 5

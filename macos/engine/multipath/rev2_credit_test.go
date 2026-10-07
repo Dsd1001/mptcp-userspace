@@ -156,7 +156,7 @@ func TestRC7GrowthBorrowsUnusedBootstrapWhilePendingBoundStaysIndependent(t *tes
 
 	// A different fixture isolates DATA metadata reservation from flow credit.
 	s2, _ := rev2Fixture()
-	s2.dataPendingFrames = growthPendingFrames
+	s2.dataPendingFrames = MaxDataPending - 1
 	st2 := rev2Stream(s2, 1)
 	st2.SetWriteDeadline(time.Now().Add(time.Second))
 	if n, e := st2.Write(make([]byte, StreamWindow)); n != StreamWindow || e != nil {

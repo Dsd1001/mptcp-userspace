@@ -153,6 +153,7 @@ type Session struct {
 	server                                          bool
 	mu                                              sync.Mutex
 	changed                                         chan struct{}
+	pendingWake                                     chan struct{}
 	kick                                            chan struct{}
 	done                                            chan struct{}
 	closed                                          bool
@@ -197,13 +198,14 @@ type Session struct {
 	dataPendingFrames, controlPendingFrames         int
 	dataPendingBytes, controlPendingBytes           int
 	windowBlockedWriters                            int
+	pendingWaiters, writerTurnWaiters               int
 	controlDrops, openedStreams, closedStreams      uint64
 	localConnections                                int
 }
 
 func newSession(parent context.Context, id sessionID, server bool, onOpen func(*Stream), modes ...SchedulerMode) *Session {
 	ctx, cancel := context.WithCancel(parent)
-	s := &Session{clockStart: time.Now(), ctx: ctx, cancel: cancel, id: id, server: server, changed: make(chan struct{}), kick: make(chan struct{}, 1), done: make(chan struct{}), streams: make(map[uint64]*Stream), pending: make(map[uint64]*outbound), paths: make(map[uint64]*carrier), carrierUsed: make(map[uint64]bool), highestGeneration: make(map[uint64]uint64), nextCandidateGeneration: make(map[uint64]uint64), generationExhausted: make(map[uint64]bool), pathCapacities: make(map[uint64]PathCapacity), settled: make(map[uint64]bool), peerProcessed: make(map[uint64]bool), peerTransmissionFingerprint: make(map[uint64][32]byte), confirmationReplay: make(map[uint64]frame), seen: make(map[uint64]bool), nextStream: 1, noPathsSince: time.Now(), localMaxCarriers: MaxCarriers, onOpen: onOpen}
+	s := &Session{clockStart: time.Now(), ctx: ctx, cancel: cancel, id: id, server: server, changed: make(chan struct{}), pendingWake: make(chan struct{}, MaxStreams), kick: make(chan struct{}, 1), done: make(chan struct{}), streams: make(map[uint64]*Stream), pending: make(map[uint64]*outbound), paths: make(map[uint64]*carrier), carrierUsed: make(map[uint64]bool), highestGeneration: make(map[uint64]uint64), nextCandidateGeneration: make(map[uint64]uint64), generationExhausted: make(map[uint64]bool), pathCapacities: make(map[uint64]PathCapacity), settled: make(map[uint64]bool), peerProcessed: make(map[uint64]bool), peerTransmissionFingerprint: make(map[uint64][32]byte), confirmationReplay: make(map[uint64]frame), seen: make(map[uint64]bool), nextStream: 1, noPathsSince: time.Now(), localMaxCarriers: MaxCarriers, onOpen: onOpen}
 	mode := SchedulerAuto
 	if len(modes) > 0 {
 		mode = modes[0]
@@ -218,12 +220,73 @@ func (s *Session) Done() <-chan struct{} { return s.done }
 func (s *Session) Err() error            { s.mu.Lock(); defer s.mu.Unlock(); return s.err }
 func (s *Session) Close() error          { s.stop(net.ErrClosed); return nil }
 
-func (s *Session) wakeLocked() {
-	close(s.changed)
-	s.changed = make(chan struct{})
+func (s *Session) kickLocked() {
 	select {
 	case s.kick <- struct{}{}:
 	default:
+	}
+}
+
+func (s *Session) wakeLocked() {
+	close(s.changed)
+	s.changed = make(chan struct{})
+	s.signalAllPendingWritersLocked()
+	s.kickLocked()
+}
+
+func (s *Session) ensurePendingWakeLocked() chan struct{} {
+	if s.pendingWake == nil {
+		s.pendingWake = make(chan struct{}, MaxStreams)
+	}
+	return s.pendingWake
+}
+
+func (s *Session) beginPendingWaitLocked() <-chan struct{} {
+	ch := s.ensurePendingWakeLocked()
+	for len(ch) > s.pendingWaiters {
+		<-ch
+	}
+	s.pendingWaiters++
+	return ch
+}
+
+func (s *Session) endPendingWaitLocked() {
+	if s.pendingWaiters > 0 {
+		s.pendingWaiters--
+	}
+	if s.pendingWake == nil {
+		return
+	}
+	for len(s.pendingWake) > s.pendingWaiters {
+		<-s.pendingWake
+	}
+}
+
+func (s *Session) signalPendingWriterLocked() {
+	if s.pendingWaiters <= 0 {
+		return
+	}
+	ch := s.ensurePendingWakeLocked()
+	if len(ch) >= s.pendingWaiters {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Session) signalAllPendingWritersLocked() {
+	if s.pendingWaiters <= 0 {
+		return
+	}
+	ch := s.ensurePendingWakeLocked()
+	for len(ch) < s.pendingWaiters {
+		select {
+		case ch <- struct{}{}:
+		default:
+			return
+		}
 	}
 }
 
@@ -736,7 +799,10 @@ func (s *Session) queueLocked(f frame) *outbound {
 	}
 	s.readyLocked(p, false)
 	s.pendingBytes += cost
-	s.wakeLocked()
+	// Enqueue only needs to run the dispatcher. Broadcasting changed here
+	// wakes every blocked writer for a state transition that cannot make any
+	// writer more eligible and creates a multi-Stream thundering herd.
+	s.kickLocked()
 	return p
 }
 
@@ -750,6 +816,7 @@ func (s *Session) removePendingLocked(p *outbound) {
 	if p.f.kind == kindData {
 		s.dataPendingFrames--
 		s.dataPendingBytes -= p.cost
+		s.signalPendingWriterLocked()
 	} else {
 		s.controlPendingFrames--
 		s.controlPendingBytes -= p.cost
@@ -815,10 +882,22 @@ func (s *Session) ackLocked(c *carrier, f frame) error {
 			s.schedulerReceiptLocked(c, p, now)
 		}
 	}
+	kind := p.f.kind
 	s.markSettledLocked(p.f.id)
 	s.removePendingLocked(p)
 	s.tryRetireStreamLocked(st)
-	s.wakeLocked()
+	if kind == kindData {
+		// DATA ACK frees one pending slot/byte budget. removePendingLocked
+		// gives one pending-blocked writer a permit; do not broadcast to every
+		// Stream unless FIFO writer-turn or CloseWrite state actually needs it.
+		if s.writerTurnWaiters > 0 || st != nil && st.finACK && !st.hasPendingDataLocked() {
+			s.wakeLocked()
+		} else {
+			s.kickLocked()
+		}
+	} else {
+		s.wakeLocked()
+	}
 	return nil
 }
 
