@@ -1,14 +1,16 @@
-# MPTCP Userspace 1.0.1 / MPX/4 Protocol Version 4 Stable
+# MPTCP Userspace 1.0.2 / MPX/4 Protocol Version 4 Stable
 
-1.0.1 是基于 1.0.0 Stable 的兼容补丁版本：MPTCP Desk、Linux Client、Landing 与 Provisioning 统一使用 **1.0.1**。Wire Protocol Version 仍为 4，协议源继续冻结到 MPX/4 `protocol-v4.0.0`，commit `44f587fd279ed2238b070dd68114c76822353f4d`。
+1.0.2 是基于 1.0.1 的兼容补丁版本：MPTCP Desk、Linux Client、Landing 与 Provisioning 统一使用 **1.0.2**。Wire Protocol Version 仍为 4，协议源继续冻结到 MPX/4 `protocol-v4.0.0`，commit `44f587fd279ed2238b070dd68114c76822353f4d`。
 
-## 1.0.1 变化
+## 1.0.2 变化
 
-- 新 Stream 在 `STREAM_OPEN` 后立即发送的显式 WINDOW 从 32 KiB 提高到 192 KiB；Session 共享 credit 的 bootstrap accounting 基线仍为 32 KiB，超过部分继续计入共享 growth credit，Session 128 MiB hard limit 不变；
-- Weighted 模式的 Carrier flight budget 改为仅使用 configured capacity 与 `minRTT`/base RTT 计算。排队抬高的 load RTT 不再扩大 flight budget，避免“排队 → RTT 上升 → budget 上升 → 继续加深排队”的正反馈；
-- Keychain Broker 不升级，继续复用 0.10.12 / 1.0.0 的冻结 v1 二进制。
+- Landing/发送侧 DATA pending 总池从 128 MiB 提高到 **1024 MiB**，DATA pending frame 上限从 8192 提高到 **32768**；`MaxPayload` 仍保持 32 KiB，Session flow-control hard limit 仍为 128 MiB；
+- 删除按 `MaxStreams=2048` 静态预留 pending 空间的旧逻辑，改为只给**当前真实活跃、且尚未完成首个 32 KiB bootstrap 的 writer**动态保留少量 frame/bytes；idle Stream 不再占 reserve；
+- DATA enqueue 只 kick dispatcher，不再广播唤醒所有 writer；普通 DATA ACK 每释放一个 pending slot，只向 pending-blocked writer 发放对应 permit，减少高并发 Stream 下的 thundering herd 与 Session mutex 竞争；
+- Landing systemd 安装模板的 `MemoryMax` 从 1G 提高到 **2G**，为 1 GiB pending pool 与 Go heap/元数据预留安全余量；
+- 继承 1.0.1 的 192 KiB OPEN bootstrap 与 Weighted `minRTT` flight-budget 修复；Keychain Broker 继续冻结不变。
 
-本版本按用户要求直接发布，不重跑性能/容量/WAN acceptance；发布包会明确标记为 `untested-by-request`，不继承新的验证结论。
+本版本通过当前源码的 Go 全包测试、`go vet` 与 pending/wakeup 相关 race 回归；未重新声明新的 WAN、capacity 或物理 App/Surge 性能 acceptance。
 
 ## 协议更新
 
@@ -41,7 +43,7 @@ Landing 增加独立本地 scheduler policy，默认 Auto。
 
 ## Broker 冻结
 
-1.0.1 **不升级 Broker**。继续复用 0.10.12 / 1.0.0 的 `MPTCPKeychainBroker` v1 精确字节：
+1.0.2 **不升级 Broker**。继续复用 0.10.12 / 1.0.0 / 1.0.1 的 `MPTCPKeychainBroker` v1 精确字节：
 
 `sha256=5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`
 
@@ -49,4 +51,4 @@ Mac 构建入口和发布验证都会硬校验该值。重建、重签或替换 
 
 ## 发布验证
 
-1.0.0 的正式 Stable 基线使用独立 `--stable-release` gate。1.0.1 本次按用户要求走 `--untested-release`：仍要求 frozen source、artifact hash 与 provenance 自洽，但不声明 Go/vet/race、Scheduler、capacity、180s runtime 或物理 WAN acceptance 已为 1.0.1 重跑通过。
+1.0.0 的正式 Stable 基线使用独立 `--stable-release` gate。1.0.2 使用 Stable patch gate：要求 frozen source、artifact hash、provenance 与当前源码 correctness evidence 自洽；本次记录 Go 全包测试、`go vet` 与 targeted race 通过，但 Scheduler 性能 promotion、capacity、180s runtime 与物理 WAN acceptance 不作为 1.0.2 的新发布结论。
