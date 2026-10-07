@@ -159,24 +159,43 @@ func injectWeightedReleaseTimeout(t *testing.T, s *Session) time.Time {
 		s.mu.Lock()
 		c := s.paths[2]
 		if c != nil && c.active {
-			for _, p := range s.pending {
-				if p != nil && p.f.kind == kindData && p.path == c && !p.sentAt.IsZero() {
-					now := time.Now()
-					rto := max(500*time.Millisecond, 4*c.rtt)
-					p.sentAt = now.Add(-rto - time.Millisecond)
-					s.lastSweep = time.Time{}
-					before := s.retransmits
-					s.sweepLocked(now)
-					ok := s.retransmits == before+1 &&
-						c.lastError == "delivery timeout; temporarily deprioritized" &&
-						c.penaltyUntil.After(now)
-					s.mu.Unlock()
-					if !ok {
-						t.Fatal("weighted timeout did not enter production delivery-timeout protection")
+			// Production intentionally requires two distinct timeout epochs
+			// before penalizing a Carrier. Inject both deterministically rather
+			// than relying on a prior natural timeout from the high-BDP run.
+			injected := time.Now()
+			for epoch := 0; epoch < 2; epoch++ {
+				var chosen *outbound
+				for _, p := range s.pending {
+					if p != nil && p.f.kind == kindData && p.path == c && !p.sentAt.IsZero() {
+						chosen = p
+						break
 					}
-					return now
 				}
+				if chosen == nil {
+					break
+				}
+				rto := max(500*time.Millisecond, 4*c.rtt)
+				now := injected
+				if epoch != 0 {
+					now = injected.Add(max(100*time.Millisecond, rto/2))
+				}
+				chosen.sentAt = now.Add(-rto - time.Millisecond)
+				s.lastSweep = time.Time{}
+				before := s.retransmits
+				s.sweepLocked(now)
+				if s.retransmits != before+1 {
+					s.mu.Unlock()
+					t.Fatal("weighted timeout injection did not retransmit exactly one DATA frame")
+				}
+				injected = now
 			}
+			ok := c.lastError == "repeated delivery timeout; temporarily deprioritized" &&
+				c.penaltyUntil.After(injected)
+			s.mu.Unlock()
+			if !ok {
+				t.Fatal("weighted timeout did not enter production delivery-timeout protection")
+			}
+			return injected
 		}
 		s.mu.Unlock()
 		time.Sleep(time.Millisecond)
@@ -302,8 +321,8 @@ func TestWeightedReleaseHighBDP(t *testing.T) {
 		Path2Connected:         p2.Connected,
 		Path2LastError:         p2.LastError,
 	}
-	if report.Fault.RetransmitsDelta != 1 {
-		t.Errorf("single injected timeout produced retransmits=%d, want 1", report.Fault.RetransmitsDelta)
+	if report.Fault.RetransmitsDelta != 2 {
+		t.Errorf("two injected timeout epochs produced retransmits=%d, want 2", report.Fault.RetransmitsDelta)
 	}
 	if report.Fault.Path2PenaltyShare >= 0.08 {
 		t.Errorf("path2 was not sufficiently avoided during penalty: %.3f", report.Fault.Path2PenaltyShare)

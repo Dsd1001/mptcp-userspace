@@ -16,6 +16,7 @@ const carrierQueue = 4
 
 type PathStats struct {
 	MeasuredDeliveryBPS    float64  `json:"measured_delivery_bps"`
+	RecentDeliveryBPS      float64  `json:"recent_delivery_bps"`
 	ValidDeliverySamples   int      `json:"valid_delivery_samples"`
 	Role                   PathRole `json:"role,omitempty"`
 	RoleReason             string   `json:"role_reason,omitempty"`
@@ -37,6 +38,8 @@ type PathStats struct {
 	Errors                 uint64   `json:"errors"`
 	LastError              string   `json:"last_error,omitempty"`
 	Budget                 int      `json:"budget_bytes,omitempty"`
+	BudgetLimited          bool     `json:"budget_limited,omitempty"`
+	WeightedBudgetGrowths  uint64   `json:"weighted_budget_growths,omitempty"`
 	DialAttempts           uint64   `json:"dial_attempts"`
 	Connections            uint64   `json:"carrier_connections"`
 	ConnectedAt            string   `json:"connected_at,omitempty"`
@@ -109,6 +112,13 @@ type carrier struct {
 	budget                            int
 	growthACK                         int
 	budgetLimited, startupDone        bool
+	weightedBudget                    int
+	weightedGrowthACK                 int
+	weightedBudgetLimited             bool
+	weightedBudgetGrowths             uint64
+	recentDeliveryEpoch               uint64
+	weightedGrowthEpoch               uint64
+	recentDeliveryBPS                 float64
 	sampleBudgetLimited               bool
 	minRTT                            time.Duration
 	lastACK, lastTimeoutAt            time.Time
@@ -363,16 +373,27 @@ func (s *Session) signalSessionCreditLocked(bytes int) {
 }
 
 func (s *Session) signalWriterTurnLocked() {
+	slots := s.writerTurnSlotsLocked()
+	if slots <= 0 {
+		return
+	}
+	eligible := 0
 	for e := s.writerReady.Front(); e != nil; e = e.Next() {
 		st, _ := e.Value.(*Stream)
-		if st == nil || !st.writeWaiting || st.writeWaitReason != waitWriterTurn {
+		if st == nil {
 			continue
 		}
 		if n, _ := st.writeAllowanceLocked(); n <= 0 {
 			continue
 		}
+		eligible++
+		if eligible > slots {
+			return
+		}
+		if !st.writeWaiting || st.writeWaitReason != waitWriterTurn {
+			continue
+		}
 		s.signalStreamWriterLocked(st)
-		return
 	}
 }
 
@@ -965,6 +986,7 @@ func (s *Session) ackLocked(c *carrier, f frame) error {
 		c.lastTimeoutAt = time.Time{}
 		if p.attempts == 1 {
 			c.observeDelivery(now, p, f.offset)
+			s.observeWeightedFlightLocked(c, len(p.f.data))
 			s.schedulerReceiptLocked(c, p, now)
 		}
 	}
@@ -1199,11 +1221,17 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		// budget. Filling a slow carrier's OS send buffer creates avoidable HOL.
 		budget := c.flightBudget()
 		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
+			if c.outstanding == 0 && !c.lastACK.IsZero() && now.Sub(c.lastACK) > creditIdle {
+				c.resetWeightedFlight(c.configuredRateBPS)
+			}
 			budget = weightedFlightBudget(c, c.configuredRateBPS)
 		}
 		if c.outstanding >= budget {
 			c.budgetLimited = true
 			c.sampleBudgetLimited = true
+			if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 && len(s.ready) != 0 {
+				c.weightedBudgetLimited = true
+			}
 		}
 		if len(c.queue) >= carrierQueue || c.outstanding >= budget {
 			continue
@@ -1264,6 +1292,9 @@ func (s *Session) sweepLocked(now time.Time) {
 						c.capacitySamples = [8]float64{}
 						c.capacityIndex = 0
 						c.budget = max(initialPathBudget, c.flightBudget()/2)
+						if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
+							c.backoffWeightedFlight(c.configuredRateBPS)
+						}
 						c.startupDone = true
 						c.lastError = "repeated delivery timeout; temporarily deprioritized"
 						c.penaltyUntil = now.Add(2 * time.Second)
@@ -1364,7 +1395,11 @@ func (s *Session) Snapshot() Stats {
 		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
 			budget = weightedFlightBudget(c, c.configuredRateBPS)
 		}
-		out.PathStats = append(out.PathStats, PathStats{MeasuredDeliveryBPS: measured, ValidDeliverySamples: validSamples, Role: c.scheduler.role, RoleReason: c.scheduler.lastRoleReason, DeliverySamples: c.deliverySamples, SchedulerProbeCount: c.scheduler.probeCount, SchedulerProbeBytes: c.scheduler.probeBytes, SchedulerProbeDebtPeak: c.scheduler.probeDebtPeak, SchedulerDataACKs: c.scheduler.dataACKs, ID: int(c.id), Address: c.address, Connected: c.active, Sent: c.sent, Received: c.received, RTTMS: float64(c.rtt) / float64(time.Millisecond), GoodputBPS: c.goodput, ConfiguredRateBPS: c.configuredRateBPS, Outstanding: c.outstanding, Queue: c.queued, Errors: c.errors, LastError: c.lastError, Budget: budget, DialAttempts: c.dialAttempts, Connections: c.connects, ConnectedAt: c.connectedAt, DisconnectedAt: c.disconnectedAt, ControlOutstanding: c.controlOutstanding, ControlQueue: c.controlQueued + 64*len(c.control)})
+		budgetLimited := c.budgetLimited
+		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
+			budgetLimited = c.weightedBudgetLimited
+		}
+		out.PathStats = append(out.PathStats, PathStats{MeasuredDeliveryBPS: measured, RecentDeliveryBPS: c.recentDeliveryBPS, ValidDeliverySamples: validSamples, Role: c.scheduler.role, RoleReason: c.scheduler.lastRoleReason, DeliverySamples: c.deliverySamples, SchedulerProbeCount: c.scheduler.probeCount, SchedulerProbeBytes: c.scheduler.probeBytes, SchedulerProbeDebtPeak: c.scheduler.probeDebtPeak, SchedulerDataACKs: c.scheduler.dataACKs, ID: int(c.id), Address: c.address, Connected: c.active, Sent: c.sent, Received: c.received, RTTMS: float64(c.rtt) / float64(time.Millisecond), GoodputBPS: c.goodput, ConfiguredRateBPS: c.configuredRateBPS, Outstanding: c.outstanding, Queue: c.queued, Errors: c.errors, LastError: c.lastError, Budget: budget, BudgetLimited: budgetLimited, WeightedBudgetGrowths: c.weightedBudgetGrowths, DialAttempts: c.dialAttempts, Connections: c.connects, ConnectedAt: c.connectedAt, DisconnectedAt: c.disconnectedAt, ControlOutstanding: c.controlOutstanding, ControlQueue: c.controlQueued + 64*len(c.control)})
 	}
 	sort.Slice(out.PathStats, func(i, j int) bool { return out.PathStats[i].ID < out.PathStats[j].ID })
 	return out

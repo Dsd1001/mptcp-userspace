@@ -592,6 +592,12 @@ func (c *carrier) observeDelivery(now time.Time, p *outbound, receiverStamp uint
 		return
 	}
 	observed := float64(c.ackBytes) / elapsed.Seconds()
+	// Keep the latest receiver-clock epoch separately from the bounded
+	// capacity history. Weighted adaptive flight needs to know whether the
+	// *current* offered flight is delivering the configured rate; using the
+	// eight-epoch high watermark here would hide a fresh budget-limited stall.
+	c.recentDeliveryBPS = observed
+	c.recentDeliveryEpoch++
 	// A path that was never offered a full flight only measured utilization,
 	// not capacity. Treating a tiny startup/sparse sample as a slow-link rate
 	// can make delivery-cost selection permanently stop using that path.
