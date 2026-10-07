@@ -215,78 +215,45 @@ func TestRev2LateOpenRejectCannotRevokeAcceptedStream(t *testing.T) {
 		t.Fatal("unrelated OPEN id accepted")
 	}
 }
-func TestRC7FairWriterTurnsAtTrueSessionScarcity(t *testing.T) {
+func TestPeerWindowCreditAuthoritativePastLegacyTXUsedLimit(t *testing.T) {
 	s, _ := rev2Fixture()
-	nextID := uint64(1)
+	st := rev2Stream(s, 1)
+	st.txNext = StreamWindow
+	st.peerConsumed = 0
+	st.peerLimit = uint64(StreamWindow + MaxPayload)
+	s.credit.txCommitted = StreamWindow
+	s.credit.peerLimit = uint64(StreamWindow + MaxPayload)
 
-	// Put both competing writers at the end of their bootstrap first, so the
-	// existing newcomer bootstrap priority does not bypass scarce-credit FIFO.
-	a := rev2Stream(s, nextID)
-	nextID += 2
-	b := rev2Stream(s, nextID)
-	nextID += 2
-	a.commitSendCreditLocked(StreamWindow)
-	b.commitSendCreditLocked(StreamWindow)
+	// Per-Stream consumed reports can lag aggregate SESSION_WINDOW progress.
+	// These diagnostics are intentionally above the old 128 MiB local ceiling:
+	// peer-advertised WINDOW room must still permit the DATA frame.
+	s.credit.txUsed = 2 * SessionCreditLimit
+	s.credit.txGrowth = s.credit.txUsed - StreamWindow
+	st.writeEntry = s.writerReady.PushBack(st)
+	defer s.writerReady.Remove(st.writeEntry)
+	s.setWriterRemainingLocked(st, MaxPayload)
+	defer s.setWriterRemainingLocked(st, 0)
+	s.syncBootstrapReserveLocked(st)
 
-	// Fill actual sender commitment to exactly one DATA frame below the global
-	// Session limit. Nominal 64 MiB growth saturation is no longer scarcity.
-	remaining := SessionCreditLimit - MaxPayload - 2*StreamWindow
-	for remaining > 0 {
-		st := rev2Stream(s, nextID)
-		nextID += 2
-		n := min(MaxStreamWindow, remaining)
-		st.commitSendCreditLocked(n)
-		remaining -= n
-	}
-
-	ea := s.writerReady.PushBack(a)
-	s.writerReady.PushBack(b)
-	s.setWriterRemainingLocked(a, MaxPayload)
-	s.setWriterRemainingLocked(b, MaxPayload)
-	if !s.writerTurnLocked(a) || s.writerTurnLocked(b) {
-		t.Fatal("true Session scarcity did not preserve FIFO")
-	}
-
-	a.commitSendCreditLocked(MaxPayload)
-	if err := a.releaseSendCreditLocked(MaxPayload); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.receiveSessionCreditLocked(frame{kind: kindSessionWindow, offset: MaxPayload, id: SessionCreditLimit + MaxPayload}); err != nil {
-		t.Fatal(err)
-	}
-	s.writerReady.MoveToBack(ea)
-	if !s.writerTurnLocked(b) || s.writerTurnLocked(a) {
-		t.Fatal("writer fairness did not rotate after consumed Session credit")
-	}
-	b.peerLimit = b.txNext
-	if !s.writerTurnLocked(a) {
-		t.Fatal("blocked writer stopped an eligible writer")
-	}
-
-	// A newcomer still retains bootstrap priority when global credit is scarce.
-	small := rev2Stream(s, nextID)
-	s.writerReady.PushBack(small)
-	s.setWriterRemainingLocked(small, StreamWindow)
-	if !s.writerTurnLocked(small) {
-		t.Fatal("small flow lost bootstrap priority at true Session scarcity")
+	if n, reason := st.writeAllowanceLocked(); n != MaxPayload || reason != waitNone {
+		t.Fatalf("diagnostic txUsed/growth overrode peer WINDOW: n=%d reason=%d", n, reason)
 	}
 }
 
-func TestRev2UncontendedFairnessDoesNotSerialize512Writers(t *testing.T) {
+func TestPeerSessionWindowRemainsHardSendGate(t *testing.T) {
 	s, _ := rev2Fixture()
-	for i := 0; i < MaxStreams; i++ {
-		st := rev2Stream(s, uint64(2*i+1))
-		st.commitSendCreditLocked(StreamWindow)
-		s.writerReady.PushBack(st)
-		s.setWriterRemainingLocked(st, MaxPayload)
-	}
-	for e := s.writerReady.Front(); e != nil; e = e.Next() {
-		st := e.Value.(*Stream)
-		if n, _ := st.writeAllowanceLocked(); n != MaxPayload {
-			t.Fatal("fixture did not leave a full DATA turn")
-		}
-		if !s.writerTurnLocked(st) {
-			t.Fatal("ample credit created artificial cross-writer waiting")
-		}
+	st := rev2Stream(s, 1)
+	st.peerLimit = MaxStreamWindow
+	st.writeEntry = s.writerReady.PushBack(st)
+	defer s.writerReady.Remove(st.writeEntry)
+	s.setWriterRemainingLocked(st, MaxPayload)
+	defer s.setWriterRemainingLocked(st, 0)
+
+	s.credit.txCommitted = SessionCreditLimit
+	s.credit.peerLimit = SessionCreditLimit
+	s.credit.txUsed = 0
+	s.credit.txGrowth = 0
+	if n, reason := st.writeAllowanceLocked(); n != 0 || reason != waitSessionWindow {
+		t.Fatalf("peer SESSION_WINDOW was not authoritative: n=%d reason=%d", n, reason)
 	}
 }

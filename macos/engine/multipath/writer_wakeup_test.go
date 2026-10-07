@@ -30,38 +30,6 @@ func signaledWriterCount(streams []*Stream) int {
 	return n
 }
 
-func TestSharedCreditReleaseSignalsOnlyReleasedFrameBudget(t *testing.T) {
-	s, _ := rev2Fixture()
-	source := rev2Stream(s, 1)
-	source.commitSendCreditLocked(256 << 10)
-
-	waiters := make([]*Stream, 0, 8)
-	cleanups := make([]func(), 0, 8)
-	for i := 0; i < 8; i++ {
-		st := rev2Stream(s, uint64(2*i+3))
-		waiters = append(waiters, st)
-		cleanups = append(cleanups, attachWriterWaiter(s, st, waitGrowth))
-	}
-	defer func() {
-		for _, cleanup := range cleanups {
-			cleanup()
-		}
-	}()
-
-	global := s.changed
-	if err := source.releaseSendCreditLocked(128 << 10); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := signaledWriterCount(waiters), 4; got != want {
-		t.Fatalf("128 KiB consumption signaled %d writers, want %d", got, want)
-	}
-	select {
-	case <-global:
-		t.Fatal("shared credit release broadcast global changed channel")
-	default:
-	}
-}
-
 func TestSessionWindowSignalsOnlyNewCommitBudget(t *testing.T) {
 	s, _ := rev2Fixture()
 	s.credit.txCommitted = 1 << 20
@@ -237,30 +205,5 @@ func TestOpenWaitCompletesFromTargetedOpenSignal(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Open remained blocked after targeted OPEN_OK signal")
-	}
-}
-
-func TestWriterTurnSignalsFIFOOneAtATime(t *testing.T) {
-	s, _ := rev2Fixture()
-	a := rev2Stream(s, 1)
-	b := rev2Stream(s, 3)
-	c := rev2Stream(s, 5)
-	cleanupA := attachWriterWaiter(s, a, waitWriterTurn)
-	defer cleanupA()
-	cleanupB := attachWriterWaiter(s, b, waitWriterTurn)
-	defer cleanupB()
-	cleanupC := attachWriterWaiter(s, c, waitWriterTurn)
-	defer cleanupC()
-
-	s.signalWriterTurnLocked()
-	if len(a.writeWake) != 1 || len(b.writeWake) != 0 || len(c.writeWake) != 0 {
-		t.Fatalf("first writer-turn signal was not FIFO: a=%d b=%d c=%d", len(a.writeWake), len(b.writeWake), len(c.writeWake))
-	}
-	<-a.writeWake
-	s.endWriterWaitLocked(a)
-	s.writerReady.MoveToBack(a.writeEntry)
-	s.signalWriterTurnLocked()
-	if len(b.writeWake) != 1 || len(c.writeWake) != 0 {
-		t.Fatalf("second writer-turn signal was not FIFO: b=%d c=%d", len(b.writeWake), len(c.writeWake))
 	}
 }

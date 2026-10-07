@@ -156,13 +156,12 @@ func (s *Session) receiveSessionCreditLocked(f frame) error {
 	}
 }
 
-// A high offset proves commitment of the preceding range, even when its DATA
-// is reordered. A repeated/overlapping DATA or final-size declaration adds zero.
-func sharedGrowthRoom(used, growth int) int {
-	bootstrapUsed := used - growth
-	unusedBootstrap := max(0, BootstrapCreditLimit-bootstrapUsed)
-	return max(0, GrowthCreditLimit+unusedBootstrap-growth)
-}
+// txUsed/txGrowth below are diagnostic mirrors of per-Stream consumed
+// progress. They are deliberately NOT sender admission limits: MPX/4 peer
+// STREAM_WINDOW and SESSION_WINDOW are the authoritative send-credit gates.
+// A peer can advance aggregate Session consumption ahead of one Stream's
+// WINDOW replay, so these diagnostics may temporarily exceed 128 MiB without
+// implying a protocol flow-control violation.
 
 func (st *Stream) receiveCommitLocked(end uint64) error {
 	s, fc := st.s, &st.s.credit
@@ -231,10 +230,6 @@ func (st *Stream) releaseSendCreditLocked(consumed uint64) error {
 	s.credit.txGrowth -= growth
 	st.peerConsumed = consumed
 	s.syncBootstrapReserveLocked(st)
-	// Consumption releases aggregate Session credit for any writer. Wake only
-	// enough shared-credit waiters to consume the newly freed frame budget;
-	// FIFO writer-turn handoff is handled separately.
-	s.signalSharedCreditLocked(n)
 	return nil
 }
 
@@ -258,20 +253,13 @@ func (st *Stream) writeAllowanceLocked() (int, int) {
 	if fc.peerLimit <= fc.txCommitted {
 		return 0, waitSessionWindow
 	}
-	n := min(st.writeRemaining, MaxPayload, int(min(uint64(MaxStreamWindow), st.peerLimit-st.txNext)), int(min(uint64(MaxPayload), fc.peerLimit-fc.txCommitted)))
-	u := int(st.txNext - st.peerConsumed)
-	baseRoom := max(0, StreamWindow-u)
-	baseRoom = min(baseRoom, max(0, BootstrapCreditLimit-(fc.txUsed-fc.txGrowth)))
-	// RC7 lets growth borrow bootstrap share that is not occupied by actual
-	// DATA. SessionCreditLimit remains the aggregate hard ceiling.
-	growthRoom := sharedGrowthRoom(fc.txUsed, fc.txGrowth)
-	if baseRoom+growthRoom == 0 {
-		if u < StreamWindow {
-			return 0, waitBootstrap
-		}
-		return 0, waitGrowth
-	}
-	n = min(n, baseRoom+growthRoom, max(0, SessionCreditLimit-fc.txUsed))
+	// MPX/4 peer-advertised Stream and Session WINDOWs are the only
+	// flow-control authority on the send side. Do not add a second local
+	// txUsed/growth ceiling: per-Stream consumed reports can lag the aggregate
+	// SESSION_WINDOW and otherwise create a false 128 MiB head-of-line stall.
+	n := min(st.writeRemaining, MaxPayload,
+		int(min(uint64(MaxStreamWindow), st.peerLimit-st.txNext)),
+		int(min(uint64(MaxPayload), fc.peerLimit-fc.txCommitted)))
 	if s.dataPendingFrames >= MaxDataPending {
 		return 0, waitPendingFrames
 	}
@@ -280,51 +268,23 @@ func (st *Stream) writeAllowanceLocked() (int, int) {
 		return 0, waitPendingBytes
 	}
 	n = min(n, room)
-	if n > baseRoom {
-		growthFrames, growthBytes := s.growthPendingRoomLocked(st)
-		if growthFrames <= 0 {
-			n = min(n, baseRoom)
-			if n == 0 {
-				return 0, waitPendingFrames
-			}
-		} else if growthBytes < n+64 {
-			n = min(n, max(baseRoom, max(0, growthBytes-64)))
+
+	// Preserve only the local pending-capacity bootstrap reserve. This is not
+	// flow control: it prevents established bulk Streams from occupying every
+	// pending slot while a newly active Stream still needs its first frame.
+	if st.txNext-st.peerConsumed >= StreamWindow {
+		postBootstrapFrames, postBootstrapBytes := s.growthPendingRoomLocked(st)
+		if postBootstrapFrames <= 0 {
+			return 0, waitPendingFrames
+		}
+		if postBootstrapBytes < n+64 {
+			n = min(n, max(0, postBootstrapBytes-64))
 			if n == 0 {
 				return 0, waitPendingBytes
 			}
 		}
 	}
 	return n, waitNone
-}
-
-func (s *Session) writerTurnLocked(st *Stream) bool {
-	count := s.writerReady.Len()
-	if count <= 1 {
-		return true
-	}
-	// Preserve the sliding bootstrap share even while growth is contended.
-	if st.txNext-st.peerConsumed < StreamWindow {
-		return true
-	}
-	// Do not serialize writers when every waiter can receive a full DATA turn.
-	// DATA dispatch remains per-stream round-robin; scarce credit uses FIFO.
-	growthFrames, growthBytes := s.growthPendingRoomLocked(nil)
-	if sharedGrowthRoom(s.credit.txUsed, s.credit.txGrowth) >= count*MaxPayload &&
-		growthFrames >= count && growthBytes >= count*(MaxPayload+64) {
-		return true
-	}
-	// Legacy 0.10.x policy: once there is not enough room for every active
-	// writer to receive one full DATA turn, serialize scarce growth credit in
-	// FIFO order. The room calculation itself stays on the 1.0.x dynamic shared
-	// pending/credit model rather than restoring the old static 64 MiB reserve.
-	for e := s.writerReady.Front(); e != nil; e = e.Next() {
-		s.writerTurnScanSteps++
-		other := e.Value.(*Stream)
-		if n, _ := other.writeAllowanceLocked(); n > 0 {
-			return other == st
-		}
-	}
-	return false
 }
 
 func (s *Session) streamForCreditLocked(id uint64) *Stream {

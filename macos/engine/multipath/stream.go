@@ -502,7 +502,6 @@ func (st *Stream) Write(p []byte) (int, error) {
 		s.writerReady.Remove(st.writeEntry)
 		st.writeEntry = nil
 		s.signalPendingWriterLocked()
-		s.signalWriterTurnLocked()
 		s.mu.Unlock()
 	}()
 	total := 0
@@ -529,10 +528,6 @@ func (st *Stream) Write(p []byte) (int, error) {
 			continue
 		}
 		n, reason := st.writeAllowanceLocked()
-		if n > 0 && !s.writerTurnLocked(st) {
-			n = 0
-			reason = waitWriterTurn
-		}
 		if n > 0 {
 			if st.txNext > ^uint64(0)-uint64(n) || s.credit.txCommitted > ^uint64(0)-uint64(n)-SessionCreditLimit {
 				return total, ErrProtocol
@@ -548,10 +543,6 @@ func (st *Stream) Write(p []byte) (int, error) {
 			p = p[n:]
 			s.setWriterRemainingLocked(st, len(p))
 			s.writerReady.MoveToBack(st.writeEntry)
-			// A writer that consumed one turn moves to the tail. If shared
-			// credit is scarce, explicitly hand the next eligible FIFO writer
-			// its turn instead of relying on a broadcast state change.
-			s.signalWriterTurnLocked()
 			framesInHold++
 			if framesInHold >= writeLockQuantumFrames && len(p) != 0 {
 				// Large application writes must not monopolize Session.mu.
@@ -565,7 +556,7 @@ func (st *Stream) Write(p []byte) (int, error) {
 			continue
 		}
 		s.windowWaits++
-		blocked := reason >= waitStreamWindow && reason <= waitGrowth
+		blocked := reason == waitStreamWindow || reason == waitSessionWindow
 		if blocked {
 			s.windowBlockedWriters++
 		}

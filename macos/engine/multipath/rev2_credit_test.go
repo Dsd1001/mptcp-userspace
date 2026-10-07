@@ -139,19 +139,16 @@ func TestRev4GrowthFullStillPermitsAllRemainingBootstrap(t *testing.T) {
 	}
 }
 
-func TestRC7GrowthBorrowsUnusedBootstrapWhilePendingBoundStaysIndependent(t *testing.T) {
+func TestSenderDiagnosticGrowthDoesNotGatePeerWindowWhilePendingBoundStaysIndependent(t *testing.T) {
 	s, _ := rev2Fixture()
 	ids := saturateGrowthSend(t, s)
-	if sharedGrowthRoom(s.credit.txUsed, s.credit.txGrowth) <= 0 {
-		t.Fatal("nominal 64 MiB growth pool did not expose borrowable unused bootstrap share")
-	}
 	st := rev2Stream(s, uint64(2*len(ids)+1))
 	st.SetWriteDeadline(time.Now().Add(time.Second))
 	if n, err := st.Write(make([]byte, StreamWindow+1)); err != nil || n != StreamWindow+1 {
 		t.Fatalf("borrowed growth was blocked before Session pressure: n=%d err=%v", n, err)
 	}
-	if s.credit.waits[waitGrowth].Count != 0 {
-		t.Fatal("nominal growth split still acted as a hard limit")
+	if s.credit.waits[waitGrowth].Count != 0 || s.credit.waits[waitWriterTurn].Count != 0 {
+		t.Fatal("legacy local growth/writer-turn admission became active")
 	}
 
 	// A different fixture isolates DATA metadata reservation from flow credit.

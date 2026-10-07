@@ -360,32 +360,10 @@ func writerPermits(bytes int) int {
 
 func (s *Session) signalPendingWriterLocked() {
 	s.signalWriterReasonsLocked(1, waitPendingFrames, waitPendingBytes)
-	s.signalWriterTurnLocked()
-}
-
-func (s *Session) signalSharedCreditLocked(bytes int) {
-	s.signalWriterReasonsLocked(writerPermits(bytes), waitBootstrap, waitGrowth)
-	s.signalWriterTurnLocked()
 }
 
 func (s *Session) signalSessionCreditLocked(bytes int) {
 	s.signalWriterReasonsLocked(writerPermits(bytes), waitSessionWindow)
-	s.signalWriterTurnLocked()
-}
-
-func (s *Session) signalWriterTurnLocked() {
-	for e := s.writerReady.Front(); e != nil; e = e.Next() {
-		s.writerTurnScanSteps++
-		st, _ := e.Value.(*Stream)
-		if st == nil || !st.writeWaiting || st.writeWaitReason != waitWriterTurn {
-			continue
-		}
-		if n, _ := st.writeAllowanceLocked(); n <= 0 {
-			continue
-		}
-		s.signalStreamWriterLocked(st)
-		return
-	}
 }
 
 func (s *Session) stop(err error) {

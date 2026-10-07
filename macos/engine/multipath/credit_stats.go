@@ -2,8 +2,9 @@ package multipath
 
 import "time"
 
-// Rev4 exposes actual offset commitment, historic WINDOW entitlement and
-// physical page accounting separately. Cumulative counters never imply RAM.
+// Sender admission follows peer STREAM/SESSION WINDOWs. TXUsed/TXGrowth are
+// diagnostic mirrors of per-Stream consumption lag only and may exceed the
+// protocol Session window without becoming a local send gate.
 type SharedCreditStats struct {
 	CapabilityRevision int                   `json:"capability_revision"`
 	CreditAccounting   string                `json:"credit_accounting"`
@@ -31,7 +32,7 @@ type SharedCreditStats struct {
 func (s *Session) sharedCreditSnapshotLocked() SharedCreditStats {
 	fc := &s.credit
 	r := SharedCreditStats{
-		CapabilityRevision: CapabilityRevision, CreditAccounting: "rev4_actual_offset",
+		CapabilityRevision: CapabilityRevision, CreditAccounting: "rev5_peer_window_authoritative",
 		TXCommitted: fc.txCommitted, PeerConsumed: fc.peerConsumed, PeerLimit: fc.peerLimit,
 		RXCommitted: fc.rxCommitted, RXConsumed: fc.rxConsumed, RXLimit: fc.rxLimit,
 		TXUsed: fc.txUsed, TXBootstrap: fc.txUsed - fc.txGrowth, TXGrowth: fc.txGrowth,

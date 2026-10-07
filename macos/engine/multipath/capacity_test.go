@@ -123,9 +123,14 @@ func capacityClose(st *Stream, peer *Session) error {
 }
 func capacityBounds(st Stats) error {
 	r := st.Resources
-	txGrowthLimit := GrowthCreditLimit + max(0, BootstrapCreditLimit-r.TXBootstrap)
-	if r.OccupiedSlots > MaxStreams || r.TXUsed < 0 || r.TXUsed > SessionCreditLimit || r.TXGrowth < 0 || r.TXGrowth > txGrowthLimit || r.TXBootstrap < 0 || r.TXBootstrap > BootstrapCreditLimit {
-		return fmt.Errorf("sender/closing resource bound")
+	// Sender TXUsed/TXGrowth are diagnostic mirrors of per-Stream consumed
+	// progress, not an admission pool. They may exceed the 128 MiB Session
+	// WINDOW when aggregate SESSION_WINDOW consumption advances before some
+	// per-Stream WINDOW replays arrive.
+	txDiagnosticLimit := r.OccupiedSlots * MaxStreamWindow
+	if r.OccupiedSlots > MaxStreams || r.TXUsed < 0 || r.TXUsed > txDiagnosticLimit ||
+		r.TXGrowth < 0 || r.TXGrowth > r.TXUsed || r.TXBootstrap < 0 || r.TXBootstrap > BootstrapCreditLimit {
+		return fmt.Errorf("sender/closing diagnostic bound")
 	}
 	for name, pair := range map[string][2]int{"streams": {r.ActiveStreams, MaxStreams}, "credit": {r.ReceiveCredit, SessionCreditLimit}, "bootstrap": {r.BootstrapCredit, BootstrapCreditLimit}, "growth": {r.GrowthCredit, r.GrowthLimit}, "pages": {r.ReceiveAllocated, MaxBuffered}, "data_frames": {r.DataPendingFrames, MaxDataPending}, "data_bytes": {r.DataPendingBytes, MaxDataPendingBytes}, "control_frames": {r.ControlPendingFrames, MaxControlPending}, "control_bytes": {r.ControlPendingBytes, MaxControlBytes}} {
 		if pair[0] < 0 || pair[0] > pair[1] {
