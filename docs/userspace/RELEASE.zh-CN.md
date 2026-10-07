@@ -1,18 +1,18 @@
-# MPTCP Userspace 1.0.4 / MPX/4 Protocol Version 4 Stable
+# MPTCP Userspace 1.0.5 / MPX/4 Protocol Version 4 Stable
 
-1.0.4 是基于 1.0.3 的兼容性能修复版本：MPTCP Desk、Linux Client、Landing 与 Provisioning 统一使用 **1.0.4**。Wire Protocol Version 仍为 4，协议源继续冻结到 MPX/4 `protocol-v4.0.0`，commit `44f587fd279ed2238b070dd68114c76822353f4d`。
+1.0.5 是基于 1.0.4 的兼容性能回归版本：MPTCP Desk、Linux Client、Landing 与 Provisioning 统一使用 **1.0.5**。Wire Protocol Version 仍为 4，协议源继续冻结到 MPX/4 `protocol-v4.0.0`，commit `44f587fd279ed2238b070dd68114c76822353f4d`。
 
-## 1.0.4 变化
+## 1.0.5 变化
 
-- 修复 Weighted 在高并发、多 Stream 下载时被固定 `minRTT` BDP 硬上限限制的问题。配置带宽与传播 RTT 仍只决定安全初始 flight，load RTT 不再直接扩大窗口；
-- 当 Carrier 持续有 ready DATA backlog、真实 flight 已撞到 budget、DATA receipt/ACK 持续前进，且新的 receiver-clock delivery epoch 仍低于配置速率 90% 时，允许 adaptive flight 逐级增长，单次最多约 2×，每条 Carrier 仍以 **8 MiB** 为硬上限；
-- adaptive growth 每次必须消费一个新的 receiver-clock delivery epoch，禁止使用同一个旧低速样本连续扩窗；空闲超过 5 秒恢复 base flight，重复 delivery timeout 会将 adaptive flight 减半并继续使用原 Carrier penalty 保护；
-- `writer_turn` 从 1.0.3 的严格单 token FIFO 改为**动态小批量 FIFO runnable window**：根据当前 Session credit、peer Session WINDOW、shared growth credit 与 pending room 决定可同时运行的 writer 数量，上限 8；真正只剩一个 DATA turn 时仍严格 FIFO，不恢复 wake-all；
-- Path telemetry 新增 `recent_delivery_bps`、`budget_limited` 与 `weighted_budget_growths`，并使 `budget_bytes` 直接反映 Weighted 模式实际生效的 adaptive flight；
-- 继承 1.0.3 的 per-Stream targeted wake、1.0.2 的 **1 GiB DATA pending pool + 动态 bootstrap reserve**、1.0.1 的 192 KiB OPEN bootstrap；`MaxPayload` 仍为 32 KiB，Session flow-control hard limit 仍为 128 MiB；
+- Weighted flight 直接恢复 0.10.7 / 0.10.9 / 0.10.12 已长期使用的有界 feedback RTT 公式：`feedback = min(4*baseRTT, max(baseRTT, currentFeedbackRTT))`；配置带宽仍决定目标 flight，但真实 MPX receipt RTT 最多只允许按 **4× base RTT** 参与预算；
+- 完整移除 1.0.4 新增的 adaptive Weighted growth 状态与 receiver-clock epoch 扩窗逻辑，避免继续叠加额外控制环；load RTT 可以有限度补偿 delayed feedback，但不会无限扩大；
+- `writer_turn` 恢复 0.10.x 的决策模型：当当前 shared credit / dynamic pending room 足够让所有活跃 writer 各拿一个完整 DATA turn 时不串行；真正资源不足时才按 FIFO 单 writer 传棒；
+- writer-turn 的资源判断继续使用 1.0.x 的 **动态 shared growth room + 1 GiB DATA pending + dynamic bootstrap reserve**，不恢复 0.10.x 约 64 MiB 的静态 growth pending reserve；
+- 继续保留 1.0.3 的 per-Stream targeted wake，不恢复旧版 wake-all；继续保留 1.0.2 的 1 GiB DATA pending、1.0.1 的 192 KiB OPEN bootstrap；
+- `MaxPayload` 仍为 32 KiB，Session flow-control hard limit 仍为 128 MiB，Landing `MemoryMax` 仍为 2 GiB；
 - Keychain Broker v1 继续冻结不变。
 
-本版本通过当前源码 Go 全包测试、`go vet`、完整 multipath race，以及 source-matched Weighted high-BDP release gate。后者验证 300 Mbps 配置下的本地高-BDP回归、两阶段 timeout penalty 与恢复；物理 WAN / App+Surge acceptance 不作为本版本的新发布结论。
+本版本通过当前源码 Go 全包测试、`go vet`、完整 multipath race，以及 source-matched Weighted high-BDP release gate。旧式有界 feedback 公式在 300 Mbps 高-BDP gate 中取得约 266 Mbps 中位吞吐；物理 WAN / App+Surge acceptance 不作为本版本的新发布结论。
 
 ## 协议更新
 
@@ -45,7 +45,7 @@ Landing 增加独立本地 scheduler policy，默认 Auto。
 
 ## Broker 冻结
 
-1.0.4 **不升级 Broker**。继续复用 0.10.12 / 1.0.0 / 1.0.1 / 1.0.2 / 1.0.3 的 `MPTCPKeychainBroker` v1 精确字节：
+1.0.5 **不升级 Broker**。继续复用 0.10.12 / 1.0.0 / 1.0.1 / 1.0.2 / 1.0.3 / 1.0.4 的 `MPTCPKeychainBroker` v1 精确字节：
 
 `sha256=5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`
 
@@ -53,4 +53,4 @@ Mac 构建入口和发布验证都会硬校验该值。重建、重签或替换 
 
 ## 发布验证
 
-1.0.0 的正式 Stable 基线使用独立 `--stable-release` gate。1.0.4 使用 Stable patch gate：要求 frozen source、artifact hash、provenance 与当前源码 correctness evidence 自洽；本次记录 Go 全包测试、`go vet`、完整 multipath race 与 source-matched Weighted high-BDP release gate 通过，但完整 Scheduler promotion、capacity、180s runtime 与物理 WAN acceptance 不作为 1.0.4 的新发布结论。
+1.0.0 的正式 Stable 基线使用独立 `--stable-release` gate。1.0.5 使用 Stable patch gate：要求 frozen source、artifact hash、provenance 与当前源码 correctness evidence 自洽；本次记录 Go 全包测试、`go vet`、完整 multipath race 与 source-matched Weighted high-BDP release gate 通过，但完整 Scheduler promotion、capacity、180s runtime 与物理 WAN acceptance 不作为 1.0.5 的新发布结论。
