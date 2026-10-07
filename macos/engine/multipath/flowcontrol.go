@@ -1,10 +1,6 @@
 package multipath
 
-import (
-	"container/list"
-	"sort"
-	"time"
-)
+import "time"
 
 const (
 	MaxStreamWindow      = 16 << 20
@@ -27,7 +23,7 @@ const (
 	warmHistoryHalfLife      = 30 * time.Second
 	warmHistoryTTL           = 2 * time.Minute
 	streamCreditRefreshBatch = 128 << 10
-	dataDispatchBatch        = MaxStreams / 4 // preserve ~4 scheduler cycles for a full ready-set sweep as capacity scales
+	dataDispatchBatch        = 128 // bounded Session critical section; unfinished ready work self-kicks immediately
 )
 
 // All methods in this file run with Session.mu held. An absolute grant is
@@ -659,17 +655,29 @@ func (s *Session) readyLocked(p *outbound, front bool) {
 		return
 	}
 	if s.ready == nil {
-		s.ready = make(map[uint64]*list.List)
+		s.ready = make(map[uint64]*dataReadyQueue)
 	}
-	q := s.ready[p.f.stream]
-	if q == nil {
-		q = list.New()
-		s.ready[p.f.stream] = q
+	rq := s.ready[p.f.stream]
+	if rq == nil {
+		rq = &dataReadyQueue{stream: p.f.stream}
+		s.ready[p.f.stream] = rq
 	}
+	wasEmpty := rq.frames.Len() == 0
 	if front {
-		p.ready = q.PushFront(p)
+		p.ready = rq.frames.PushFront(p)
 	} else {
-		p.ready = q.PushBack(p)
+		p.ready = rq.frames.PushBack(p)
+	}
+	s.readyFrames++
+	if wasEmpty {
+		if front {
+			rq.entry = s.readyStreams.PushFront(rq)
+		} else {
+			rq.entry = s.readyStreams.PushBack(rq)
+		}
+	}
+	if rq.frames.Len() >= 4 {
+		s.bulkReady = rq
 	}
 }
 
@@ -682,43 +690,61 @@ func (s *Session) unreadyLocked(p *outbound) {
 		p.ready = nil
 		return
 	}
-	q := s.ready[p.f.stream]
-	q.Remove(p.ready)
+	rq := s.ready[p.f.stream]
+	if rq == nil {
+		p.ready = nil
+		return
+	}
+	rq.frames.Remove(p.ready)
 	p.ready = nil
-	if q.Len() == 0 {
+	if s.readyFrames > 0 {
+		s.readyFrames--
+	}
+	if rq.frames.Len() == 0 {
+		if rq.entry != nil {
+			s.readyStreams.Remove(rq.entry)
+			rq.entry = nil
+		}
 		delete(s.ready, p.f.stream)
+		if s.bulkReady == rq {
+			s.bulkReady = nil
+		}
 	}
 }
 
-// Fair dispatch without repeatedly scanning/sorting all in-flight payloads.
-// Each live queue element is owned by a pending ledger entry, never a second
-// payload copy, and ACK/reset/close remove it immediately.
+// Fair DATA dispatch uses an intrusive per-Stream ready ring. The hot path is
+// allocation-free and O(frames dispatched): no map scan, ID slice, or sort is
+// performed under Session.mu. A bounded batch yields the Session lock; if ready
+// work remains, the Session self-kicks so dispatch resumes immediately.
 func (s *Session) dispatchLocked(now time.Time) {
-	ids := make([]uint64, 0, len(s.ready))
-	for id := range s.ready {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	if len(ids) == 0 {
-		return
-	}
+	started := time.Now()
+	s.dispatchRuns++
+	dispatched := 0
+	defer func() {
+		elapsed := uint64(time.Since(started))
+		s.dispatchNS += elapsed
+		if elapsed > s.dispatchMaxNS {
+			s.dispatchMaxNS = elapsed
+		}
+		s.dispatchFrames += uint64(dispatched)
+		if dispatched >= dataDispatchBatch && s.readyStreams.Len() != 0 {
+			s.kickLocked()
+		}
+	}()
 
-	dispatchOne := func(id uint64, advanceFair bool) bool {
-		q := s.ready[id]
-		if q == nil || q.Len() == 0 {
+	dispatchOne := func(rq *dataReadyQueue, advanceFair bool) bool {
+		if rq == nil || rq.frames.Len() == 0 {
 			return true
 		}
 		c := s.pathLocked(now)
 		if c == nil {
 			return false
 		}
-		p := q.Front().Value.(*outbound)
+		p := rq.frames.Front().Value.(*outbound)
 		s.unreadyLocked(p)
 		p.path = c
 		p.generation++
 		p.sentAt = time.Time{}
-		// An ACK-clocked flight can momentarily empty without the application being
-		// idle. Reset samples only on a genuine idle gap, not every drained flight.
 		if c.outstanding == 0 && (c.lastACK.IsZero() || now.Sub(c.lastACK) > max(200*time.Millisecond, 3*c.rtt)) {
 			c.sampleAt = now
 			c.remoteSampleAt = 0
@@ -738,11 +764,15 @@ func (s *Session) dispatchLocked(now time.Time) {
 		case c.queue <- sendTask{p: p, generation: p.generation}:
 			s.schedulerAllocatedLocked(c, p, now)
 			if advanceFair {
-				s.dispatchCursor = id
 				s.dispatchSequence++
-			} else {
-				s.bulkDispatchCursor = id
 			}
+			if rq.entry != nil && rq.frames.Len() != 0 {
+				s.readyStreams.MoveToBack(rq.entry)
+			}
+			if rq.frames.Len() >= 4 {
+				s.bulkReady = rq
+			}
+			dispatched++
 			return true
 		default:
 			c.outstanding -= p.cost
@@ -753,47 +783,26 @@ func (s *Session) dispatchLocked(now time.Time) {
 		}
 	}
 
-	bulkCandidate := func() uint64 {
-		if len(ids) == 0 {
-			return 0
-		}
-		start := sort.Search(len(ids), func(i int) bool { return ids[i] > s.bulkDispatchCursor })
-		if start == len(ids) {
-			start = 0
-		}
-		bestLen := 3 // at least four queued DATA frames proves sustained backlog
-		var best uint64
-		for step := 0; step < len(ids); step++ {
-			id := ids[(start+step)%len(ids)]
-			if q := s.ready[id]; q != nil && q.Len() > bestLen {
-				best, bestLen = id, q.Len()
+	for dispatched < dataDispatchBatch && s.readyStreams.Len() != 0 {
+		e := s.readyStreams.Front()
+		rq, _ := e.Value.(*dataReadyQueue)
+		if rq == nil || rq.frames.Len() == 0 {
+			if rq != nil {
+				delete(s.ready, rq.stream)
+				rq.entry = nil
 			}
-		}
-		return best
-	}
-
-	start := sort.Search(len(ids), func(i int) bool { return ids[i] > s.dispatchCursor })
-	if start == len(ids) {
-		start = 0
-	}
-	for count, empty := 0, 0; count < dataDispatchBatch && empty < len(ids); count++ {
-		id := ids[(start+count)%len(ids)]
-		q := s.ready[id]
-		if q == nil || q.Len() == 0 {
-			empty++
+			s.readyStreams.Remove(e)
 			continue
 		}
-		empty = 0
-		if !dispatchOne(id, true) {
+		if !dispatchOne(rq, true) {
 			return
 		}
-		// Normal per-stream round-robin remains intact. Every eight successful
-		// fair DATA frames, offer one additional turn to the largest sustained
-		// backlog. This caps the bonus near 1/9 of DATA dispatch opportunities
-		// while preventing a bulk stream from collapsing to one frame per full
-		// 2048-stream rotation.
-		if s.dispatchSequence%8 == 0 {
-			if bonus := bulkCandidate(); bonus != 0 && !dispatchOne(bonus, false) {
+		// Preserve the old bounded bulk bonus without scanning every ready
+		// Stream. A sustained backlog becomes the current O(1) bulk hint and
+		// receives one extra turn per eight fair dispatches.
+		if s.dispatchSequence%8 == 0 && s.bulkReady != nil && s.bulkReady.frames.Len() >= 4 {
+			bonus := s.bulkReady
+			if !dispatchOne(bonus, false) {
 				return
 			}
 		}

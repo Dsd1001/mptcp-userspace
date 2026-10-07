@@ -225,7 +225,7 @@ func TestTrueStreamAndLedgerBoundsRemainTyped(t *testing.T) {
 	for _, p := range s.pending {
 		s.removePendingLocked(p)
 	}
-	if s.dataPendingFrames != 0 || s.controlPendingFrames != 0 || s.pendingBytes != 0 || s.controlReady.Len() != 0 || len(s.ready) != 0 {
+	if s.dataPendingFrames != 0 || s.controlPendingFrames != 0 || s.pendingBytes != 0 || s.controlReady.Len() != 0 || s.readyFrames != 0 || s.readyStreams.Len() != 0 {
 		t.Fatal("ledger release failed")
 	}
 	s.dataPendingBytes = MaxDataPendingBytes - 64

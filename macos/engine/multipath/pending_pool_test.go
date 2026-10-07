@@ -3,14 +3,14 @@ package multipath
 import "testing"
 
 func attachPendingWriter(s *Session, st *Stream) func() {
-	st.writeRemaining = MaxPayload
 	st.writeEntry = s.writerReady.PushBack(st)
+	s.setWriterRemainingLocked(st, MaxPayload)
 	return func() {
+		s.setWriterRemainingLocked(st, 0)
 		if st.writeEntry != nil {
 			s.writerReady.Remove(st.writeEntry)
 			st.writeEntry = nil
 		}
-		st.writeRemaining = 0
 	}
 }
 
@@ -35,6 +35,7 @@ func TestPendingReserveTracksActiveBootstrapWriters(t *testing.T) {
 		t.Fatalf("dynamic reserve mismatch: frames=%d bytes=%d", frames, bytes)
 	}
 	a.txNext = StreamWindow
+	s.syncBootstrapReserveLocked(a)
 	if frames, bytes := s.pendingBootstrapReserveLocked(nil); frames != 1 || bytes != MaxPayload+64 {
 		t.Fatalf("completed bootstrap still reserved storage: frames=%d bytes=%d", frames, bytes)
 	}

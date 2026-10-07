@@ -7,16 +7,16 @@ import (
 )
 
 func attachWriterWaiter(s *Session, st *Stream, reason int) func() {
-	st.writeRemaining = MaxPayload
 	st.writeEntry = s.writerReady.PushBack(st)
+	s.setWriterRemainingLocked(st, MaxPayload)
 	s.beginWriterWaitLocked(st, reason)
 	return func() {
 		s.endWriterWaitLocked(st)
+		s.setWriterRemainingLocked(st, 0)
 		if st.writeEntry != nil {
 			s.writerReady.Remove(st.writeEntry)
 			st.writeEntry = nil
 		}
-		st.writeRemaining = 0
 	}
 }
 

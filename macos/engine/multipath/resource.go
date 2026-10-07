@@ -57,6 +57,18 @@ type ResourceStats struct {
 	PendingWaiters          int               `json:"pending_waiters"`
 	CreditWaiters           int               `json:"credit_waiters"`
 	WriterTurnWaiters       int               `json:"writer_turn_waiters"`
+	ReadyStreams            int               `json:"ready_streams"`
+	BootstrapWriters        int               `json:"bootstrap_writers"`
+	SessionLockCount        uint64            `json:"session_lock_count"`
+	SessionLockWaitNS       uint64            `json:"session_lock_wait_ns"`
+	SessionLockWaitMaxNS    uint64            `json:"session_lock_wait_max_ns"`
+	SessionLockHoldNS       uint64            `json:"session_lock_hold_ns"`
+	SessionLockHoldMaxNS    uint64            `json:"session_lock_hold_max_ns"`
+	DispatchRuns            uint64            `json:"dispatch_runs"`
+	DispatchFrames          uint64            `json:"dispatch_frames"`
+	DispatchNS              uint64            `json:"dispatch_ns"`
+	DispatchMaxNS           uint64            `json:"dispatch_max_ns"`
+	WriterTurnScanSteps     uint64            `json:"writer_turn_scan_steps"`
 	ControlPendingFrames    int               `json:"control_pending_frames"`
 	ControlPendingLimit     int               `json:"control_pending_frame_limit"`
 	ControlPendingBytes     int               `json:"control_pending_bytes"`
@@ -208,6 +220,19 @@ func (s *Session) resourceSnapshotLocked() ResourceStats {
 	r.PendingWaiters = s.pendingWaiters
 	r.CreditWaiters = s.creditWaiters
 	r.WriterTurnWaiters = s.writerTurnWaiters
+	r.ReadyStreams = s.readyStreams.Len()
+	r.BootstrapWriters = s.bootstrapWriters
+	lock := s.mu.snapshot()
+	r.SessionLockCount = lock.Locks
+	r.SessionLockWaitNS = lock.WaitNS
+	r.SessionLockWaitMaxNS = lock.WaitMaxNS
+	r.SessionLockHoldNS = lock.HoldNS
+	r.SessionLockHoldMaxNS = lock.HoldMaxNS
+	r.DispatchRuns = s.dispatchRuns
+	r.DispatchFrames = s.dispatchFrames
+	r.DispatchNS = s.dispatchNS
+	r.DispatchMaxNS = s.dispatchMaxNS
+	r.WriterTurnScanSteps = s.writerTurnScanSteps
 	r.ControlPendingFrames = s.controlPendingFrames
 	r.ControlPendingLimit = MaxControlPending
 	r.ControlPendingBytes = s.controlPendingBytes

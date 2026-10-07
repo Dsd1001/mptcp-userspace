@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"sort"
-	"sync"
 	"time"
 )
 
@@ -88,6 +87,12 @@ type outbound struct {
 	attempts        int
 }
 
+type dataReadyQueue struct {
+	stream uint64
+	frames list.List
+	entry  *list.Element
+}
+
 type sendTask struct {
 	p          *outbound
 	generation uint64
@@ -151,14 +156,17 @@ type Session struct {
 	cancel                                           context.CancelFunc
 	id                                               sessionID
 	server                                           bool
-	mu                                               sync.Mutex
+	mu                                               timedMutex
 	changed                                          chan struct{}
 	kick                                             chan struct{}
 	done                                             chan struct{}
 	closed                                           bool
 	err                                              error
 	streams                                          map[uint64]*Stream
-	ready                                            map[uint64]*list.List
+	ready                                            map[uint64]*dataReadyQueue
+	readyStreams                                     list.List
+	bulkReady                                        *dataReadyQueue
+	readyFrames                                      int
 	receiveCredit, windowSeed                        int
 	windowSeedAt                                     time.Time
 	clockStart                                       time.Time
@@ -179,8 +187,8 @@ type Session struct {
 	settledThrough, lastRetireAdvertised             uint64
 	peerProcessedThrough, peerRetiredThrough         uint64
 	seen                                             map[uint64]bool
-	maxSeen, nextStream, nextPacket, dispatchCursor  uint64
-	bulkDispatchCursor, dispatchSequence             uint64
+	maxSeen, nextStream, nextPacket                  uint64
+	dispatchSequence                                 uint64
 	pendingBytes, bufferedBytes                      int
 	receiveAllocated                                 int
 	sent, received, retransmits, windowWaits         uint64
@@ -198,13 +206,16 @@ type Session struct {
 	dataPendingBytes, controlPendingBytes            int
 	windowBlockedWriters                             int
 	pendingWaiters, creditWaiters, writerTurnWaiters int
+	bootstrapWriters                                 int
 	controlDrops, openedStreams, closedStreams       uint64
+	dispatchRuns, dispatchFrames, dispatchNS         uint64
+	dispatchMaxNS, writerTurnScanSteps               uint64
 	localConnections                                 int
 }
 
 func newSession(parent context.Context, id sessionID, server bool, onOpen func(*Stream), modes ...SchedulerMode) *Session {
 	ctx, cancel := context.WithCancel(parent)
-	s := &Session{clockStart: time.Now(), ctx: ctx, cancel: cancel, id: id, server: server, changed: make(chan struct{}), kick: make(chan struct{}, 1), done: make(chan struct{}), streams: make(map[uint64]*Stream), pending: make(map[uint64]*outbound), paths: make(map[uint64]*carrier), carrierUsed: make(map[uint64]bool), highestGeneration: make(map[uint64]uint64), nextCandidateGeneration: make(map[uint64]uint64), generationExhausted: make(map[uint64]bool), pathCapacities: make(map[uint64]PathCapacity), settled: make(map[uint64]bool), peerProcessed: make(map[uint64]bool), peerTransmissionFingerprint: make(map[uint64][32]byte), confirmationReplay: make(map[uint64]frame), seen: make(map[uint64]bool), nextStream: 1, noPathsSince: time.Now(), localMaxCarriers: MaxCarriers, onOpen: onOpen}
+	s := &Session{clockStart: time.Now(), ctx: ctx, cancel: cancel, id: id, server: server, changed: make(chan struct{}), kick: make(chan struct{}, 1), done: make(chan struct{}), streams: make(map[uint64]*Stream), ready: make(map[uint64]*dataReadyQueue), pending: make(map[uint64]*outbound), paths: make(map[uint64]*carrier), carrierUsed: make(map[uint64]bool), highestGeneration: make(map[uint64]uint64), nextCandidateGeneration: make(map[uint64]uint64), generationExhausted: make(map[uint64]bool), pathCapacities: make(map[uint64]PathCapacity), settled: make(map[uint64]bool), peerProcessed: make(map[uint64]bool), peerTransmissionFingerprint: make(map[uint64][32]byte), confirmationReplay: make(map[uint64]frame), seen: make(map[uint64]bool), nextStream: 1, noPathsSince: time.Now(), localMaxCarriers: MaxCarriers, onOpen: onOpen}
 	mode := SchedulerAuto
 	if len(modes) > 0 {
 		mode = modes[0]
@@ -364,6 +375,7 @@ func (s *Session) signalSessionCreditLocked(bytes int) {
 
 func (s *Session) signalWriterTurnLocked() {
 	for e := s.writerReady.Front(); e != nil; e = e.Next() {
+		s.writerTurnScanSteps++
 		st, _ := e.Value.(*Stream)
 		if st == nil || !st.writeWaiting || st.writeWaitReason != waitWriterTurn {
 			continue
@@ -412,8 +424,12 @@ func (s *Session) stop(err error) {
 	s.receiveCredit, s.receiveGrowth = 0, 0
 	s.streams = make(map[uint64]*Stream)
 	s.pending = make(map[uint64]*outbound)
-	s.ready = nil
+	s.ready = make(map[uint64]*dataReadyQueue)
+	s.readyStreams.Init()
+	s.bulkReady = nil
+	s.readyFrames = 0
 	s.controlReady.Init()
+	s.bootstrapWriters = 0
 	s.dataPendingFrames = 0
 	s.controlPendingFrames = 0
 	s.dataPendingBytes = 0
@@ -941,6 +957,7 @@ func (s *Session) ackLocked(c *carrier, f frame) error {
 	if st != nil {
 		if p.f.kind == kindOpen && !st.closed {
 			st.open = true
+			s.syncBootstrapReserveLocked(st)
 			st.advertiseCreditLocked(time.Now())
 		}
 		if p.f.kind == kindFIN {
@@ -1155,6 +1172,7 @@ func (s *Session) accept(st *Stream) bool {
 		return false
 	}
 	st.open = true
+	s.syncBootstrapReserveLocked(st)
 	st.advertiseCreditLocked(time.Now())
 	s.controlLocked(nil, frame{kind: kindOpenOK, stream: st.id, id: st.openID})
 	s.signalStreamOpenLocked(st)
@@ -1346,10 +1364,7 @@ func (s *Session) Snapshot() Stats {
 	out.StandbyWindow = s.standbyWindowLocked()
 	out.Resources = s.resourceSnapshotLocked()
 	out.Lifecycle = s.lifecycleSnapshotLocked()
-	out.ReadyFrames = s.controlReady.Len()
-	for _, q := range s.ready {
-		out.ReadyFrames += q.Len()
-	}
+	out.ReadyFrames = s.controlReady.Len() + s.readyFrames
 	for _, st := range s.streams {
 		out.WindowTarget = max(out.WindowTarget, st.windowTarget)
 		out.WarmTarget = max(out.WarmTarget, st.warmHistoryTargetLocked(now))

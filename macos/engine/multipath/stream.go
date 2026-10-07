@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -18,6 +19,7 @@ func (a streamAddr) String() string  { return string(a) }
 // Receive storage uses bounded, lazily allocated 32 KiB pages. A larger flow
 // window must not reserve a megabyte for every idle or one-byte logical stream.
 const receivePageCost = 40 << 10 // includes data, bitmap and allocator rounding
+const writeLockQuantumFrames = 8 // at most 256 KiB of DATA commit work per Session lock hold
 
 type receivePage struct {
 	data    [MaxPayload]byte
@@ -32,6 +34,7 @@ type Stream struct {
 	finalConsumedQueued                          bool
 	writeEntry                                   *list.Element
 	writeRemaining                               int
+	bootstrapReserved                            bool
 	openWake, readWake, writeWake                chan struct{}
 	writeWaiting                                 bool
 	writeWaitReason                              int
@@ -42,7 +45,7 @@ type Stream struct {
 	readErr                                      error
 	s                                            *Session
 	id                                           uint64
-	readMu, writeMu                              sync.Mutex
+	readMu, writeMu, rxMu                        sync.Mutex
 	open, closed                                 bool
 	err                                          error
 	openID                                       uint64
@@ -140,16 +143,25 @@ func (s *Session) Open(ctx context.Context) (*Stream, error) {
 	return s.openWithAdmission(ctx)
 }
 
-func (st *Stream) receiveLocked(offset uint64, data []byte) error {
+type receiveWork struct {
+	offset uint64
+	data   []byte
+	active bool
+}
+
+// prepareReceiveLocked reserves Session credit and physical page capacity.
+// Session.mu must be held. On active work it returns with rxMu held; callers may
+// then release Session.mu while the page copy/reassembly itself runs.
+func (st *Stream) prepareReceiveLocked(offset uint64, data []byte) (receiveWork, error) {
 	end := offset + uint64(len(data))
 	if end < offset {
-		return protocolViolation("Stream DATA offset overflow")
+		return receiveWork{}, protocolViolation("Stream DATA offset overflow")
 	}
 	if st.hasFIN && end > st.rxFIN {
-		return finalSizeFailure("Stream DATA exceeds established final size")
+		return receiveWork{}, finalSizeFailure("Stream DATA exceeds established final size")
 	}
 	if end <= st.rxRead {
-		return nil
+		return receiveWork{}, nil
 	}
 	if offset < st.rxRead {
 		data = data[st.rxRead-offset:]
@@ -157,40 +169,73 @@ func (st *Stream) receiveLocked(offset uint64, data []byte) error {
 	}
 	oldHigh := st.rxHigh
 	if err := st.receiveCommitLocked(end); err != nil {
-		return err
+		return receiveWork{}, err
 	}
 	if end > oldHigh {
 		st.lastActivity = time.Now()
 	}
 	if st.receiveStopped {
 		st.discardReceiveLocked()
-		return nil
+		return receiveWork{}, nil
 	}
+	if len(data) == 0 {
+		return receiveWork{}, nil
+	}
+
+	st.rxMu.Lock()
 	if st.pages == nil {
 		st.pages = make(map[uint64]*receivePage)
 	}
+	first := offset / MaxPayload
+	last := (offset + uint64(len(data)) - 1) / MaxPayload
+	missing := 0
+	for index := first; index <= last; index++ {
+		if st.pages[index] == nil {
+			missing++
+		}
+	}
+	if missing > (MaxBuffered-st.s.receiveAllocated)/receivePageCost {
+		st.rxMu.Unlock()
+		return receiveWork{}, st.s.resourceLocked(LimitReceiveAllocated, false)
+	}
+	for index := first; index <= last; index++ {
+		if st.pages[index] == nil {
+			st.pages[index] = &receivePage{}
+			st.s.receiveAllocated += receivePageCost
+		}
+	}
+	return receiveWork{offset: offset, data: data, active: true}, nil
+}
+
+// storeReceiveWorkLocked performs only Stream-local page work. rxMu must be
+// held; Session.mu is intentionally not required.
+func (st *Stream) storeReceiveWorkLocked(work receiveWork) (int, error) {
+	offset, data := work.offset, work.data
+	addedTotal := 0
 	for len(data) > 0 {
 		index := offset / MaxPayload
 		start := int(offset % MaxPayload)
 		page := st.pages[index]
 		if page == nil {
-			if st.s.receiveAllocated+receivePageCost > MaxBuffered {
-				return st.s.resourceLocked(LimitReceiveAllocated, false)
-			}
-			page = &receivePage{}
-			st.pages[index] = page
-			st.s.receiveAllocated += receivePageCost
+			return addedTotal, protocolViolation("reserved receive page missing")
 		}
 		n := min(len(data), MaxPayload-start)
 		added, err := page.store(start, data[:n])
+		addedTotal += added
 		if err != nil {
-			return err
+			return addedTotal, err
 		}
-		st.buffered += added
-		st.s.bufferedBytes += added
 		data = data[n:]
 		offset += uint64(n)
 	}
+	return addedTotal, nil
+}
+
+// finishReceiveWorkLocked publishes Stream-local reassembly accounting after the
+// page operation. Session.mu and rxMu must both be held.
+func (st *Stream) finishReceiveWorkLocked(added int) {
+	st.buffered += added
+	st.s.bufferedBytes += added
 	for st.rxContiguous < st.rxHigh {
 		page := st.pages[st.rxContiguous/MaxPayload]
 		if page == nil {
@@ -208,7 +253,75 @@ func (st *Stream) receiveLocked(offset uint64, data []byte) error {
 	if reordered > st.s.reorderPeak {
 		st.s.reorderPeak = reordered
 	}
-	return nil
+}
+
+// receiveLocked preserves the synchronous helper used by tests and uncommon
+// local paths. Production Carrier DATA uses the split prepare/store/finish path.
+func (st *Stream) receiveLocked(offset uint64, data []byte) error {
+	work, err := st.prepareReceiveLocked(offset, data)
+	if err != nil || !work.active {
+		return err
+	}
+	added, storeErr := st.storeReceiveWorkLocked(work)
+	st.finishReceiveWorkLocked(added)
+	st.rxMu.Unlock()
+	return storeErr
+}
+
+// copyReceivePagesLocked copies an already-contiguous range without changing
+// Stream or Session accounting. rxMu must be held; Session.mu deliberately need
+// not be held.
+func (st *Stream) copyReceivePagesLocked(dst []byte, offset uint64) int {
+	copied := 0
+	for copied < len(dst) {
+		index := offset / MaxPayload
+		pos := int(offset % MaxPayload)
+		page := st.pages[index]
+		if page == nil {
+			break
+		}
+		part := min(len(dst)-copied, MaxPayload-pos)
+		if page.contiguous(pos, pos+part) != part {
+			break
+		}
+		copy(dst[copied:copied+part], page.data[pos:pos+part])
+		copied += part
+		offset += uint64(part)
+	}
+	return copied
+}
+
+// consumeReceivePagesLocked retires bytes that were copied earlier. Both
+// Session.mu and rxMu must be held and rxRead must still equal offset.
+func (st *Stream) consumeReceivePagesLocked(offset uint64, n int) (int, bool) {
+	if st.rxRead != offset {
+		return 0, false
+	}
+	freedPages := 0
+	cleared := 0
+	for cleared < n {
+		index := offset / MaxPayload
+		pos := int(offset % MaxPayload)
+		page := st.pages[index]
+		if page == nil {
+			return freedPages, false
+		}
+		part := min(n-cleared, MaxPayload-pos)
+		if page.contiguous(pos, pos+part) != part || page.live < part {
+			return freedPages, false
+		}
+		page.clear(pos, pos+part)
+		page.live -= part
+		cleared += part
+		offset += uint64(part)
+		if page.live == 0 {
+			delete(st.pages, index)
+			freedPages++
+		}
+	}
+	st.rxRead += uint64(n)
+	st.buffered -= n
+	return freedPages, true
 }
 
 func (st *Stream) armProductReply(kind byte, deadline time.Time) {
@@ -310,22 +423,40 @@ func (st *Stream) readRaw(p []byte) (int, error) {
 		if available > 0 {
 			oldRead := st.rxRead
 			n := min(len(p), available)
-			for copied := 0; copied < n; {
-				index := st.rxRead / MaxPayload
-				pos := int(st.rxRead % MaxPayload)
-				page := st.pages[index]
-				part := min(n-copied, MaxPayload-pos)
-				copy(p[copied:copied+part], page.data[pos:pos+part])
-				page.clear(pos, pos+part)
-				page.live -= part
-				copied += part
-				st.rxRead += uint64(part)
-				if page.live == 0 {
-					delete(st.pages, index)
-					s.receiveAllocated -= receivePageCost
-				}
+
+			// The expensive user-buffer copy is Stream-local. Freeze page
+			// storage with rxMu, release Session.mu, copy, then briefly re-enter
+			// the Session ledger to retire exactly the range we observed.
+			st.rxMu.Lock()
+			s.mu.Unlock()
+			copied := st.copyReceivePagesLocked(p[:n], oldRead)
+			st.rxMu.Unlock()
+			if copied != n {
+				s.mu.Lock()
+				s.mu.Unlock()
+				return 0, protocolViolation("contiguous receive storage missing")
 			}
-			st.buffered -= n
+
+			s.mu.Lock()
+			if st.closed || st.receiveStopped || st.rxRead != oldRead {
+				err := st.err
+				if st.receiveStopped && st.readErr != nil {
+					err = st.readErr
+				}
+				if err == nil {
+					err = net.ErrClosed
+				}
+				s.mu.Unlock()
+				return 0, err
+			}
+			st.rxMu.Lock()
+			freedPages, ok := st.consumeReceivePagesLocked(oldRead, n)
+			st.rxMu.Unlock()
+			if !ok {
+				s.mu.Unlock()
+				return 0, protocolViolation("receive storage changed before consume")
+			}
+			s.receiveAllocated -= freedPages * receivePageCost
 			s.bufferedBytes -= n
 			s.received += uint64(n)
 			st.lastActivity = time.Now()
@@ -364,16 +495,18 @@ func (st *Stream) Write(p []byte) (int, error) {
 	s := st.s
 	s.mu.Lock()
 	st.writeEntry = s.writerReady.PushBack(st)
+	s.setWriterRemainingLocked(st, len(p))
 	defer func() {
 		s.endWriterWaitLocked(st)
+		s.setWriterRemainingLocked(st, 0)
 		s.writerReady.Remove(st.writeEntry)
 		st.writeEntry = nil
-		st.writeRemaining = 0
 		s.signalPendingWriterLocked()
 		s.signalWriterTurnLocked()
 		s.mu.Unlock()
 	}()
 	total := 0
+	framesInHold := 0
 	for len(p) > 0 {
 		if st.closed {
 			return total, st.err
@@ -384,7 +517,7 @@ func (st *Stream) Write(p []byte) (int, error) {
 		if !st.writeDeadline.IsZero() && !time.Now().Before(st.writeDeadline) {
 			return total, os.ErrDeadlineExceeded
 		}
-		st.writeRemaining = len(p)
+		s.setWriterRemainingLocked(st, len(p))
 		if !s.hasActiveCarrierLocked() {
 			ch, deadline := s.changed, st.writeDeadline
 			s.mu.Unlock()
@@ -413,12 +546,22 @@ func (st *Stream) Write(p []byte) (int, error) {
 			s.sent += uint64(n)
 			total += n
 			p = p[n:]
-			st.writeRemaining = len(p)
+			s.setWriterRemainingLocked(st, len(p))
 			s.writerReady.MoveToBack(st.writeEntry)
 			// A writer that consumed one turn moves to the tail. If shared
 			// credit is scarce, explicitly hand the next eligible FIFO writer
 			// its turn instead of relying on a broadcast state change.
 			s.signalWriterTurnLocked()
+			framesInHold++
+			if framesInHold >= writeLockQuantumFrames && len(p) != 0 {
+				// Large application writes must not monopolize Session.mu.
+				// Release after a bounded DATA quantum so Carrier receipts,
+				// dispatch and unrelated Streams can enter the ledger.
+				framesInHold = 0
+				s.mu.Unlock()
+				runtime.Gosched()
+				s.mu.Lock()
+			}
 			continue
 		}
 		s.windowWaits++
@@ -522,10 +665,12 @@ func (st *Stream) Close() error {
 // This is physical storage cleanup only. Credit settlement uses authenticated
 // offsets, never the size of an old WINDOW entitlement.
 func (st *Stream) releaseReceiveLocked() {
+	st.rxMu.Lock()
 	st.s.bufferedBytes -= st.buffered
 	st.buffered = 0
 	st.s.receiveAllocated -= len(st.pages) * receivePageCost
 	st.pages = nil
+	st.rxMu.Unlock()
 }
 
 func (st *Stream) LocalAddr() net.Addr  { return streamAddr("mpx4/local") }

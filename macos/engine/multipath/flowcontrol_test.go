@@ -245,7 +245,7 @@ func TestReadyQueuesFairAndBoundedOnReset(t *testing.T) {
 	}
 	s.resetLocked(st, 1, false)
 	s.resetLocked(other, 1, false)
-	if len(s.pending) != 0 || len(s.ready) != 0 || s.pendingBytes != 0 || s.receiveCredit != 0 {
+	if len(s.pending) != 0 || s.readyFrames != 0 || s.readyStreams.Len() != 0 || s.pendingBytes != 0 || s.receiveCredit != 0 {
 		t.Fatal("ready/credit ledger leaked after reset")
 	}
 }

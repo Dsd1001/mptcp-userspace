@@ -239,9 +239,10 @@ func TestRC7FairWriterTurnsAtTrueSessionScarcity(t *testing.T) {
 		remaining -= n
 	}
 
-	a.writeRemaining, b.writeRemaining = MaxPayload, MaxPayload
 	ea := s.writerReady.PushBack(a)
 	s.writerReady.PushBack(b)
+	s.setWriterRemainingLocked(a, MaxPayload)
+	s.setWriterRemainingLocked(b, MaxPayload)
 	if !s.writerTurnLocked(a) || s.writerTurnLocked(b) {
 		t.Fatal("true Session scarcity did not preserve FIFO")
 	}
@@ -264,8 +265,8 @@ func TestRC7FairWriterTurnsAtTrueSessionScarcity(t *testing.T) {
 
 	// A newcomer still retains bootstrap priority when global credit is scarce.
 	small := rev2Stream(s, nextID)
-	small.writeRemaining = StreamWindow
 	s.writerReady.PushBack(small)
+	s.setWriterRemainingLocked(small, StreamWindow)
 	if !s.writerTurnLocked(small) {
 		t.Fatal("small flow lost bootstrap priority at true Session scarcity")
 	}
@@ -276,8 +277,8 @@ func TestRev2UncontendedFairnessDoesNotSerialize512Writers(t *testing.T) {
 	for i := 0; i < MaxStreams; i++ {
 		st := rev2Stream(s, uint64(2*i+1))
 		st.commitSendCreditLocked(StreamWindow)
-		st.writeRemaining = MaxPayload
 		s.writerReady.PushBack(st)
+		s.setWriterRemainingLocked(st, MaxPayload)
 	}
 	for e := s.writerReady.Front(); e != nil; e = e.Next() {
 		st := e.Value.(*Stream)

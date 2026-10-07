@@ -38,23 +38,40 @@ const (
 	sessionRefillStopPressure  = 95
 )
 
-// pendingBootstrapReserveLocked reserves pending capacity only for Streams that
-// are actively trying to write and have not yet completed their first 32 KiB of
-// peer-consumed DATA. It deliberately does not reserve for every admitted
-// Stream: idle identities cost no pending capacity. exclude lets the current
-// writer consume the same frame that carries its remaining bootstrap bytes.
-func (s *Session) pendingBootstrapReserveLocked(exclude *Stream) (int, int) {
-	frames := 0
-	for e := s.writerReady.Front(); e != nil; e = e.Next() {
-		st, _ := e.Value.(*Stream)
-		if st == nil || st == exclude || st.closed || st.writeFIN || st.sendReset || st.writeRemaining <= 0 {
-			continue
-		}
-		if !st.open || st.txNext-st.peerConsumed < StreamWindow {
-			frames++
-		}
+// bootstrapReserveEligibleLocked defines the exact state that consumes one
+// pending bootstrap reserve slot. The state is maintained incrementally so the
+// write/ACK hot path never rescans writerReady.
+func (s *Session) bootstrapReserveEligibleLocked(st *Stream) bool {
+	return st != nil && st.writeEntry != nil && !st.closed && !st.writeFIN && !st.sendReset &&
+		st.writeRemaining > 0 && (!st.open || st.txNext-st.peerConsumed < StreamWindow)
+}
+
+func (s *Session) syncBootstrapReserveLocked(st *Stream) {
+	active := s.bootstrapReserveEligibleLocked(st)
+	if active == st.bootstrapReserved {
+		return
 	}
-	frames = min(frames, MaxDataPending)
+	if active {
+		s.bootstrapWriters++
+	} else if s.bootstrapWriters > 0 {
+		s.bootstrapWriters--
+	}
+	st.bootstrapReserved = active
+}
+
+func (s *Session) setWriterRemainingLocked(st *Stream, n int) {
+	st.writeRemaining = n
+	s.syncBootstrapReserveLocked(st)
+}
+
+// pendingBootstrapReserveLocked is O(1). exclude lets the current bootstrap
+// writer consume the frame that carries its own remaining bootstrap bytes.
+func (s *Session) pendingBootstrapReserveLocked(exclude *Stream) (int, int) {
+	frames := s.bootstrapWriters
+	if exclude != nil && exclude.bootstrapReserved {
+		frames--
+	}
+	frames = min(max(0, frames), MaxDataPending)
 	return frames, min(MaxDataPendingBytes, frames*(MaxPayload+64))
 }
 
@@ -213,6 +230,7 @@ func (st *Stream) releaseSendCreditLocked(consumed uint64) error {
 	s.credit.txUsed -= n
 	s.credit.txGrowth -= growth
 	st.peerConsumed = consumed
+	s.syncBootstrapReserveLocked(st)
 	// Consumption releases aggregate Session credit for any writer. Wake only
 	// enough shared-credit waiters to consume the newly freed frame budget;
 	// FIFO writer-turn handoff is handled separately.
@@ -228,6 +246,7 @@ func (st *Stream) commitSendCreditLocked(n int) {
 	s.credit.txUsed += n
 	s.credit.txGrowth += growthOf(old+n) - growthOf(old)
 	s.credit.peakTX = max(s.credit.peakTX, s.credit.txUsed)
+	s.syncBootstrapReserveLocked(st)
 }
 
 func (st *Stream) writeAllowanceLocked() (int, int) {
@@ -299,6 +318,7 @@ func (s *Session) writerTurnLocked(st *Stream) bool {
 	// FIFO order. The room calculation itself stays on the 1.0.x dynamic shared
 	// pending/credit model rather than restoring the old static 64 MiB reserve.
 	for e := s.writerReady.Front(); e != nil; e = e.Next() {
+		s.writerTurnScanSteps++
 		other := e.Value.(*Stream)
 		if n, _ := other.writeAllowanceLocked(); n > 0 {
 			return other == st
