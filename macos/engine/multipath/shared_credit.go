@@ -118,8 +118,18 @@ func (s *Session) receiveSessionCreditLocked(f frame) error {
 	oldConsumed, oldMaximum := fc.peerConsumed, fc.peerLimit
 	switch {
 	case f.offset >= oldConsumed && f.id >= oldMaximum:
+		oldRoom := uint64(0)
+		if oldMaximum > fc.txCommitted {
+			oldRoom = oldMaximum - fc.txCommitted
+		}
 		fc.peerConsumed, fc.peerLimit = f.offset, f.id
-		s.wakeLocked()
+		newRoom := uint64(0)
+		if fc.peerLimit > fc.txCommitted {
+			newRoom = fc.peerLimit - fc.txCommitted
+		}
+		if newRoom > oldRoom {
+			s.signalSessionCreditLocked(int(newRoom - oldRoom))
+		}
 		return nil
 	case f.offset <= oldConsumed && f.id <= oldMaximum:
 		// Fully stale/duplicate credit is safe under cross-Carrier reordering.
@@ -203,7 +213,10 @@ func (st *Stream) releaseSendCreditLocked(consumed uint64) error {
 	s.credit.txUsed -= n
 	s.credit.txGrowth -= growth
 	st.peerConsumed = consumed
-	s.wakeLocked()
+	// Consumption releases aggregate Session credit for any writer. Wake only
+	// enough shared-credit waiters to consume the newly freed frame budget;
+	// FIFO writer-turn handoff is handled separately.
+	s.signalSharedCreditLocked(n)
 	return nil
 }
 

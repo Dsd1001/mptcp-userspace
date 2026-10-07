@@ -84,8 +84,11 @@ func TestDataACKSignalsOnePendingWriterWithoutGlobalBroadcast(t *testing.T) {
 	p.path = c
 	c.outstanding = p.cost
 
+	waiter := rev2Stream(s, 3)
+	cleanup := attachPendingWriter(s, waiter)
+	defer cleanup()
 	global := s.changed
-	pending := s.beginPendingWaitLocked()
+	pending := s.beginWriterWaitLocked(waiter, waitPendingBytes)
 	if err := s.ackLocked(c, frame{kind: kindACK, stream: st.id, id: p.f.id}); err != nil {
 		t.Fatal(err)
 	}
@@ -99,5 +102,5 @@ func TestDataACKSignalsOnePendingWriterWithoutGlobalBroadcast(t *testing.T) {
 	default:
 		t.Fatal("DATA ACK did not release one pending writer")
 	}
-	s.endPendingWaitLocked()
+	s.endWriterWaitLocked(waiter)
 }

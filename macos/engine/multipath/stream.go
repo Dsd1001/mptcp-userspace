@@ -32,6 +32,9 @@ type Stream struct {
 	finalConsumedQueued                          bool
 	writeEntry                                   *list.Element
 	writeRemaining                               int
+	openWake, readWake, writeWake                chan struct{}
+	writeWaiting                                 bool
+	writeWaitReason                              int
 	sendReset, sendResetQueued, sendResetACK     bool
 	sendResetCode                                uint64
 	receiveStopped, stopQueued                   bool
@@ -72,7 +75,7 @@ var _ net.Conn = (*Stream)(nil)
 
 func (s *Session) newStreamLocked(id uint64) *Stream {
 	now := time.Now()
-	st := &Stream{s: s, id: id, windowTarget: StreamWindow, createdAt: now, lastActivity: now, readSampleAt: now, lastRead: now}
+	st := &Stream{s: s, id: id, windowTarget: StreamWindow, createdAt: now, lastActivity: now, readSampleAt: now, lastRead: now, openWake: make(chan struct{}, 1), readWake: make(chan struct{}, 1), writeWake: make(chan struct{}, 1)}
 	s.streams[id] = st
 	s.openedStreams++
 	s.eventLocked("stream_created", "", 0, id)
@@ -98,6 +101,35 @@ func waitChange(ctx context.Context, ch <-chan struct{}, deadline time.Time) err
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-ch:
+		return nil
+	case <-timer.C:
+		return os.ErrDeadlineExceeded
+	}
+}
+
+func waitTargetedChange(ctx context.Context, targeted, global <-chan struct{}, deadline time.Time) error {
+	if deadline.IsZero() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-targeted:
+			return nil
+		case <-global:
+			return nil
+		}
+	}
+	left := time.Until(deadline)
+	if left <= 0 {
+		return os.ErrDeadlineExceeded
+	}
+	timer := time.NewTimer(left)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-targeted:
+		return nil
+	case <-global:
 		return nil
 	case <-timer.C:
 		return os.ErrDeadlineExceeded
@@ -300,7 +332,7 @@ func (st *Stream) readRaw(p []byte) (int, error) {
 			st.releaseReadCreditLocked(oldRead)
 			s.ensureFinalConsumedLocked(st)
 			st.consumeCreditLocked(n, time.Now())
-			s.wakeLocked()
+			s.kickLocked()
 			s.mu.Unlock()
 			return n, nil
 		}
@@ -310,10 +342,13 @@ func (st *Stream) readRaw(p []byte) (int, error) {
 			s.mu.Unlock()
 			return 0, io.EOF
 		}
-		ch := s.changed
+		for len(st.readWake) > 0 {
+			<-st.readWake
+		}
+		targeted, global := st.readWake, s.changed
 		deadline = st.effectiveReadDeadlineLocked()
 		s.mu.Unlock()
-		if err := waitChange(s.ctx, ch, deadline); err != nil {
+		if err := waitTargetedChange(s.ctx, targeted, global, deadline); err != nil {
 			return 0, err
 		}
 		s.mu.Lock()
@@ -330,11 +365,12 @@ func (st *Stream) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	st.writeEntry = s.writerReady.PushBack(st)
 	defer func() {
+		s.endWriterWaitLocked(st)
 		s.writerReady.Remove(st.writeEntry)
 		st.writeEntry = nil
 		st.writeRemaining = 0
 		s.signalPendingWriterLocked()
-		s.wakeLocked()
+		s.signalWriterTurnLocked()
 		s.mu.Unlock()
 	}()
 	total := 0
@@ -379,6 +415,10 @@ func (st *Stream) Write(p []byte) (int, error) {
 			p = p[n:]
 			st.writeRemaining = len(p)
 			s.writerReady.MoveToBack(st.writeEntry)
+			// A writer that consumed one turn moves to the tail. If shared
+			// credit is scarce, explicitly hand the next eligible FIFO writer
+			// its turn instead of relying on a broadcast state change.
+			s.signalWriterTurnLocked()
 			continue
 		}
 		s.windowWaits++
@@ -389,25 +429,11 @@ func (st *Stream) Write(p []byte) (int, error) {
 		s.credit.waits[reason].Count++
 		started := time.Now()
 		deadline := st.writeDeadline
-		pendingBlocked := reason == waitPendingFrames || reason == waitPendingBytes
-		if reason == waitWriterTurn {
-			s.writerTurnWaiters++
-		}
-		var ch <-chan struct{}
-		if pendingBlocked {
-			ch = s.beginPendingWaitLocked()
-		} else {
-			ch = s.changed
-		}
+		targeted, global := s.beginWriterWaitLocked(st, reason), s.changed
 		s.mu.Unlock()
-		err := waitChange(s.ctx, ch, deadline)
+		err := waitTargetedChange(s.ctx, targeted, global, deadline)
 		s.mu.Lock()
-		if pendingBlocked {
-			s.endPendingWaitLocked()
-		}
-		if reason == waitWriterTurn && s.writerTurnWaiters > 0 {
-			s.writerTurnWaiters--
-		}
+		s.endWriterWaitLocked(st)
 		s.credit.waits[reason].NS += uint64(time.Since(started))
 		if blocked {
 			s.windowBlockedWriters--
@@ -509,20 +535,21 @@ func (st *Stream) SetDeadline(t time.Time) error {
 	defer st.s.mu.Unlock()
 	st.readDeadline = t
 	st.writeDeadline = t
-	st.s.wakeLocked()
+	st.s.signalStreamReaderLocked(st)
+	st.s.signalStreamWriterLocked(st)
 	return nil
 }
 func (st *Stream) SetReadDeadline(t time.Time) error {
 	st.s.mu.Lock()
 	defer st.s.mu.Unlock()
 	st.readDeadline = t
-	st.s.wakeLocked()
+	st.s.signalStreamReaderLocked(st)
 	return nil
 }
 func (st *Stream) SetWriteDeadline(t time.Time) error {
 	st.s.mu.Lock()
 	defer st.s.mu.Unlock()
 	st.writeDeadline = t
-	st.s.wakeLocked()
+	st.s.signalStreamWriterLocked(st)
 	return nil
 }

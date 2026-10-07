@@ -134,78 +134,77 @@ type carrier struct {
 // All stream, ledger and carrier accounting lives under one mutex. Network I/O
 // and backend I/O never hold it. Readers cannot block unrelated logical flows.
 type Session struct {
-	credit                                          connectionCredit
-	closing                                         map[uint64]*Stream
-	terminal                                        map[uint64]terminalStream
-	terminalOrder                                   []uint64
-	terminalCursor                                  int
-	writerReady                                     list.List
-	scheduler                                       schedulerState
-	udpStarted                                      bool
-	productMux                                      bool // immutable product service binding; absent from MPX/4 wire state
-	productPool                                     []*Stream
-	productPoolOpening                              int
-	productPoolKick                                 chan struct{}
-	uotActiveFlows                                  int
-	ctx                                             context.Context
-	cancel                                          context.CancelFunc
-	id                                              sessionID
-	server                                          bool
-	mu                                              sync.Mutex
-	changed                                         chan struct{}
-	pendingWake                                     chan struct{}
-	kick                                            chan struct{}
-	done                                            chan struct{}
-	closed                                          bool
-	err                                             error
-	streams                                         map[uint64]*Stream
-	ready                                           map[uint64]*list.List
-	receiveCredit, windowSeed                       int
-	windowSeedAt                                    time.Time
-	clockStart                                      time.Time
-	pending                                         map[uint64]*outbound
-	paths                                           map[uint64]*carrier
-	carrierUsed                                     map[uint64]bool
-	highestGeneration                               map[uint64]uint64
-	nextCandidateGeneration                         map[uint64]uint64
-	generationExhausted                             map[uint64]bool
-	pathCapacities                                  map[uint64]PathCapacity
-	localMaxCarriers, peerMaxCarriers               uint64
-	peerMaxFrame, peerMaxRecord, peerMaxStreams     uint64
-	effectiveCarrierLimit                           uint64
-	settled                                         map[uint64]bool
-	peerProcessed                                   map[uint64]bool
-	peerTransmissionFingerprint                     map[uint64][32]byte
-	confirmationReplay                              map[uint64]frame
-	settledThrough, lastRetireAdvertised            uint64
-	peerProcessedThrough, peerRetiredThrough        uint64
-	seen                                            map[uint64]bool
-	maxSeen, nextStream, nextPacket, dispatchCursor uint64
-	bulkDispatchCursor, dispatchSequence            uint64
-	pendingBytes, bufferedBytes                     int
-	receiveAllocated                                int
-	sent, received, retransmits, windowWaits        uint64
-	reorderPeak                                     int
-	noPathsSince                                    time.Time
-	lastSweep                                       time.Time
-	onOpen                                          func(*Stream)
-	resources                                       ResourceStats
-	transportEvents                                 []TransportEvent
-	eventSequence                                   uint64
-	closedAt                                        time.Time
-	controlReady                                    list.List
-	receiveGrowth                                   int
-	dataPendingFrames, controlPendingFrames         int
-	dataPendingBytes, controlPendingBytes           int
-	windowBlockedWriters                            int
-	pendingWaiters, writerTurnWaiters               int
-	controlDrops, openedStreams, closedStreams      uint64
-	localConnections                                int
+	credit                                           connectionCredit
+	closing                                          map[uint64]*Stream
+	terminal                                         map[uint64]terminalStream
+	terminalOrder                                    []uint64
+	terminalCursor                                   int
+	writerReady                                      list.List
+	scheduler                                        schedulerState
+	udpStarted                                       bool
+	productMux                                       bool // immutable product service binding; absent from MPX/4 wire state
+	productPool                                      []*Stream
+	productPoolOpening                               int
+	productPoolKick                                  chan struct{}
+	uotActiveFlows                                   int
+	ctx                                              context.Context
+	cancel                                           context.CancelFunc
+	id                                               sessionID
+	server                                           bool
+	mu                                               sync.Mutex
+	changed                                          chan struct{}
+	kick                                             chan struct{}
+	done                                             chan struct{}
+	closed                                           bool
+	err                                              error
+	streams                                          map[uint64]*Stream
+	ready                                            map[uint64]*list.List
+	receiveCredit, windowSeed                        int
+	windowSeedAt                                     time.Time
+	clockStart                                       time.Time
+	pending                                          map[uint64]*outbound
+	paths                                            map[uint64]*carrier
+	carrierUsed                                      map[uint64]bool
+	highestGeneration                                map[uint64]uint64
+	nextCandidateGeneration                          map[uint64]uint64
+	generationExhausted                              map[uint64]bool
+	pathCapacities                                   map[uint64]PathCapacity
+	localMaxCarriers, peerMaxCarriers                uint64
+	peerMaxFrame, peerMaxRecord, peerMaxStreams      uint64
+	effectiveCarrierLimit                            uint64
+	settled                                          map[uint64]bool
+	peerProcessed                                    map[uint64]bool
+	peerTransmissionFingerprint                      map[uint64][32]byte
+	confirmationReplay                               map[uint64]frame
+	settledThrough, lastRetireAdvertised             uint64
+	peerProcessedThrough, peerRetiredThrough         uint64
+	seen                                             map[uint64]bool
+	maxSeen, nextStream, nextPacket, dispatchCursor  uint64
+	bulkDispatchCursor, dispatchSequence             uint64
+	pendingBytes, bufferedBytes                      int
+	receiveAllocated                                 int
+	sent, received, retransmits, windowWaits         uint64
+	reorderPeak                                      int
+	noPathsSince                                     time.Time
+	lastSweep                                        time.Time
+	onOpen                                           func(*Stream)
+	resources                                        ResourceStats
+	transportEvents                                  []TransportEvent
+	eventSequence                                    uint64
+	closedAt                                         time.Time
+	controlReady                                     list.List
+	receiveGrowth                                    int
+	dataPendingFrames, controlPendingFrames          int
+	dataPendingBytes, controlPendingBytes            int
+	windowBlockedWriters                             int
+	pendingWaiters, creditWaiters, writerTurnWaiters int
+	controlDrops, openedStreams, closedStreams       uint64
+	localConnections                                 int
 }
 
 func newSession(parent context.Context, id sessionID, server bool, onOpen func(*Stream), modes ...SchedulerMode) *Session {
 	ctx, cancel := context.WithCancel(parent)
-	s := &Session{clockStart: time.Now(), ctx: ctx, cancel: cancel, id: id, server: server, changed: make(chan struct{}), pendingWake: make(chan struct{}, MaxStreams), kick: make(chan struct{}, 1), done: make(chan struct{}), streams: make(map[uint64]*Stream), pending: make(map[uint64]*outbound), paths: make(map[uint64]*carrier), carrierUsed: make(map[uint64]bool), highestGeneration: make(map[uint64]uint64), nextCandidateGeneration: make(map[uint64]uint64), generationExhausted: make(map[uint64]bool), pathCapacities: make(map[uint64]PathCapacity), settled: make(map[uint64]bool), peerProcessed: make(map[uint64]bool), peerTransmissionFingerprint: make(map[uint64][32]byte), confirmationReplay: make(map[uint64]frame), seen: make(map[uint64]bool), nextStream: 1, noPathsSince: time.Now(), localMaxCarriers: MaxCarriers, onOpen: onOpen}
+	s := &Session{clockStart: time.Now(), ctx: ctx, cancel: cancel, id: id, server: server, changed: make(chan struct{}), kick: make(chan struct{}, 1), done: make(chan struct{}), streams: make(map[uint64]*Stream), pending: make(map[uint64]*outbound), paths: make(map[uint64]*carrier), carrierUsed: make(map[uint64]bool), highestGeneration: make(map[uint64]uint64), nextCandidateGeneration: make(map[uint64]uint64), generationExhausted: make(map[uint64]bool), pathCapacities: make(map[uint64]PathCapacity), settled: make(map[uint64]bool), peerProcessed: make(map[uint64]bool), peerTransmissionFingerprint: make(map[uint64][32]byte), confirmationReplay: make(map[uint64]frame), seen: make(map[uint64]bool), nextStream: 1, noPathsSince: time.Now(), localMaxCarriers: MaxCarriers, onOpen: onOpen}
 	mode := SchedulerAuto
 	if len(modes) > 0 {
 		mode = modes[0]
@@ -230,63 +229,150 @@ func (s *Session) kickLocked() {
 func (s *Session) wakeLocked() {
 	close(s.changed)
 	s.changed = make(chan struct{})
-	s.signalAllPendingWritersLocked()
 	s.kickLocked()
 }
 
-func (s *Session) ensurePendingWakeLocked() chan struct{} {
-	if s.pendingWake == nil {
-		s.pendingWake = make(chan struct{}, MaxStreams)
+func (s *Session) beginWriterWaitLocked(st *Stream, reason int) <-chan struct{} {
+	if st.writeWake == nil {
+		st.writeWake = make(chan struct{}, 1)
 	}
-	return s.pendingWake
+	for len(st.writeWake) > 0 {
+		<-st.writeWake
+	}
+	st.writeWaiting = true
+	st.writeWaitReason = reason
+	switch reason {
+	case waitPendingFrames, waitPendingBytes:
+		s.pendingWaiters++
+	case waitSessionWindow, waitBootstrap, waitGrowth:
+		s.creditWaiters++
+	case waitWriterTurn:
+		s.writerTurnWaiters++
+	}
+	return st.writeWake
 }
 
-func (s *Session) beginPendingWaitLocked() <-chan struct{} {
-	ch := s.ensurePendingWakeLocked()
-	for len(ch) > s.pendingWaiters {
-		<-ch
+func (s *Session) endWriterWaitLocked(st *Stream) {
+	if !st.writeWaiting {
+		return
 	}
-	s.pendingWaiters++
-	return ch
+	switch st.writeWaitReason {
+	case waitPendingFrames, waitPendingBytes:
+		if s.pendingWaiters > 0 {
+			s.pendingWaiters--
+		}
+	case waitSessionWindow, waitBootstrap, waitGrowth:
+		if s.creditWaiters > 0 {
+			s.creditWaiters--
+		}
+	case waitWriterTurn:
+		if s.writerTurnWaiters > 0 {
+			s.writerTurnWaiters--
+		}
+	}
+	st.writeWaiting = false
+	st.writeWaitReason = waitNone
 }
 
-func (s *Session) endPendingWaitLocked() {
-	if s.pendingWaiters > 0 {
-		s.pendingWaiters--
-	}
-	if s.pendingWake == nil {
+func (s *Session) signalStreamOpenLocked(st *Stream) {
+	if st == nil {
 		return
 	}
-	for len(s.pendingWake) > s.pendingWaiters {
-		<-s.pendingWake
-	}
-}
-
-func (s *Session) signalPendingWriterLocked() {
-	if s.pendingWaiters <= 0 {
-		return
-	}
-	ch := s.ensurePendingWakeLocked()
-	if len(ch) >= s.pendingWaiters {
-		return
+	if st.openWake == nil {
+		st.openWake = make(chan struct{}, 1)
 	}
 	select {
-	case ch <- struct{}{}:
+	case st.openWake <- struct{}{}:
 	default:
 	}
 }
 
-func (s *Session) signalAllPendingWritersLocked() {
-	if s.pendingWaiters <= 0 {
+func (s *Session) signalStreamReaderLocked(st *Stream) {
+	if st == nil {
 		return
 	}
-	ch := s.ensurePendingWakeLocked()
-	for len(ch) < s.pendingWaiters {
-		select {
-		case ch <- struct{}{}:
-		default:
-			return
+	if st.readWake == nil {
+		st.readWake = make(chan struct{}, 1)
+	}
+	select {
+	case st.readWake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Session) signalStreamWriterLocked(st *Stream) bool {
+	if st == nil || !st.writeWaiting {
+		return false
+	}
+	if st.writeWake == nil {
+		st.writeWake = make(chan struct{}, 1)
+	}
+	select {
+	case st.writeWake <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Session) signalWriterReasonsLocked(limit int, reasons ...int) int {
+	if limit <= 0 {
+		return 0
+	}
+	match := func(reason int) bool {
+		for _, candidate := range reasons {
+			if reason == candidate {
+				return true
+			}
 		}
+		return false
+	}
+	signaled := 0
+	for e := s.writerReady.Front(); e != nil && signaled < limit; e = e.Next() {
+		st, _ := e.Value.(*Stream)
+		if st == nil || !st.writeWaiting || !match(st.writeWaitReason) {
+			continue
+		}
+		if s.signalStreamWriterLocked(st) {
+			signaled++
+		}
+	}
+	return signaled
+}
+
+func writerPermits(bytes int) int {
+	if bytes <= 0 {
+		return 0
+	}
+	return max(1, (bytes+MaxPayload-1)/MaxPayload)
+}
+
+func (s *Session) signalPendingWriterLocked() {
+	s.signalWriterReasonsLocked(1, waitPendingFrames, waitPendingBytes)
+	s.signalWriterTurnLocked()
+}
+
+func (s *Session) signalSharedCreditLocked(bytes int) {
+	s.signalWriterReasonsLocked(writerPermits(bytes), waitBootstrap, waitGrowth)
+	s.signalWriterTurnLocked()
+}
+
+func (s *Session) signalSessionCreditLocked(bytes int) {
+	s.signalWriterReasonsLocked(writerPermits(bytes), waitSessionWindow)
+	s.signalWriterTurnLocked()
+}
+
+func (s *Session) signalWriterTurnLocked() {
+	for e := s.writerReady.Front(); e != nil; e = e.Next() {
+		st, _ := e.Value.(*Stream)
+		if st == nil || !st.writeWaiting || st.writeWaitReason != waitWriterTurn {
+			continue
+		}
+		if n, _ := st.writeAllowanceLocked(); n <= 0 {
+			continue
+		}
+		s.signalStreamWriterLocked(st)
+		return
 	}
 }
 
@@ -887,14 +973,20 @@ func (s *Session) ackLocked(c *carrier, f frame) error {
 	s.removePendingLocked(p)
 	s.tryRetireStreamLocked(st)
 	if kind == kindData {
-		// DATA ACK frees one pending slot/byte budget. removePendingLocked
-		// gives one pending-blocked writer a permit; do not broadcast to every
-		// Stream unless FIFO writer-turn or CloseWrite state actually needs it.
-		if s.writerTurnWaiters > 0 || st != nil && st.finACK && !st.hasPendingDataLocked() {
+		// DATA ACK frees pending storage only. removePendingLocked already
+		// targets one pending waiter and the next FIFO writer-turn waiter.
+		// Application-consumption credit is released by WINDOW, not ACK.
+		if st != nil && st.finACK && !st.hasPendingDataLocked() {
 			s.wakeLocked()
 		} else {
 			s.kickLocked()
 		}
+	} else if kind == kindOpen {
+		// OPEN_OK changes only this Stream. Wake its Open() waiter and writer
+		// without broadcasting to every other opening/writing Stream.
+		s.signalStreamOpenLocked(st)
+		s.signalStreamWriterLocked(st)
+		s.kickLocked()
 	} else {
 		s.wakeLocked()
 	}
@@ -953,7 +1045,6 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 				return err
 			}
 			s.tryRetireStreamLocked(st)
-			s.wakeLocked()
 		} else if term, ok := s.terminal[f.stream]; ok && (f.offset > term.txFinal || f.id < f.offset || f.id-f.offset > MaxStreamWindow) {
 			return ErrProtocol
 		}
@@ -988,7 +1079,7 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 		}
 		s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart) / time.Microsecond)})
 		s.markPeerProcessedLocked(f.id)
-		s.wakeLocked()
+		s.signalStreamReaderLocked(st)
 	case kindFIN:
 		err := s.handleFinalLocked(c, f)
 		if err == nil {
@@ -1066,7 +1157,9 @@ func (s *Session) accept(st *Stream) bool {
 	st.open = true
 	st.advertiseCreditLocked(time.Now())
 	s.controlLocked(nil, frame{kind: kindOpenOK, stream: st.id, id: st.openID})
-	s.wakeLocked()
+	s.signalStreamOpenLocked(st)
+	s.signalStreamWriterLocked(st)
+	s.kickLocked()
 	return true
 }
 

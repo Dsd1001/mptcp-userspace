@@ -516,6 +516,12 @@ func (st *Stream) receiveCreditLocked(f frame) error {
 			return err
 		}
 		st.peerCreditConsumed, st.peerLimit = f.offset, f.id
+		// This WINDOW can unblock the addressed Stream directly. Shared
+		// Session credit released by its consumed offset was already handed
+		// out proportionally by releaseSendCreditLocked.
+		if st.writeWaiting && st.writeWaitReason == waitStreamWindow {
+			st.s.signalStreamWriterLocked(st)
+		}
 		return nil
 	case f.offset <= oldConsumed && f.id <= oldMaximum:
 		// Fully stale/duplicate credit can arrive later on another Carrier.

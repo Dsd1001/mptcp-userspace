@@ -70,9 +70,12 @@ func (s *Session) openWithAdmission(ctx context.Context) (*Stream, error) {
 		if st.open {
 			return st, nil
 		}
-		ch := s.changed
+		for len(st.openWake) > 0 {
+			<-st.openWake
+		}
+		targeted, global := st.openWake, s.changed
 		s.mu.Unlock()
-		err := waitChange(ctx, ch, time.Time{})
+		err := waitTargetedChange(ctx, targeted, global, time.Time{})
 		s.mu.Lock()
 		if err != nil {
 			s.resetLocked(st, mpx4ErrNoError, true)
