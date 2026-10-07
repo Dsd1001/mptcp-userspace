@@ -1,44 +1,84 @@
-# MPTCP Userspace 1.1.0 / MPX/4 Protocol Version 4 Stable
+# MPTCP Userspace 1.1.1 / MPX/4 Protocol Version 4 Stable
 
-1.1.0 是一次 **MPX 数据面并发架构重构版本**。MPTCP Desk、Linux Client、Landing 与 Provisioning 统一使用 **1.1.0**。MPX/4 Wire Protocol Version 仍为 4，Capability Revision 仍为 8，协议源继续冻结到 MPX/4 `protocol-v4.0.0`，commit `44f587fd279ed2238b070dd68114c76822353f4d`。
+1.1.1 是一次 **发送侧 Flow Control 简化与多 Stream 并发修复版本**。MPTCP Desk、Linux Client、Landing 与 Provisioning 统一使用 **1.1.1**。MPX/4 Wire Protocol Version 仍为 4，Capability Revision 仍为 8，协议源继续冻结到 MPX/4 `protocol-v4.0.0`，commit `44f587fd279ed2238b070dd68114c76822353f4d`。
 
-本版本不通过修改 MPX/4 wire semantics 解决并发问题，而是重新组织 `mptcp-userspace` 内部的 Session / Stream / dispatcher 热路径，使 Session 级共享语义不再等价于高复杂度中央执行路径。
+本版本针对 1.1.0 多 Stream 实测中仍出现的平台期，移除发送侧重复的本地 Growth Credit / writer-turn admission 层，让 MPX/4 对端正式发布的 Stream/Session WINDOW 成为发送许可的唯一流控真值。
 
-## 1.1.0 数据面重构
+## 1.1.1 发送侧信用模型
 
-- DATA ready 调度从“每轮扫描 ready map、收集 Stream ID 并排序”改为 **持久化 per-Stream intrusive ready ring**。Stream 进入/退出 ready 状态时增量维护，正常派发热路径不再创建 ID slice 或执行 `sort.Slice`；
-- dispatcher 单次 Session 临界区最多处理 **128 个 DATA frame**。如果仍有 ready work，会立即 self-kick 继续派发，避免一个调度周期长时间占用 Session 锁；
-- dynamic bootstrap pending reserve 改为 **O(1) 增量计数**。活跃 bootstrap writer 在状态变化时更新 `bootstrapWriters`，`writeAllowance` / `writerTurn` 不再为每次判断重新扫描全部 writer；
-- writer-turn scarcity 路径移除“外层 writer scan × 内层 reserve scan”的嵌套复杂度；保留真正资源不足时的 FIFO fairness，同时新增 scan-step telemetry；
-- 大 application Write 增加 Session-lock quantum：一次连续 DATA commit 最多处理 **8 帧 / 256 KiB** 后主动让出 Session 锁，让 Carrier receipt、dispatcher 和其它 Stream 有机会进入共享账本；
-- Stream receive storage 增加独立 `rxMu`。用户 `Read` 的实际 page → user buffer copy 会冻结 Stream 本地 receive pages 后释放 `Session.mu` 执行，再短暂返回 Session 账本完成 consumed credit / WINDOW / page accounting；不同 Stream 的用户数据复制不再必须互相串行；
-- receive page reassembly 由 Stream-local `rxMu` 保护，Session 仍负责协议要求的 final-size、aggregate credit、Transmission/reliability 与全局资源 accounting；
-- 保留 1.0.3 的 per-Stream targeted wake，不恢复 wake-all；
-- 保留 1 GiB DATA pending、dynamic bootstrap reserve、128 MiB Session flow-control hard limit、32 KiB `MaxPayload`；
-- Weighted 继续使用 1.0.5 恢复的 0.10.x bounded feedback RTT 公式，本版本不再调整 Weighted 控制环。
+1.1.1 的 DATA 发送许可只受以下协议级条件约束：
 
-## 可观测性
+- 对端 `STREAM_WINDOW`：`peerLimit - txNext`；
+- 对端 `SESSION_WINDOW`：`peerLimit - txCommitted`。
 
-1.1.0 新增 Session 数据面并发 telemetry：
+同时继续保留本地资源硬保护：
 
-- `session_lock_count`
-- `session_lock_wait_ns`
-- `session_lock_wait_max_ns`
-- `session_lock_hold_ns`
-- `session_lock_hold_max_ns`
-- `dispatch_runs`
-- `dispatch_frames`
-- `dispatch_ns`
-- `dispatch_max_ns`
+- `MaxDataPending`；
+- `MaxDataPendingBytes`；
+- active bootstrap writer 的 pending-capacity reserve；
+- Carrier flight/budget；
+- receiver memory / page / Session resource limits。
+
+以下 1.0.x/1.1.0 发送侧本地 admission 不再决定 DATA 是否可发：
+
+- `SessionCreditLimit - txUsed` 二次发送硬闸；
+- `sharedGrowthRoom(txUsed, txGrowth)`；
+- Bootstrap/Growth 64/64 MiB 分账作为发送许可；
+- `writerTurnLocked()` scarcity FIFO 串行化；
+- per-Stream consumed 释放触发的 shared-growth writer wake；
+- writer-turn handoff/wakeup 链。
+
+因此，对端 aggregate `SESSION_WINDOW` 已经向前推进、但个别 Stream WINDOW/consumed replay 暂时滞后时，本地 `txUsed` 可以超过历史 128 MiB 诊断值，而不会错误地形成 Session 级 head-of-line blocking。
+
+## 诊断账本与兼容 telemetry
+
+`txUsed` / `txGrowth` 仍保留，用于观察 per-Stream consumed replay 相对 aggregate Session consumption 的滞后，但从 1.1.1 起它们是 **diagnostic mirrors**，不是发送 admission pool。
+
+`credit_accounting` 更新为：
+
+`rev5_peer_window_authoritative`
+
+为了保持现有 status JSON / Desk / 监控兼容，以下 legacy 字段继续保留，但生产发送路径不再进入对应 wait：
+
+- `bootstrap`
+- `growth`
+- `writer_turn`
+- `writer_turn_waiters`
 - `writer_turn_scan_steps`
-- `ready_streams`
-- `bootstrap_writers`
 
-这些字段用于直接判断多 Stream 压力下是 Session mutex、dispatcher 还是 writer-turn 扫描成为瓶颈，而不再只通过 MPX RTT 或吞吐曲线间接推断。
+正常 1.1.1 运行中，这些发送侧 legacy wait 应保持为 0；实际发送阻塞应主要归因于：
+
+- `stream_window_or_open`
+- `session_window`
+- `pending_frames`
+- `pending_bytes`
+
+## 本地 pending 公平性
+
+本版本没有删除 bootstrap pending reserve。
+
+其语义仅是**本地队列容量保护**：当新活跃 Stream 仍需要首个 DATA frame 时，已经进入 post-bootstrap 的 bulk Stream 不应占满所有 pending frame/byte slot。
+
+该 reserve 不属于 MPX/4 Flow Control，也不会再与 `txUsed/txGrowth` 绑定。
+
+## 1.1.0 并发重构全部保留
+
+1.1.1 保留 1.1.0 的数据面架构：
+
+- per-Stream intrusive ready ring；
+- dispatcher 单次最多 128 DATA frame 的有界 Session 临界区；
+- O(1) dynamic bootstrap reserve accounting；
+- 大 Write 每 8 frame / 256 KiB 主动让出 Session 锁；
+- Stream-local `rxMu`；
+- DATA payload store / overlap validation 脱离长 Session 临界区；
+- 用户 Read 的 page → user buffer copy 脱离 Session 全局锁；
+- 同一 Stream 跨 Carrier DATA 使用 `rxOpMu` 串行 publication；
+- per-Stream targeted wake；
+- Session mutex / dispatcher telemetry。
 
 ## 协议兼容性
 
-1.1.0 **不修改 MPX/4 Core wire semantics**：
+1.1.1 **不修改 MPX/4 Core wire semantics**：
 
 - Wire Protocol Version：4
 - Capability Revision：8
@@ -49,34 +89,32 @@
 - 最大本地 active Carrier：8
 - 最大 Stream：2048
 
-Session-wide Transmission ID、Session Flow Control、duplicate/replay、cross-Carrier reinjection 与 retirement 语义全部保持不变。本次变化仅改变本地实现如何并发执行这些语义。
+Session-wide Transmission ID、Session/Stream Flow Control、duplicate/replay、cross-Carrier reinjection 与 retirement 语义全部保持不变。
 
-## 0.10.x / 1.0.x 功能保留
+特别地，**128 MiB Session WINDOW 没有被取消或扩大**。1.1.1 删除的是发送端额外叠加的一套本地 128 MiB `txUsed` admission，而不是协议定义的 Session Flow Control。
 
-- parallel Bundle/Profile 故障隔离；
-- Last Known Good cache-first 恢复；
-- Profile 自动重连；
-- Sparkle 2 内置更新；
-- 可选远程设备管理；
-- Provisioning / Mac 新界面；
-- Keychain Broker / App 本体分离；
+## 其它功能保留
+
+- Weighted 继续使用 1.0.5 恢复的 bounded-feedback RTT 公式；
+- 1 GiB DATA pending；
 - UoT；
-- MPX/4 Stable；
-- 1.0.2 的 1 GiB DATA pending；
-- 1.0.3 的 targeted wake；
-- 1.0.5 的 legacy bounded-feedback Weighted 数据面。
+- parallel Bundle/Profile 故障隔离；
+- Last Known Good；
+- Profile 自动重连；
+- Sparkle 2；
+- 远程设备管理；
+- Keychain Broker / App 本体分离；
+- Provisioning / Mac 现有界面与功能。
 
 ## Broker 冻结
 
-1.1.0 **不升级 Broker**。继续复用冻结的 `MPTCPKeychainBroker` v1：
+1.1.1 **不升级 Broker**。继续复用冻结的 `MPTCPKeychainBroker` v1：
 
 `sha256=5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`
 
-Mac 构建与 release gate 继续硬校验该值。
-
 ## 发布验证
 
-按用户要求，本版本完成 correctness / concurrency 回归后直接发版，**不运行实际带宽、WAN、capacity 或 scheduler performance promotion 测试**。
+按用户要求，本版本完成 correctness / concurrency 回归后直接发版，**不运行实际带宽、WAN、capacity、high-BDP 或 scheduler performance promotion 测试**。
 
 发布前要求并记录：
 
@@ -85,9 +123,13 @@ Mac 构建与 release gate 继续硬校验该值。
 - Provisioning 全包测试；
 - 完整 `go test -race ./multipath -count=1`；
 - engine 与 Provisioning `go vet ./...`；
+- peer WINDOW authoritative 专项回归：
+  - 本地 `txUsed/txGrowth` 超过历史发送上限时，peer WINDOW 有 room 仍必须放行；
+  - peer `SESSION_WINDOW` 耗尽时仍必须硬阻塞；
+  - pending frame/byte reserve 仍独立生效；
 - frozen source / artifact provenance；
 - Linux amd64/arm64 二进制重建校验；
 - Mac App / engine frozen-source rebuild；
 - DMG、代码签名、Sparkle EdDSA 与冻结 Broker 校验。
 
-因此 1.1.0 声明 **correctness/build evidence passed**，但不把本版本宣称为新的吞吐、capacity 或物理 WAN 性能验收结果。
+因此 1.1.1 声明 **correctness/build evidence passed**，但不宣称新的吞吐、capacity 或物理 WAN 性能验收结果。
