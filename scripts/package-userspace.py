@@ -47,7 +47,7 @@ def acceptance_text(identity: str, capacity: dict, runtime: dict, complete: bool
     stable_protocol = stable_release or stable_candidate or version.startswith('1.')
     protocol='MPX/4 Protocol Version 4 Stable' if stable_protocol else 'MPX/4 Draft 04'
     text=f'# {version} / {protocol} acceptance\n\n'
-    stage='stable-protocol-v4-release' if stable_release else ('stable-protocol-v4-candidate' if stable_candidate else ('stable-protocol-v4-patch' if stable_patch else ('control-plane-feature-release' if feature_release else ('background-resident-feature-release' if background_release else ('preview-with-known-limitations' if preview else ('untested-by-request release' if untested else ('short-capacity-and-physical-validated' if complete else 'candidate; required acceptance pending')))))))
+    stage='stable-protocol-v4-release' if stable_release else ('stable-protocol-v4-candidate' if stable_candidate else ('stable-protocol-v4-implementation-release' if stable_patch else ('control-plane-feature-release' if feature_release else ('background-resident-feature-release' if background_release else ('preview-with-known-limitations' if preview else ('untested-by-request release' if untested else ('short-capacity-and-physical-validated' if complete else 'candidate; required acceptance pending')))))))
     text+=f'Source-ID: `{identity}`. Stage: **{stage}**.\n\n'
     if stable_protocol:
         text+=f'This release uses MPX/4 Protocol Version 4 Stable, frozen by {STABLE_PROTOCOL_RELEASE} at {STABLE_PROTOCOL_SOURCE}. Core scheduler negotiation is removed; Auto/Aggregate/Protect/Weighted are endpoint-local policies and Weighted may use the published RECEIVE_CAPACITY_HINT extension. Release records bind to this Source-ID; untested patch releases explicitly make no test or performance acceptance claim.\n\n'
@@ -76,7 +76,7 @@ def acceptance_text(identity: str, capacity: dict, runtime: dict, complete: bool
     elif stable_candidate:
         text+=f'{version} is prepared as a matched MPX/4 Stable candidate. Physical App/Surge runtime evidence was intentionally omitted by request and remains pending; this artifact makes no production-runtime or WAN acceptance claim. Pre-Stable Draft 04 peers are not a supported same-port fallback because their Version-4 handshake semantics differ. The frozen Keychain Broker remains v1 sha256={STABLE_BROKER_SHA256}.\n'
     elif stable_patch:
-        text+=f'{version} is released as a matched Desk/Linux Client/Landing/Provisioning MPX/4 Protocol Version 4 Stable patch. Current-source correctness/build evidence passed, while scheduler performance promotion, capacity and physical WAN/App acceptance were not rerun and are not claimed. The frozen Keychain Broker remains v1 sha256={STABLE_BROKER_SHA256}.\n'
+        text+=f'{version} is released as a matched Desk/Linux Client/Landing/Provisioning MPX/4 Protocol Version 4 Stable implementation release. Current-source correctness/build evidence passed, while scheduler performance promotion, capacity and physical WAN/App acceptance were not rerun and are not claimed. The frozen Keychain Broker remains v1 sha256={STABLE_BROKER_SHA256}.\n'
     elif stable_protocol:
         text+=f'{version} is released as a matched Desk/Linux Client/Landing/Provisioning MPX/4 Protocol Version 4 Stable patch. Tests and performance acceptance were intentionally not rerun by user request; no new validation claim is made. The frozen Keychain Broker remains v1 sha256={STABLE_BROKER_SHA256}.\n'
     else:
@@ -132,14 +132,14 @@ def check_stable_candidate(tests: dict, identity: str, version: str, *, root: pa
         gates.require(record.get('exit_code')==0 and local.is_file() and not local.is_symlink() and local.resolve().is_relative_to(root.resolve()) and source.sha(local.read_bytes())==record.get('sha256'),'Missing, failed or changed stable-candidate evidence: '+name)
 
 def check_stable_patch(tests: dict, identity: str, version: str, *, root: pathlib.Path=ROOT) -> None:
-    gates.require(version.startswith('1.0.') and version!=STABLE_VERSION and (ROOT/'provisioning/VERSION').read_text().strip()==version,'Stable patch requires one matched 1.0.x suite version')
-    gates.require(tests.get('source_id')==identity and tests.get('version')==version and tests.get('verified') is True and tests.get('status')=='correctness-passed','Stable patch requires current-source correctness evidence')
+    gates.require(version.startswith('1.') and version!=STABLE_VERSION and (ROOT/'provisioning/VERSION').read_text().strip()==version,'Stable implementation release requires one matched 1.x suite version')
+    gates.require(tests.get('source_id')==identity and tests.get('version')==version and tests.get('verified') is True and tests.get('status')=='correctness-passed','Stable implementation release requires current-source correctness evidence')
     commands=tests.get('commands',[]); names=[r.get('name') for r in commands]
-    gates.require(STABLE_PATCH_REQUIRED.issubset(set(names)) and len(names)==len(set(names)),'Stable patch test inventory missing or duplicated')
+    gates.require(STABLE_PATCH_REQUIRED.issubset(set(names)) and len(names)==len(set(names)),'Stable implementation release test inventory missing or duplicated')
     for record in commands:
         name=record.get('log',''); path=pathlib.PurePosixPath(name); local=root/path
-        gates.require(name and not path.is_absolute() and '..' not in path.parts,'Unsafe stable-patch evidence path')
-        gates.require(record.get('exit_code')==0 and local.is_file() and not local.is_symlink() and local.resolve().is_relative_to(root.resolve()) and source.sha(local.read_bytes())==record.get('sha256'),'Missing, failed or changed stable-patch evidence: '+name)
+        gates.require(name and not path.is_absolute() and '..' not in path.parts,'Unsafe stable-implementation evidence path')
+        gates.require(record.get('exit_code')==0 and local.is_file() and not local.is_symlink() and local.resolve().is_relative_to(root.resolve()) and source.sha(local.read_bytes())==record.get('sha256'),'Missing, failed or changed stable-implementation evidence: '+name)
 
 
 def check_feature_release(tests: dict, identity: str, version: str, *, root: pathlib.Path=ROOT) -> None:
@@ -185,15 +185,15 @@ def main() -> None:
     parser.add_argument('--feature-release',action='store_true',help='0.10.x feature/patch release with current-source correctness/build proof; does not claim scheduler/capacity promotion')
     parser.add_argument('--stable-release',action='store_true',help='Formal 1.0.0 MPX/4 Protocol Version 4 Stable matched-suite release')
     parser.add_argument('--stable-candidate',action='store_true',help='1.0.0 MPX/4 Stable candidate with static/build proof and runtime explicitly pending')
-    parser.add_argument('--stable-patch',action='store_true',help='1.0.x Stable patch with current correctness/build proof; no new performance/WAN promotion')
+    parser.add_argument('--stable-patch',action='store_true',help='Post-1.0.0 Stable implementation release with current correctness/build proof; no new performance/WAN promotion')
     args=parser.parse_args()
     gates.require(sum(bool(x) for x in [args.engineering,args.require_live,args.untested_release,args.preview_release,args.background_release,args.feature_release,args.stable_release,args.stable_candidate,args.stable_patch]) <= 1,'Select at most one packaging mode')
     version=(ROOT/'macos/VERSION').read_text().strip()
-    gates.require(version in {'0.9.8','0.10.0','0.10.1','0.10.2','0.10.3','0.10.4','0.10.5','0.10.6','0.10.7','0.10.8','0.10.9','0.10.10','0.10.11','0.10.12','1.0.0','1.0.1','1.0.2','1.0.3','1.0.4','1.0.5'},'Unsupported release version for this packaging script')
+    gates.require(version in {'0.9.8','0.10.0','0.10.1','0.10.2','0.10.3','0.10.4','0.10.5','0.10.6','0.10.7','0.10.8','0.10.9','0.10.10','0.10.11','0.10.12','1.0.0','1.0.1','1.0.2','1.0.3','1.0.4','1.0.5','1.1.0'},'Unsupported release version for this packaging script')
     if args.feature_release: gates.require(version.startswith('0.10.'),'--feature-release is defined for 0.10.x')
     if args.stable_release: gates.require(version==STABLE_VERSION,'--stable-release is defined for 1.0.0')
     if args.stable_candidate: gates.require(version==STABLE_VERSION,'--stable-candidate is defined for 1.0.0')
-    if args.stable_patch: gates.require(version.startswith('1.0.') and version!=STABLE_VERSION,'--stable-patch is defined for post-1.0.0 Stable patches')
+    if args.stable_patch: gates.require(version.startswith('1.') and version!=STABLE_VERSION,'--stable-patch is defined for post-1.0.0 Stable implementation releases')
     out=ROOT/'dist'/('userspace-'+version)
     files=source.collect();sums=source.manifest(files);identity=source.sha(sums)
     gates.require((out/'SOURCE_ID').read_text().strip()==identity and (out/'SOURCE_SHA256SUMS').read_bytes()==sums,'Source freeze missing or stale')
@@ -227,7 +227,7 @@ def main() -> None:
         scheduler_gates.check(scheduler,identity,verify_evidence=True)
     elif args.stable_patch:
         tests=json.loads((out/'TESTS.json').read_text()); check_stable_patch(tests,identity,version)
-        gates.require(scheduler.get('source_id')==identity and scheduler.get('version')==version and scheduler.get('wire_protocol')==4 and scheduler.get('verified') is False and scheduler.get('status')=='not-rerun-for-stable-patch','Stable patch scheduler record must avoid a performance-promotion claim')
+        gates.require(scheduler.get('source_id')==identity and scheduler.get('version')==version and scheduler.get('wire_protocol')==4 and scheduler.get('verified') is False and scheduler.get('status')=='not-rerun-for-stable-implementation-release','Stable implementation scheduler record must avoid a performance-promotion claim')
     elif args.feature_release:
         gates.require(scheduler.get('source_id')==identity and scheduler.get('version')==version and scheduler.get('wire_protocol')==4 and scheduler.get('verified') is False and scheduler.get('status')=='not-rerun-for-control-plane-feature-release','Feature release scheduler record must explicitly avoid a performance-promotion claim')
         tests=json.loads((out/'TESTS.json').read_text()); check_feature_release(tests,identity,version)
@@ -260,7 +260,7 @@ def main() -> None:
         complete=False
     elif args.stable_patch:
         for path,label in [(out/'CAPACITY.json','capacity'),(out/'RUNTIME.json','runtime')]:
-            path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'verified':False,'status':'not-rerun-for-stable-patch','reason':version+' is a Stable implementation patch with current correctness/build evidence; no new performance/capacity/WAN promotion is claimed'},indent=2)+'\n')
+            path.write_text(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,'verified':False,'status':'not-rerun-for-stable-implementation-release','reason':version+' is a Stable implementation release with current correctness/build evidence; no new performance/capacity/WAN promotion is claimed'},indent=2)+'\n')
         capacity=json.loads((out/'CAPACITY.json').read_text());runtime=json.loads((out/'RUNTIME.json').read_text())
         complete=False
     elif args.feature_release:
@@ -314,7 +314,7 @@ def main() -> None:
     external={name:(out/name).read_bytes() for name in names+[bundle.name]}
     (out/f'MPTCP-Userspace-{version}-SHA256SUMS').write_bytes(source.manifest(external))
     print(json.dumps({'version':version,'wire_protocol':4,'source_id':identity,
-        'release_stage':'stable-protocol-v4-release' if args.stable_release else ('stable-protocol-v4-candidate' if args.stable_candidate else ('stable-protocol-v4-patch' if args.stable_patch else ('control-plane-feature-release' if args.feature_release else ('background-resident-feature-release' if args.background_release else ('preview-with-known-limitations' if args.preview_release else 'untested-by-request' if args.untested_release else ('engineering-not-release-gated' if args.engineering else ('short-capacity-and-physical-validated' if complete else 'candidate-pending-required-acceptance'))))))),
+        'release_stage':'stable-protocol-v4-release' if args.stable_release else ('stable-protocol-v4-candidate' if args.stable_candidate else ('stable-protocol-v4-implementation-release' if args.stable_patch else ('control-plane-feature-release' if args.feature_release else ('background-resident-feature-release' if args.background_release else ('preview-with-known-limitations' if args.preview_release else 'untested-by-request' if args.untested_release else ('engineering-not-release-gated' if args.engineering else ('short-capacity-and-physical-validated' if complete else 'candidate-pending-required-acceptance'))))))),
         'scheduler_verified':scheduler.get('verified') is True,'capacity_verified':capacity.get('verified') is True,'runtime_verified':runtime.get('verified') is True,
         'source_files':len(files),'release_files':len(release),'archive':bundle.name,
         'archive_bytes':bundle.stat().st_size,'archive_sha256':source.sha(bundle.read_bytes()),

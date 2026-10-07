@@ -1,56 +1,93 @@
-# MPTCP Userspace 1.0.5 / MPX/4 Protocol Version 4 Stable
+# MPTCP Userspace 1.1.0 / MPX/4 Protocol Version 4 Stable
 
-1.0.5 是基于 1.0.4 的兼容性能回归版本：MPTCP Desk、Linux Client、Landing 与 Provisioning 统一使用 **1.0.5**。Wire Protocol Version 仍为 4，协议源继续冻结到 MPX/4 `protocol-v4.0.0`，commit `44f587fd279ed2238b070dd68114c76822353f4d`。
+1.1.0 是一次 **MPX 数据面并发架构重构版本**。MPTCP Desk、Linux Client、Landing 与 Provisioning 统一使用 **1.1.0**。MPX/4 Wire Protocol Version 仍为 4，Capability Revision 仍为 8，协议源继续冻结到 MPX/4 `protocol-v4.0.0`，commit `44f587fd279ed2238b070dd68114c76822353f4d`。
 
-## 1.0.5 变化
+本版本不通过修改 MPX/4 wire semantics 解决并发问题，而是重新组织 `mptcp-userspace` 内部的 Session / Stream / dispatcher 热路径，使 Session 级共享语义不再等价于高复杂度中央执行路径。
 
-- Weighted flight 直接恢复 0.10.7 / 0.10.9 / 0.10.12 已长期使用的有界 feedback RTT 公式：`feedback = min(4*baseRTT, max(baseRTT, currentFeedbackRTT))`；配置带宽仍决定目标 flight，但真实 MPX receipt RTT 最多只允许按 **4× base RTT** 参与预算；
-- 完整移除 1.0.4 新增的 adaptive Weighted growth 状态与 receiver-clock epoch 扩窗逻辑，避免继续叠加额外控制环；load RTT 可以有限度补偿 delayed feedback，但不会无限扩大；
-- `writer_turn` 恢复 0.10.x 的决策模型：当当前 shared credit / dynamic pending room 足够让所有活跃 writer 各拿一个完整 DATA turn 时不串行；真正资源不足时才按 FIFO 单 writer 传棒；
-- writer-turn 的资源判断继续使用 1.0.x 的 **动态 shared growth room + 1 GiB DATA pending + dynamic bootstrap reserve**，不恢复 0.10.x 约 64 MiB 的静态 growth pending reserve；
-- 继续保留 1.0.3 的 per-Stream targeted wake，不恢复旧版 wake-all；继续保留 1.0.2 的 1 GiB DATA pending、1.0.1 的 192 KiB OPEN bootstrap；
-- `MaxPayload` 仍为 32 KiB，Session flow-control hard limit 仍为 128 MiB，Landing `MemoryMax` 仍为 2 GiB；
-- Keychain Broker v1 继续冻结不变。
+## 1.1.0 数据面重构
 
-本版本通过当前源码 Go 全包测试、`go vet`、完整 multipath race，以及 source-matched Weighted high-BDP release gate。旧式有界 feedback 公式在 300 Mbps 高-BDP gate 中取得约 266 Mbps 中位吞吐；物理 WAN / App+Surge acceptance 不作为本版本的新发布结论。
+- DATA ready 调度从“每轮扫描 ready map、收集 Stream ID 并排序”改为 **持久化 per-Stream intrusive ready ring**。Stream 进入/退出 ready 状态时增量维护，正常派发热路径不再创建 ID slice 或执行 `sort.Slice`；
+- dispatcher 单次 Session 临界区最多处理 **128 个 DATA frame**。如果仍有 ready work，会立即 self-kick 继续派发，避免一个调度周期长时间占用 Session 锁；
+- dynamic bootstrap pending reserve 改为 **O(1) 增量计数**。活跃 bootstrap writer 在状态变化时更新 `bootstrapWriters`，`writeAllowance` / `writerTurn` 不再为每次判断重新扫描全部 writer；
+- writer-turn scarcity 路径移除“外层 writer scan × 内层 reserve scan”的嵌套复杂度；保留真正资源不足时的 FIFO fairness，同时新增 scan-step telemetry；
+- 大 application Write 增加 Session-lock quantum：一次连续 DATA commit 最多处理 **8 帧 / 256 KiB** 后主动让出 Session 锁，让 Carrier receipt、dispatcher 和其它 Stream 有机会进入共享账本；
+- Stream receive storage 增加独立 `rxMu`。用户 `Read` 的实际 page → user buffer copy 会冻结 Stream 本地 receive pages 后释放 `Session.mu` 执行，再短暂返回 Session 账本完成 consumed credit / WINDOW / page accounting；不同 Stream 的用户数据复制不再必须互相串行；
+- receive page reassembly 由 Stream-local `rxMu` 保护，Session 仍负责协议要求的 final-size、aggregate credit、Transmission/reliability 与全局资源 accounting；
+- 保留 1.0.3 的 per-Stream targeted wake，不恢复 wake-all；
+- 保留 1 GiB DATA pending、dynamic bootstrap reserve、128 MiB Session flow-control hard limit、32 KiB `MaxPayload`；
+- Weighted 继续使用 1.0.5 恢复的 0.10.x bounded feedback RTT 公式，本版本不再调整 Weighted 控制环。
 
-## 协议更新
+## 可观测性
 
-- 加入 critical `MAX_CARRIERS`，并把 Carrier ID 扩展为完整非零 MPX VarInt 空间；
-- CREATE/JOIN 固化 Session-scoped limits，JOIN 改值按 SESSION_CONFLICT 处理；
-- 加入 VERSION_NEGOTIATION 与 HANDSHAKE_REJECT；
-- 正式支持 DORMANT Session 保留与 replacement recovery；
-- 加入 TRANSMISSION_RETIRE、连续 Settled Through 和 confirmation replay retention；
-- 收紧 Transmission confirmation class、credit reordering、terminal/final-size、recovery 与 error-scope 语义；
-- 源码内置 Stable 的 20 个 Core JSON vectors；
-- 不提供同端口 Draft 04 静默 fallback。
+1.1.0 新增 Session 数据面并发 telemetry：
 
-## Scheduler 语义
+- `session_lock_count`
+- `session_lock_wait_ns`
+- `session_lock_wait_max_ns`
+- `session_lock_hold_ns`
+- `session_lock_hold_max_ns`
+- `dispatch_runs`
+- `dispatch_frames`
+- `dispatch_ns`
+- `dispatch_max_ns`
+- `writer_turn_scan_steps`
+- `ready_streams`
+- `bootstrap_writers`
 
-MPX/4 Stable Core 不再协商 Scheduler。Auto / Aggregate / Protect / Weighted 保留为 MPTCP Userspace 的本地策略。
+这些字段用于直接判断多 Stream 压力下是 Session mutex、dispatcher 还是 writer-turn 扫描成为瓶颈，而不再只通过 MPX RTT 或吞吐曲线间接推断。
 
-Weighted 可使用已发布的可选扩展 `RECEIVE_CAPACITY_HINT (0x40)` 传递 receive-side 容量估计。该 Hint 不参与 Relay、不代表预留带宽，也不是 flow-control credit。
+## 协议兼容性
 
-Landing 增加独立本地 scheduler policy，默认 Auto。
+1.1.0 **不修改 MPX/4 Core wire semantics**：
 
-## 0.10.x 功能全部保留
+- Wire Protocol Version：4
+- Capability Revision：8
+- Protocol Release：`protocol-v4.0.0`
+- Protocol Source：`44f587fd279ed2238b070dd68114c76822353f4d`
+- `MaxPayload`：32 KiB
+- Session flow-control hard limit：128 MiB
+- 最大本地 active Carrier：8
+- 最大 Stream：2048
 
-- 0.10.1 parallel Bundle/Profile 故障隔离；
-- 0.10.4 Last Known Good 缓存与 cache-first 恢复；
-- 0.10.5 每 Profile 自动重连：1s → 2s → 5s → 10s → 30s，之后每 30s；
-- 0.10.6 Sparkle 2 内置更新与可选远程设备管理；
-- 0.10.7 Mac 与 Provisioning 新界面；
-- 0.10.9/0.10.10 稳定本地代码签名与连续性检查；
-- 0.10.11/0.10.12 Keychain Broker / App 本体分离。
+Session-wide Transmission ID、Session Flow Control、duplicate/replay、cross-Carrier reinjection 与 retirement 语义全部保持不变。本次变化仅改变本地实现如何并发执行这些语义。
+
+## 0.10.x / 1.0.x 功能保留
+
+- parallel Bundle/Profile 故障隔离；
+- Last Known Good cache-first 恢复；
+- Profile 自动重连；
+- Sparkle 2 内置更新；
+- 可选远程设备管理；
+- Provisioning / Mac 新界面；
+- Keychain Broker / App 本体分离；
+- UoT；
+- MPX/4 Stable；
+- 1.0.2 的 1 GiB DATA pending；
+- 1.0.3 的 targeted wake；
+- 1.0.5 的 legacy bounded-feedback Weighted 数据面。
 
 ## Broker 冻结
 
-1.0.5 **不升级 Broker**。继续复用 0.10.12 / 1.0.0 / 1.0.1 / 1.0.2 / 1.0.3 / 1.0.4 的 `MPTCPKeychainBroker` v1 精确字节：
+1.1.0 **不升级 Broker**。继续复用冻结的 `MPTCPKeychainBroker` v1：
 
 `sha256=5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`
 
-Mac 构建入口和发布验证都会硬校验该值。重建、重签或替换 Broker v1 会直接使 release gate 失败。
+Mac 构建与 release gate 继续硬校验该值。
 
 ## 发布验证
 
-1.0.0 的正式 Stable 基线使用独立 `--stable-release` gate。1.0.5 使用 Stable patch gate：要求 frozen source、artifact hash、provenance 与当前源码 correctness evidence 自洽；本次记录 Go 全包测试、`go vet`、完整 multipath race 与 source-matched Weighted high-BDP release gate 通过，但完整 Scheduler promotion、capacity、180s runtime 与物理 WAN acceptance 不作为 1.0.5 的新发布结论。
+按用户要求，本版本完成 correctness / concurrency 回归后直接发版，**不运行实际带宽、WAN、capacity 或 scheduler performance promotion 测试**。
+
+发布前要求并记录：
+
+- engine 全包 `go test ./... -count=1`；
+- Landing / multipath 全量回归；
+- Provisioning 全包测试；
+- 完整 `go test -race ./multipath -count=1`；
+- engine 与 Provisioning `go vet ./...`；
+- frozen source / artifact provenance；
+- Linux amd64/arm64 二进制重建校验；
+- Mac App / engine frozen-source rebuild；
+- DMG、代码签名、Sparkle EdDSA 与冻结 Broker 校验。
+
+因此 1.1.0 声明 **correctness/build evidence passed**，但不把本版本宣称为新的吞吐、capacity 或物理 WAN 性能验收结果。
