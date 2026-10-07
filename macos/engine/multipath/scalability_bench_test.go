@@ -2,6 +2,7 @@ package multipath
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -57,6 +58,90 @@ func BenchmarkBootstrapReserveO1(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestConcurrentCarrierDataSameStreamPublishesConsistently(t *testing.T) {
+	s, c1 := rev2Fixture()
+	c2 := schedulerPath(2)
+	s.paths[2] = c2
+	st := rev2Stream(s, 1)
+
+	const frames = 32
+	errs := make(chan error, frames)
+	var wg sync.WaitGroup
+	for i := 0; i < frames; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := c1
+			if i%2 != 0 {
+				c = c2
+			}
+			data := make([]byte, MaxPayload)
+			for j := range data {
+				data[j] = byte(i)
+			}
+			errs <- s.handleDataFrame(c, frame{
+				kind:   kindData,
+				stream: st.id,
+				id:     uint64(i + 1),
+				offset: uint64(i * MaxPayload),
+				data:   data,
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := frames * MaxPayload
+	s.mu.Lock()
+	if got := int(st.rxContiguous); got != want {
+		s.mu.Unlock()
+		t.Fatalf("rxContiguous=%d want=%d", got, want)
+	}
+	if st.buffered != want || s.bufferedBytes != want {
+		gotStream, gotSession := st.buffered, s.bufferedBytes
+		s.mu.Unlock()
+		t.Fatalf("buffered stream/session=%d/%d want=%d", gotStream, gotSession, want)
+	}
+	if got := int(s.receiveCredit); got != want {
+		s.mu.Unlock()
+		t.Fatalf("receiveCredit=%d want=%d", got, want)
+	}
+	if s.peerProcessedThrough != frames {
+		got := s.peerProcessedThrough
+		s.mu.Unlock()
+		t.Fatalf("peerProcessedThrough=%d want=%d", got, frames)
+	}
+	s.mu.Unlock()
+
+	buf := make([]byte, want)
+	n, err := st.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != want {
+		t.Fatalf("Read=%d want=%d", n, want)
+	}
+	for i := 0; i < frames; i++ {
+		for _, got := range buf[i*MaxPayload : (i+1)*MaxPayload] {
+			if got != byte(i) {
+				t.Fatalf("frame %d data mismatch: got=%d", i, got)
+			}
+		}
+	}
+
+	s.mu.Lock()
+	if st.buffered != 0 || s.bufferedBytes != 0 || s.receiveAllocated != 0 {
+		t.Fatalf("receive storage leaked: stream=%d session=%d allocated=%d", st.buffered, s.bufferedBytes, s.receiveAllocated)
+	}
+	s.mu.Unlock()
 }
 
 func TestScalabilityTelemetryTracksSessionAndDispatch(t *testing.T) {
