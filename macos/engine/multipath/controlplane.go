@@ -156,7 +156,7 @@ func (s *Session) writeCarrier(c *carrier) {
 					// OPEN and no credit availability check can block it.
 					if f.kind == kindOpen && !s.server {
 						if st := s.streams[f.stream]; st != nil && !st.closed {
-							st.grantCreditLocked(st.rxRead + StreamWindow)
+							st.grantCreditLocked(st.rxRead + OpenBootstrapWindow)
 							extra = frame{kind: kindWindow, stream: st.id, offset: st.rxRead, id: st.rxLimit}
 							hasExtra = true
 						}

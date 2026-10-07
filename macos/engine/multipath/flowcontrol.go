@@ -7,12 +7,16 @@ import (
 )
 
 const (
-	MaxStreamWindow          = 16 << 20
-	SessionCreditLimit       = 128 << 20
-	BootstrapCreditLimit     = MaxStreams * StreamWindow
-	GrowthCreditLimit        = SessionCreditLimit - BootstrapCreditLimit
-	SmallStreamWindow        = 128 << 10
-	StandbyStreamWindow      = 192 << 10
+	MaxStreamWindow      = 16 << 20
+	SessionCreditLimit   = 128 << 20
+	BootstrapCreditLimit = MaxStreams * StreamWindow
+	GrowthCreditLimit    = SessionCreditLimit - BootstrapCreditLimit
+	SmallStreamWindow    = 128 << 10
+	StandbyStreamWindow  = 192 << 10
+	// OpenBootstrapWindow is the explicit receive entitlement sent alongside a
+	// new client STREAM_OPEN. StreamWindow remains the 32 KiB Session bootstrap
+	// accounting baseline; bytes above it are charged to shared growth credit.
+	OpenBootstrapWindow      = 192 << 10
 	InitialWindowShareBudget = 16 << 20
 	BulkWindowFloor          = 512 << 10
 	BulkWindowMaxFloor       = 4 << 20

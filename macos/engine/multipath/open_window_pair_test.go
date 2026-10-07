@@ -44,12 +44,12 @@ func TestOPENIsFollowedBySeparateExplicitWINDOW(t *testing.T) {
 		t.Fatal("bad identity OPEN", e)
 	}
 	second, e := recv.readFrame()
-	if e != nil || second.kind != kindWindow || second.stream != st.id || second.offset != 0 || second.id != StreamWindow {
+	if e != nil || second.kind != kindWindow || second.stream != st.id || second.offset != 0 || second.id != OpenBootstrapWindow {
 		t.Fatalf("missing separate bootstrap WINDOW: frame=%+v error=%v", second, e)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if st.open || st.peerLimit != 0 || st.rxLimit != StreamWindow || s.receiveCredit != 0 {
+	if st.open || st.peerLimit != 0 || st.rxLimit != OpenBootstrapWindow || s.receiveCredit != 0 {
 		t.Fatal("explicit local grant completed OPEN or peer permission")
 	}
 }

@@ -68,7 +68,10 @@ func weightedFlightBudget(c *carrier, rate float64) int {
 		rtt = c.rtt
 	}
 	rtt = min(time.Second, max(time.Millisecond, rtt))
-	feedback := min(4*rtt, max(rtt, c.rtt))
-	desired := int(rate*(1.25*feedback.Seconds()+.015)) + 2*MaxPayload
+	// Configured capacity is a stable path model. Queue-inflated load RTT must
+	// never increase the allowed flight budget, otherwise queueing raises RTT,
+	// raises the budget and feeds the same queue again. Use propagation/base RTT
+	// only; load RTT remains an observation signal, not permission to send more.
+	desired := int(rate*(1.25*rtt.Seconds()+.015)) + 2*MaxPayload
 	return min(maxPathBudget, max(initialPathBudget, desired))
 }

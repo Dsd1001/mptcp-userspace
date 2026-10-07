@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Version             = "1.0.0"
+	Version             = "1.0.1"
 	CapabilityRevision  = 8 // MPX/4 Protocol Version 4 Stable; RC8 product fast-start/UoT capability
 	ProtocolRelease     = "protocol-v4.0.0"
 	ProtocolReleaseSHA  = "44f587fd279ed2238b070dd68114c76822353f4d"

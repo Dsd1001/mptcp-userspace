@@ -44,13 +44,13 @@ def local_test_secrets() -> list[bytes]:
 
 
 def acceptance_text(identity: str, capacity: dict, runtime: dict, complete: bool, scheduler: dict, *, version: str, untested: bool=False, preview: bool=False, background_release: bool=False, feature_release: bool=False, stable_release: bool=False, stable_candidate: bool=False) -> str:
-    stable_protocol = stable_release or stable_candidate
+    stable_protocol = stable_release or stable_candidate or version.startswith('1.')
     protocol='MPX/4 Protocol Version 4 Stable' if stable_protocol else 'MPX/4 Draft 04'
     text=f'# {version} / {protocol} acceptance\n\n'
     stage='stable-protocol-v4-release' if stable_release else ('stable-protocol-v4-candidate' if stable_candidate else ('control-plane-feature-release' if feature_release else ('background-resident-feature-release' if background_release else ('preview-with-known-limitations' if preview else ('untested-by-request release' if untested else ('short-capacity-and-physical-validated' if complete else 'candidate; required acceptance pending'))))))
     text+=f'Source-ID: `{identity}`. Stage: **{stage}**.\n\n'
     if stable_protocol:
-        text+=f'This release moves the matched Desk/Linux Client/Landing suite to MPX/4 Protocol Version 4 Stable, frozen by {STABLE_PROTOCOL_RELEASE} at {STABLE_PROTOCOL_SOURCE}. Core scheduler negotiation is removed; Auto/Aggregate/Protect/Weighted are endpoint-local policies and Weighted may use the published RECEIVE_CAPACITY_HINT extension. TESTS.json, SCHEDULER-MODES.json, CAPACITY.json, RUNTIME.json and PROVENANCE.json must all bind this Source-ID.\n\n'
+        text+=f'This release uses MPX/4 Protocol Version 4 Stable, frozen by {STABLE_PROTOCOL_RELEASE} at {STABLE_PROTOCOL_SOURCE}. Core scheduler negotiation is removed; Auto/Aggregate/Protect/Weighted are endpoint-local policies and Weighted may use the published RECEIVE_CAPACITY_HINT extension. Release records bind to this Source-ID; untested patch releases explicitly make no test or performance acceptance claim.\n\n'
     if feature_release:
         text+='This 0.10.x feature/patch release changes client/runtime/control-plane behavior above the unchanged MPX/4 Draft 04 transport. Current-source correctness/build evidence is recorded in TESTS.json and PROVENANCE.json. Scheduler/capacity/WAN performance promotion is intentionally not claimed for this Source-ID because the transport wire and multipath scheduler semantics are unchanged.\n\n'
     if background_release:
@@ -75,6 +75,8 @@ def acceptance_text(identity: str, capacity: dict, runtime: dict, complete: bool
         text+=f'{version} is released as a matched Desk/Linux Client/Landing/Provisioning suite. MPX/4 Protocol Version remains 4, but pre-Stable Draft 04 peers are not a supported same-port fallback because their Version-4 handshake semantics differ. The frozen Keychain Broker remains v1 sha256={STABLE_BROKER_SHA256}. No multi-day stability, physical Intel, notarization, forward-secrecy or independent security-audit claim.\n'
     elif stable_candidate:
         text+=f'{version} is prepared as a matched MPX/4 Stable candidate. Physical App/Surge runtime evidence was intentionally omitted by request and remains pending; this artifact makes no production-runtime or WAN acceptance claim. Pre-Stable Draft 04 peers are not a supported same-port fallback because their Version-4 handshake semantics differ. The frozen Keychain Broker remains v1 sha256={STABLE_BROKER_SHA256}.\n'
+    elif stable_protocol:
+        text+=f'{version} is released as a matched Desk/Linux Client/Landing/Provisioning MPX/4 Protocol Version 4 Stable patch. Tests and performance acceptance were intentionally not rerun by user request; no new validation claim is made. The frozen Keychain Broker remains v1 sha256={STABLE_BROKER_SHA256}.\n'
     else:
         text+=f'MPX/4 Draft 04 is incompatible with the MPX/3 transport used by 0.9.5 and older. {version} is released as a matched Desk/Linux Client/Landing/Provisioning suite. Existing MPX/4 key schedule and wire registry remain unchanged. No multi-day stability, physical Intel, notarization, forward-secrecy or independent security-audit claim.\n'
     return text
@@ -172,7 +174,7 @@ def main() -> None:
     args=parser.parse_args()
     gates.require(sum(bool(x) for x in [args.engineering,args.require_live,args.untested_release,args.preview_release,args.background_release,args.feature_release,args.stable_release,args.stable_candidate]) <= 1,'Select at most one packaging mode')
     version=(ROOT/'macos/VERSION').read_text().strip()
-    gates.require(version in {'0.9.8','0.10.0','0.10.1','0.10.2','0.10.3','0.10.4','0.10.5','0.10.6','0.10.7','0.10.8','0.10.9','0.10.10','0.10.11','0.10.12','1.0.0'},'Unsupported release version for this packaging script')
+    gates.require(version in {'0.9.8','0.10.0','0.10.1','0.10.2','0.10.3','0.10.4','0.10.5','0.10.6','0.10.7','0.10.8','0.10.9','0.10.10','0.10.11','0.10.12','1.0.0','1.0.1'},'Unsupported release version for this packaging script')
     if args.feature_release: gates.require(version.startswith('0.10.'),'--feature-release is defined for 0.10.x')
     if args.stable_release: gates.require(version==STABLE_VERSION,'--stable-release is defined for 1.0.0')
     if args.stable_candidate: gates.require(version==STABLE_VERSION,'--stable-candidate is defined for 1.0.0')
@@ -264,7 +266,7 @@ def main() -> None:
            'mpx-provision','mpx-provision.sha256','mpx-provision.BUILDINFO',
            'mpx-provision-linux-arm64','mpx-provision-linux-arm64.sha256','mpx-provision-linux-arm64.BUILDINFO',
            'MPTCP-Desk.BUILDINFO',source_name,'SOURCE_ID','SOURCE_SHA256SUMS','PROVENANCE.json','CAPACITY.json','RUNTIME.json','SCHEDULER-MODES.json','ACCEPTANCE.md']
-    if not args.feature_release:
+    if not (args.feature_release or args.untested_release):
         names.append('REV2-AB.json')
     if args.preview_release or args.background_release or args.feature_release or args.stable_release or args.stable_candidate:
         names.append('TESTS.json')
