@@ -45,7 +45,7 @@ type Stream struct {
 	readErr                                      error
 	s                                            *Session
 	id                                           uint64
-	readMu, writeMu, rxMu                        sync.Mutex
+	readMu, writeMu, rxMu, rxOpMu                sync.Mutex
 	open, closed                                 bool
 	err                                          error
 	openID                                       uint64

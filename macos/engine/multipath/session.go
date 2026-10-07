@@ -1010,14 +1010,108 @@ func (s *Session) ackLocked(c *carrier, f frame) error {
 	return nil
 }
 
+func (s *Session) handleDataFrame(c *carrier, f frame) error {
+	if f.id == 0 || len(f.data) == 0 || f.offset > ^uint64(0)-uint64(len(f.data)) || f.stream == 0 || f.stream%2 == 0 {
+		return ErrProtocol
+	}
+
+	s.mu.Lock()
+	if !c.active || s.closed {
+		s.mu.Unlock()
+		return net.ErrClosed
+	}
+	c.received += uint64(len(f.data))
+	if handled, err := s.peerAttemptLocked(c, f); err != nil {
+		s.mu.Unlock()
+		return err
+	} else if handled {
+		s.mu.Unlock()
+		return nil
+	}
+
+	st := s.streamForCreditLocked(f.stream)
+	if st == nil {
+		if term, ok := s.terminal[f.stream]; ok {
+			if f.offset+uint64(len(f.data)) > term.rxFinal {
+				s.mu.Unlock()
+				return finalSizeFailure("late STREAM_DATA exceeds retired final size")
+			}
+		} else if !s.seen[f.stream] && !(s.maxSeen > 8192 && f.stream <= s.maxSeen-8192) {
+			s.mu.Unlock()
+			return streamStateFailure("STREAM_DATA for unknown Stream")
+		}
+		s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id})
+		s.markPeerProcessedLocked(f.id)
+		s.mu.Unlock()
+		return nil
+	}
+	if !st.open && s.server && !st.closed {
+		s.mu.Unlock()
+		return streamStateFailure("STREAM_DATA before Stream acceptance")
+	}
+
+	work, err := st.prepareReceiveLocked(f.offset, f.data)
+	if err != nil {
+		if !errors.Is(err, ErrResourceLimit) {
+			s.mu.Unlock()
+			return err
+		}
+		s.resetLocked(st, mpx4ErrResourceLimit, true)
+		st.err = err
+		s.markPeerProcessedLocked(f.id)
+		s.mu.Unlock()
+		return nil
+	}
+	if !work.active {
+		s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart) / time.Microsecond)})
+		s.markPeerProcessedLocked(f.id)
+		s.signalStreamReaderLocked(st)
+		s.mu.Unlock()
+		return nil
+	}
+
+	// prepareReceiveLocked intentionally returns with this Stream's rxMu held.
+	// Release the global Session ledger while the payload is copied/validated.
+	s.mu.Unlock()
+	added, storeErr := st.storeReceiveWorkLocked(work)
+	st.rxMu.Unlock()
+
+	s.mu.Lock()
+	// A concurrent reset/close may have retired the pages while this goroutine
+	// was outside the Session lock. In that case the reset path already settled
+	// the physical/global accounting and there is nothing left to publish.
+	if !s.closed && !st.closed && !st.receiveStopped {
+		st.rxMu.Lock()
+		st.finishReceiveWorkLocked(added)
+		st.rxMu.Unlock()
+	}
+	if storeErr != nil {
+		s.mu.Unlock()
+		return storeErr
+	}
+	if s.closed {
+		s.mu.Unlock()
+		return net.ErrClosed
+	}
+	ackCarrier := c
+	if !c.active {
+		ackCarrier = nil
+	}
+	s.controlLocked(ackCarrier, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart) / time.Microsecond)})
+	s.markPeerProcessedLocked(f.id)
+	s.signalStreamReaderLocked(st)
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *Session) handleFrame(c *carrier, f frame) error {
+	if f.kind == kindData {
+		return s.handleDataFrame(c, f)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !c.active || s.closed {
 		return net.ErrClosed
-	}
-	if f.kind == kindData {
-		c.received += uint64(len(f.data))
 	}
 	if f.kind == kindSessionWindow {
 		return s.receiveSessionCreditLocked(f)
@@ -1065,38 +1159,6 @@ func (s *Session) handleFrame(c *carrier, f frame) error {
 		} else if term, ok := s.terminal[f.stream]; ok && (f.offset > term.txFinal || f.id < f.offset || f.id-f.offset > MaxStreamWindow) {
 			return ErrProtocol
 		}
-	case kindData:
-		if f.id == 0 || len(f.data) == 0 || f.offset > ^uint64(0)-uint64(len(f.data)) {
-			return ErrProtocol
-		}
-		st := s.streamForCreditLocked(f.stream)
-		if st == nil {
-			if term, ok := s.terminal[f.stream]; ok {
-				if f.offset+uint64(len(f.data)) > term.rxFinal {
-					return finalSizeFailure("late STREAM_DATA exceeds retired final size")
-				}
-			} else if !s.seen[f.stream] && !(s.maxSeen > 8192 && f.stream <= s.maxSeen-8192) {
-				return streamStateFailure("STREAM_DATA for unknown Stream")
-			}
-			s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id})
-			s.markPeerProcessedLocked(f.id)
-			return nil
-		}
-		if !st.open && s.server && !st.closed {
-			return streamStateFailure("STREAM_DATA before Stream acceptance")
-		}
-		if err := st.receiveLocked(f.offset, f.data); err != nil {
-			if !errors.Is(err, ErrResourceLimit) {
-				return err
-			}
-			s.resetLocked(st, mpx4ErrResourceLimit, true)
-			st.err = err
-			s.markPeerProcessedLocked(f.id)
-			return nil
-		}
-		s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart) / time.Microsecond)})
-		s.markPeerProcessedLocked(f.id)
-		s.signalStreamReaderLocked(st)
 	case kindFIN:
 		err := s.handleFinalLocked(c, f)
 		if err == nil {
