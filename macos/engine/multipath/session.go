@@ -1050,6 +1050,38 @@ func (s *Session) handleDataFrame(c *carrier, f frame) error {
 		return streamStateFailure("STREAM_DATA before Stream acceptance")
 	}
 
+	// Serialize only the receive publication of this logical Stream. Crucially,
+	// never wait for rxOpMu while holding Session.mu: another DATA for the same
+	// Stream may be outside the Session lock doing page work and must be able to
+	// re-enter the ledger to publish before handing this Stream over.
+	s.mu.Unlock()
+	st.rxOpMu.Lock()
+	defer st.rxOpMu.Unlock()
+	s.mu.Lock()
+
+	if s.closed {
+		s.mu.Unlock()
+		return net.ErrClosed
+	}
+	if current := s.streamForCreditLocked(f.stream); current != st || st.closed {
+		if term, ok := s.terminal[f.stream]; ok && f.offset+uint64(len(f.data)) > term.rxFinal {
+			s.mu.Unlock()
+			return finalSizeFailure("late STREAM_DATA exceeds retired final size")
+		}
+		ackCarrier := c
+		if !c.active {
+			ackCarrier = nil
+		}
+		s.controlLocked(ackCarrier, frame{kind: kindACK, stream: f.stream, id: f.id})
+		s.markPeerProcessedLocked(f.id)
+		s.mu.Unlock()
+		return nil
+	}
+	if !st.open && s.server {
+		s.mu.Unlock()
+		return streamStateFailure("STREAM_DATA before Stream acceptance")
+	}
+
 	work, err := st.prepareReceiveLocked(f.offset, f.data)
 	if err != nil {
 		if !errors.Is(err, ErrResourceLimit) {
@@ -1063,7 +1095,11 @@ func (s *Session) handleDataFrame(c *carrier, f frame) error {
 		return nil
 	}
 	if !work.active {
-		s.controlLocked(c, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart) / time.Microsecond)})
+		ackCarrier := c
+		if !c.active {
+			ackCarrier = nil
+		}
+		s.controlLocked(ackCarrier, frame{kind: kindACK, stream: f.stream, id: f.id, offset: uint64(time.Since(s.clockStart) / time.Microsecond)})
 		s.markPeerProcessedLocked(f.id)
 		s.signalStreamReaderLocked(st)
 		s.mu.Unlock()
