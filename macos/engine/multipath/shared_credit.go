@@ -36,7 +36,6 @@ const (
 	sharedWindowBatch          = 128 << 10
 	sessionRefillStartPressure = 70
 	sessionRefillStopPressure  = 95
-	writerTurnBatch            = 8
 )
 
 // pendingBootstrapReserveLocked reserves pending capacity only for Streams that
@@ -279,31 +278,6 @@ func (st *Stream) writeAllowanceLocked() (int, int) {
 	return n, waitNone
 }
 
-func (s *Session) writerTurnSlotsLocked() int {
-	slots := writerTurnBatch
-	limit := func(n int) {
-		slots = min(slots, max(0, n))
-	}
-
-	// Session hard credit and peer Session WINDOW are the two global byte
-	// ceilings. Use ceil-to-frame permits so a final partial frame still makes
-	// progress, but never advertise more runnable writers than actual credit.
-	limit(writerPermits(SessionCreditLimit - s.credit.txUsed))
-	peerRoom := 0
-	if s.credit.peerLimit > s.credit.txCommitted {
-		peerRoom = int(min(uint64(SessionCreditLimit), s.credit.peerLimit-s.credit.txCommitted))
-	}
-	limit(writerPermits(peerRoom))
-
-	// writerTurn only arbitrates post-bootstrap growth writers. Respect the
-	// same dynamic pending reserve and shared-growth room used by allowance.
-	limit(writerPermits(sharedGrowthRoom(s.credit.txUsed, s.credit.txGrowth)))
-	growthFrames, growthBytes := s.growthPendingRoomLocked(nil)
-	limit(growthFrames)
-	limit(writerPermits(max(0, growthBytes-64)))
-	return slots
-}
-
 func (s *Session) writerTurnLocked(st *Stream) bool {
 	count := s.writerReady.Len()
 	if count <= 1 {
@@ -320,28 +294,14 @@ func (s *Session) writerTurnLocked(st *Stream) bool {
 		growthFrames >= count && growthBytes >= count*(MaxPayload+64) {
 		return true
 	}
-	// Scarce shared credit still needs fairness, but a strict single-token
-	// chain makes each 32 KiB turn pay a goroutine wake/sleep and mutex handoff.
-	// Keep a small FIFO runnable window bounded by the *actual* number of turns
-	// current Session/shared/pending credit can fund. True one-frame scarcity
-	// therefore remains strict FIFO, while normal high-concurrency refill can
-	// wake several writers without returning to wake-all.
-	slots := s.writerTurnSlotsLocked()
-	if slots <= 0 {
-		return false
-	}
-	eligible := 0
+	// Legacy 0.10.x policy: once there is not enough room for every active
+	// writer to receive one full DATA turn, serialize scarce growth credit in
+	// FIFO order. The room calculation itself stays on the 1.0.x dynamic shared
+	// pending/credit model rather than restoring the old static 64 MiB reserve.
 	for e := s.writerReady.Front(); e != nil; e = e.Next() {
 		other := e.Value.(*Stream)
-		if n, _ := other.writeAllowanceLocked(); n <= 0 {
-			continue
-		}
-		eligible++
-		if other == st {
-			return eligible <= slots
-		}
-		if eligible >= slots {
-			return false
+		if n, _ := other.writeAllowanceLocked(); n > 0 {
+			return other == st
 		}
 	}
 	return false

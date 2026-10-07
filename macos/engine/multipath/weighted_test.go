@@ -209,104 +209,27 @@ func TestWeightedUploadAutoUsesLearnedFlight(t *testing.T) {
 	}
 }
 
-func TestWeightedLoadRTTAloneDoesNotInflateFlight(t *testing.T) {
+func TestWeightedFeedbackRTTTracksLoadWithinLegacyBound(t *testing.T) {
+	c := schedulerPath(1)
+	c.minRTT = 30 * time.Millisecond
+	c.rtt = 80 * time.Millisecond
+	rate := configuredRateBPS(94)
+	want := int(rate*(1.25*(80*time.Millisecond).Seconds()+.015)) + 2*MaxPayload
+	want = min(maxPathBudget, max(initialPathBudget, want))
+	if got := weightedFlightBudget(c, rate); got != want {
+		t.Fatalf("weighted feedback flight=%d want=%d", got, want)
+	}
+}
+
+func TestWeightedFeedbackRTTIsCappedAtFourTimesBase(t *testing.T) {
 	c := schedulerPath(1)
 	c.minRTT = 30 * time.Millisecond
 	c.rtt = 500 * time.Millisecond
 	rate := configuredRateBPS(94)
-	base := weightedBaseFlightBudget(c, rate)
-	if got := weightedFlightBudget(c, rate); got != base {
-		t.Fatalf("load RTT changed base flight: got=%d want=%d", got, base)
-	}
-}
-
-func TestWeightedBudgetLimitedBacklogGrowsFromFreshLowRateEpoch(t *testing.T) {
-	s := schedulerFixture()
-	s.initScheduler(SchedulerWeighted)
-	c := schedulerPath(1)
-	c.minRTT = 30 * time.Millisecond
-	c.rtt = 400 * time.Millisecond
-	c.configuredRateBPS = configuredRateBPS(94)
-	s.paths = map[uint64]*carrier{1: c}
-	s.queueLocked(frame{kind: kindData, stream: 1, data: make([]byte, MaxPayload)})
-
-	base := weightedBaseFlightBudget(c, c.configuredRateBPS)
-	c.weightedBudget = base
-	c.weightedBudgetLimited = true
-	c.recentDeliveryBPS = c.configuredRateBPS / 4
-	c.recentDeliveryEpoch = 1
-
-	need := max(4*MaxPayload, base/2)
-	s.observeWeightedFlightLocked(c, need)
-	if got := weightedFlightBudget(c, c.configuredRateBPS); got <= base || got > min(maxPathBudget, 2*base+MaxPayload) {
-		t.Fatalf("budget did not grow conservatively: base=%d got=%d", base, got)
-	}
-	if c.weightedBudgetGrowths != 1 {
-		t.Fatalf("growth counter=%d want=1", c.weightedBudgetGrowths)
-	}
-
-	// The same stale low-rate epoch cannot trigger another doubling.
-	first := weightedFlightBudget(c, c.configuredRateBPS)
-	c.weightedBudgetLimited = true
-	s.observeWeightedFlightLocked(c, first)
-	if got := weightedFlightBudget(c, c.configuredRateBPS); got != first {
-		t.Fatalf("stale delivery epoch grew budget again: %d -> %d", first, got)
-	}
-}
-
-func TestWeightedBudgetDoesNotGrowWithoutBacklogOrBelowTargetEvidence(t *testing.T) {
-	s := schedulerFixture()
-	s.initScheduler(SchedulerWeighted)
-	c := schedulerPath(1)
-	c.minRTT = 30 * time.Millisecond
-	c.configuredRateBPS = configuredRateBPS(94)
-	s.paths = map[uint64]*carrier{1: c}
-	base := weightedBaseFlightBudget(c, c.configuredRateBPS)
-	c.weightedBudget = base
-	c.weightedBudgetLimited = true
-	c.recentDeliveryBPS = c.configuredRateBPS / 4
-	c.recentDeliveryEpoch = 1
-	s.observeWeightedFlightLocked(c, base)
-	if got := weightedFlightBudget(c, c.configuredRateBPS); got != base {
-		t.Fatalf("idle path grew budget: %d -> %d", base, got)
-	}
-
-	s.queueLocked(frame{kind: kindData, stream: 1, data: make([]byte, MaxPayload)})
-	c.weightedBudgetLimited = true
-	c.recentDeliveryBPS = .95 * c.configuredRateBPS
-	c.recentDeliveryEpoch = 2
-	s.observeWeightedFlightLocked(c, base)
-	if got := weightedFlightBudget(c, c.configuredRateBPS); got != base {
-		t.Fatalf("near-target path grew budget: %d -> %d", base, got)
-	}
-}
-
-func TestWeightedAdaptiveFlightCapsAndBacksOff(t *testing.T) {
-	s := schedulerFixture()
-	s.initScheduler(SchedulerWeighted)
-	c := schedulerPath(1)
-	c.minRTT = 30 * time.Millisecond
-	c.configuredRateBPS = configuredRateBPS(94)
-	s.paths = map[uint64]*carrier{1: c}
-	s.queueLocked(frame{kind: kindData, stream: 1, data: make([]byte, MaxPayload)})
-	c.resetWeightedFlight(c.configuredRateBPS)
-
-	for i := 0; i < 16 && weightedFlightBudget(c, c.configuredRateBPS) < maxPathBudget; i++ {
-		current := weightedFlightBudget(c, c.configuredRateBPS)
-		c.weightedBudgetLimited = true
-		c.recentDeliveryBPS = c.configuredRateBPS / 4
-		c.recentDeliveryEpoch++
-		s.observeWeightedFlightLocked(c, max(4*MaxPayload, current/2))
-	}
-	if got := weightedFlightBudget(c, c.configuredRateBPS); got != maxPathBudget {
-		t.Fatalf("adaptive flight cap=%d want=%d", got, maxPathBudget)
-	}
-	c.backoffWeightedFlight(c.configuredRateBPS)
-	if got := weightedFlightBudget(c, c.configuredRateBPS); got != max(maxPathBudget/2, weightedBaseFlightBudget(c, c.configuredRateBPS)) {
-		t.Fatalf("timeout backoff got=%d", got)
-	}
-	c.resetWeightedFlight(c.configuredRateBPS)
-	if got, want := weightedFlightBudget(c, c.configuredRateBPS), weightedBaseFlightBudget(c, c.configuredRateBPS); got != want {
-		t.Fatalf("idle reset got=%d want=%d", got, want)
+	// Legacy 0.10.x behavior caps feedback at 4 * base RTT = 120 ms.
+	want := int(rate*(1.25*(120*time.Millisecond).Seconds()+.015)) + 2*MaxPayload
+	want = min(maxPathBudget, max(initialPathBudget, want))
+	if got := weightedFlightBudget(c, rate); got != want {
+		t.Fatalf("weighted capped flight=%d want=%d", got, want)
 	}
 }

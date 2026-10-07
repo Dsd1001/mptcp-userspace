@@ -240,59 +240,27 @@ func TestOpenWaitCompletesFromTargetedOpenSignal(t *testing.T) {
 	}
 }
 
-func TestWriterTurnSignalsBoundedFIFOBatch(t *testing.T) {
+func TestWriterTurnSignalsFIFOOneAtATime(t *testing.T) {
 	s, _ := rev2Fixture()
-	waiters := make([]*Stream, 0, writerTurnBatch+2)
-	cleanups := make([]func(), 0, writerTurnBatch+2)
-	for i := 0; i < writerTurnBatch+2; i++ {
-		st := rev2Stream(s, uint64(2*i+1))
-		waiters = append(waiters, st)
-		cleanups = append(cleanups, attachWriterWaiter(s, st, waitWriterTurn))
-	}
-	defer func() {
-		for _, cleanup := range cleanups {
-			cleanup()
-		}
-	}()
+	a := rev2Stream(s, 1)
+	b := rev2Stream(s, 3)
+	c := rev2Stream(s, 5)
+	cleanupA := attachWriterWaiter(s, a, waitWriterTurn)
+	defer cleanupA()
+	cleanupB := attachWriterWaiter(s, b, waitWriterTurn)
+	defer cleanupB()
+	cleanupC := attachWriterWaiter(s, c, waitWriterTurn)
+	defer cleanupC()
 
 	s.signalWriterTurnLocked()
-	for i, st := range waiters {
-		want := 0
-		if i < writerTurnBatch {
-			want = 1
-		}
-		if got := len(st.writeWake); got != want {
-			t.Fatalf("writer %d signal=%d want=%d", i, got, want)
-		}
+	if len(a.writeWake) != 1 || len(b.writeWake) != 0 || len(c.writeWake) != 0 {
+		t.Fatalf("first writer-turn signal was not FIFO: a=%d b=%d c=%d", len(a.writeWake), len(b.writeWake), len(c.writeWake))
 	}
-}
-
-func TestWriterTurnAllowsOnlyFirstBoundedBatchWhenCreditScarce(t *testing.T) {
-	s, _ := rev2Fixture()
-	waiters := make([]*Stream, 0, writerTurnBatch+2)
-	for i := 0; i < writerTurnBatch+2; i++ {
-		st := rev2Stream(s, uint64(2*i+1))
-		st.txNext = StreamWindow
-		st.writeRemaining = MaxPayload
-		st.writeEntry = s.writerReady.PushBack(st)
-		waiters = append(waiters, st)
-		defer func(st *Stream) {
-			s.writerReady.Remove(st.writeEntry)
-			st.writeEntry = nil
-		}(st)
-	}
-
-	room := writerTurnBatch * MaxPayload
-	s.credit.txUsed = SessionCreditLimit - room
-	s.credit.txGrowth = s.credit.txUsed
-	s.credit.txCommitted = uint64(SessionCreditLimit - room)
-	s.credit.peerLimit = SessionCreditLimit
-
-	for i, st := range waiters {
-		got := s.writerTurnLocked(st)
-		want := i < writerTurnBatch
-		if got != want {
-			t.Fatalf("writer %d turn=%v want=%v", i, got, want)
-		}
+	<-a.writeWake
+	s.endWriterWaitLocked(a)
+	s.writerReady.MoveToBack(a.writeEntry)
+	s.signalWriterTurnLocked()
+	if len(b.writeWake) != 1 || len(c.writeWake) != 0 {
+		t.Fatalf("second writer-turn signal was not FIFO: b=%d c=%d", len(b.writeWake), len(c.writeWake))
 	}
 }
