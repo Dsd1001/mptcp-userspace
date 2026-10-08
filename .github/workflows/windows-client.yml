@@ -66,9 +66,12 @@ jobs:
         shell: powershell
         run: |
           $version = (Get-Content ./macos/VERSION -Raw).Trim()
-          $installer = "./windows/build/bin/MPTCP-Desk-$version-Windows-Setup.exe"
-          & $installer /S
-          Start-Sleep -Seconds 2
+          $installer = (Resolve-Path "./windows/build/bin/MPTCP-Desk-$version-Windows-Setup.exe").Path
+          # NSIS is a GUI-subsystem executable. PowerShell's call operator can
+          # return before its asynchronous installation has finished, so a
+          # fixed sleep is nondeterministic on hosted Windows runners.
+          $install = Start-Process -FilePath $installer -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer failed: exit code $($install.ExitCode)" }
           $installDir = Join-Path $env:LOCALAPPDATA "Programs\MPTCP Desk"
           if (-not (Test-Path (Join-Path $installDir "MPTCP-Desk-Windows.exe"))) { throw "GUI was not installed" }
           if (-not (Test-Path (Join-Path $installDir "mptcp-engine.exe"))) { throw "Engine was not installed" }
