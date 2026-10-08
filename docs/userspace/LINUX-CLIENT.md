@@ -1,21 +1,19 @@
-# Linux client — MPTCP Userspace 1.0.0
+# Linux Client — MPTCP Userspace v1.1.1
 
-The headless Linux Client reuses the same Go Userspace MPX/4 Protocol Version 4 Stable engine as MPTCP Desk. Published artifacts are available for linux/amd64 and linux/arm64.
+The headless Linux Client uses the same Go MPX/4 Protocol Version 4 Stable engine as MPTCP Desk.
 
-Linux supports userspace_multipath. Native MPTCP fallback remains macOS-only.
+Published builds:
 
-## Artifacts
-
-~~~text
+```text
 mptcp-client-linux-amd64
 mptcp-client-linux-arm64
-~~~
+```
 
-The release binaries are CGO_ENABLED=0 static ELF builds.
+The release builds are static `CGO_ENABLED=0` ELF binaries.
 
 ## Commands
 
-~~~text
+```text
 version
 doctor-userspace
 validate
@@ -24,67 +22,87 @@ validate-bundle [profile-id ...]
 run-bundle [profile-id ...]
 validate-managed
 run-managed
-~~~
+```
 
-version reports release, Source-ID and MPX protocol metadata.
+`version` prints version, Source-ID and MPX protocol metadata.
 
 ## Local Profile
 
-A local schema-3 Profile can be validated or run from stdin:
+A local userspace Profile is read from stdin:
 
-~~~sh
-mptcp-client-linux-amd64 validate < profile.json
-mptcp-client-linux-amd64 run < profile.json
-~~~
+```sh
+./mptcp-client-linux-amd64 validate < profile.json
+./mptcp-client-linux-amd64 run < profile.json
+```
 
-The listener is 127.0.0.1:<listen_port>. The client does not auto-assign the port.
+Example schema-3 Profile:
+
+```json
+{
+  "schema_version": 3,
+  "mode": "userspace_multipath",
+  "listen_port": 1081,
+  "tcp_enabled": true,
+  "udp_enabled": true,
+  "transport_key": "REPLACE_WITH_64_HEX_CHARACTERS",
+  "relays": [
+    {"host":"192.0.2.10","port":24001,"download_mbps":50.0},
+    {"host":"198.51.100.20","port":24001,"download_mbps":50.0}
+  ],
+  "scheduler_mode": "auto"
+}
+```
+
+The local listener is `127.0.0.1:<listen_port>`. The Client does not auto-assign that port.
+
+## Carrier count
+
+The current implementation accepts 1–8 active Carrier addresses for a userspace Session. Carrier IDs themselves use the larger MPX VarInt namespace.
 
 ## Bundle
 
-A schema-2 Bundle contains 1–32 complete Profiles:
+A managed/local Bundle can run Profiles in either:
 
-~~~sh
-mptcp-client-linux-amd64 validate-bundle < bundle.json
-mptcp-client-linux-amd64 run-bundle < bundle.json
-~~~
+- `single_select` mode;
+- `parallel` mode.
 
-For parallel mode, omitting IDs selects all Profiles; an explicit subset can also be supplied. For single_select, exactly one Profile is active.
+For parallel mode, selected local listener ports must be unique and bindable. The Client performs an atomic local preflight before starting any selected child runtime.
 
-Before a parallel start, all selected local TCP/UDP ports are validated and probed atomically. Local port conflicts abort the group before any child runtime starts.
+After preflight, Profile runtimes are isolated. One Profile can fail to connect/authenticate while other listeners remain available.
 
-After preflight, Profile runtimes are independent. If one Profile cannot connect/authenticate or later exits, healthy Profile listeners continue running. In parallel mode, an all-down Bundle remains supervised and keeps retrying; the parent exits only on cancellation or a fatal pre-runtime validation error.
+## Automatic reconnect
 
-## Parallel Bundle automatic reconnect
+Each failed parallel Profile retries independently:
 
-In v1.0.0, run-bundle supervises each selected Profile independently. A failed child retries after 1s, 2s, 5s, 10s, 30s, then every 30s indefinitely. A successful listening event resets that Profile's backoff. Healthy Profiles are not restarted, and an all-down parallel Bundle stays alive waiting for recovery.
+```text
+1s -> 2s -> 5s -> 10s -> 30s -> every 30s
+```
+
+A successful listening state resets that Profile's backoff. An all-down parallel Bundle remains supervised and waits for recovery instead of exiting immediately.
 
 ## Managed Provisioning
 
-validate-managed and run-managed read a small control document from stdin:
+`validate-managed` and `run-managed` read the control document from stdin so the bearer URL does not need to appear in process arguments:
 
-~~~json
+```json
 {
   "url": "https://config.example.com/v1/bundle/<secret>",
   "profile_ids": ["profile-a", "profile-b"]
 }
-~~~
+```
 
-~~~sh
-mptcp-client-linux-amd64 validate-managed < managed.json
-mptcp-client-linux-amd64 run-managed < managed.json
-~~~
+```sh
+./mptcp-client-linux-amd64 validate-managed < managed.json
+./mptcp-client-linux-amd64 run-managed < managed.json
+```
 
-The URL may refer to a Profile or Bundle.
+Remote URLs require HTTPS. Loopback HTTP is accepted for development. Redirects are rejected.
 
-Remote URLs require HTTPS; loopback HTTP is permitted for development. Redirects are rejected. Single-Profile responses are bounded to 64 KiB and Bundle responses to 512 KiB.
-
-1.0.0 automatically decrypts the opaque v/n/d Provisioning envelope introduced in 0.10.2 and also accepts legacy plaintext schema-1/schema-2 responses for migration.
-
-Treat the managed URL as a bearer credential. If persisted, protect the input file with restrictive permissions such as 0600.
+Treat the complete URL as a bearer credential. Persist it only in a restricted file such as mode `0600`.
 
 ## systemd example
 
-~~~ini
+```ini
 [Unit]
 Description=MPTCP Userspace Client
 After=network-online.target
@@ -98,6 +116,12 @@ LimitNOFILE=16384
 
 [Install]
 WantedBy=multi-user.target
-~~~
+```
 
-Keep managed.json root/service-readable only.
+Keep `/etc/mptcp-userspace/managed.json` readable only by the intended service/root account.
+
+## Linux Client host TCP tuning
+
+The project's **Landing=CUBIC / Relay=BBR** recommendation is specifically about Landing and Relay roles. A Linux Client may have its own network requirements; do not automatically copy the Relay sysctl profile onto every Client.
+
+Tune the Client only after measuring it as a distinct endpoint.

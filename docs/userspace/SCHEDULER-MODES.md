@@ -1,51 +1,93 @@
-# Scheduler modes — v1.0.0 / MPX/4 Protocol Version 4 Stable
+# Scheduler modes — MPTCP Userspace v1.1.1
 
-MPTCP Userspace exposes four configured scheduler policies: **Auto, Aggregate, Protect and Weighted**.
+MPTCP Userspace exposes four endpoint-local scheduling policies: **Auto, Aggregate, Protect and Weighted**.
 
-These are **local implementation policies**, not MPX/4 Stable Core negotiation state. Client and Landing may use different local policies without making the Stable handshake incompatible. A JOIN cannot change the retained endpoint's local scheduler policy.
+They are implementation policy, not MPX/4 Stable Core wire Scheduler IDs. Client and Landing can choose independently. For most production deployments, using the same mode on both endpoints is easier to understand because it produces similar policy in both traffic directions.
 
-## Aggregate
+## Common invariants
 
-Aggregate is the baseline multi-Carrier DATA selector. It considers live path state such as RTT, measured delivery rate, queue/outstanding work, path budget and penalty state.
+All modes must obey the same protocol/resource rules:
 
-A connected Carrier is not guaranteed equal traffic. The selector chooses a usable path according to current delivery cost and flight/queue capacity.
+- only usable authenticated Carriers are eligible;
+- Stream and Session WINDOWs remain hard send gates;
+- local pending frame/byte limits remain hard resource gates;
+- a scheduling choice cannot rewrite Transmission IDs;
+- retransmission/reinjection must preserve MPX reliability semantics;
+- superseded/closed Carrier generations are not made eligible by policy.
 
-## Weighted
-
-Weighted keeps the same safety/path-cost checks while adding configured directional capacity as a local prior.
-
-- Client `download_mbps` is required by the product UI.
-- Client `upload_mbps` is optional; omission means automatic estimation.
-- Upload capacity remains local to the client sender.
-- For server-to-client scheduling, a client may advertise the published MPX/4 `RECEIVE_CAPACITY_HINT` extension.
-- The hint is optional, unilateral and CRITICAL=0.
-- A peer that does not implement the extension can ignore it and still interoperate at Core.
-- Capacity is not a packet ratio, flow-control credit, reservation or throughput guarantee.
-
-RTT, queue, penalty, disconnect, delivery timeout and reinjection protection remain active.
-
-## Protect
-
-Protect restricts degraded paths instead of continuing unrestricted normal DATA scheduling.
-
-Path roles include LEARNING, ACTIVE, PROBE and BACKUP. Bounded probe debt and recovery hysteresis prevent rapid oscillation and keep failed/degraded paths from carrying ordinary DATA until they requalify.
+Scheduler policy cannot override protocol correctness.
 
 ## Auto
 
-Auto is a local policy selector. It starts from Aggregate behavior and can enter Protect after stable evidence of degradation. Recovery requires healthy evidence over multiple epochs/time, not one transient sample.
+Auto is the recommended starting mode.
 
-Landing defaults to Auto. If Auto receives an authenticated `RECEIVE_CAPACITY_HINT`, it may use that hint as local evidence and select Weighted behavior for the direction it sends.
+It uses live path state to balance useful aggregation with protection against unhealthy paths. It is intended for deployments where exact path capacity is not known or where path quality changes over time.
 
-## Path signals
+Use Auto when you want the system to decide how aggressively to spread traffic based on current feedback.
 
-Depending on mode, the implementation may use connected state, RTT, measured delivery rate, writer queue, outstanding flight, path budget, delivery samples, timeout/penalty state, locally configured capacity, authenticated receive-capacity hints and path role/probe state.
+## Aggregate
 
-No scheduling decision may make an unusable or superseded Carrier eligible, change a Transmission ID during reinjection or override MPX/4 flow control.
+Aggregate favors concurrent use of multiple eligible Carriers.
 
-## Limits and evidence
+It is useful when paths are independently useful and the operator explicitly wants to combine their capacity. It still respects path health, flow-control and local flight/budget limits; it does not mean every frame is round-robined equally.
 
-The product supports up to 8 simultaneously active Carriers per Session while Stable CARRIER_ID itself spans the full non-zero MPX VarInt space.
+## Protect
 
-Source-matched release evidence lives in `SCHEDULER-MODES.json`, `TESTS.json`, `PROVENANCE.json`, `CAPACITY.json` and `RUNTIME.json`. v1 evidence uses **scheduler policy revision 6**; it is deliberately not described as an authenticated wire scheduler capability.
+Protect prioritizes stability when one or more paths are behaving badly.
 
-The Stable laboratory gate compares repeated Auto/Aggregate/Protect results with the frozen 0.10.12 source on the same host and harness. Uniform and heterogeneous candidate medians must retain at least 90% of the matching baseline medians. This is a regression check, not a WAN throughput guarantee.
+Unhealthy paths can be demoted from normal DATA service while retaining bounded probing/recovery opportunities. Protect is appropriate when latency spikes, loss or intermittent paths are more damaging than leaving some nominal capacity unused.
+
+## Weighted
+
+Weighted combines configured directional capacity with live feedback.
+
+Inputs include the product's capacity prior and runtime path signals such as:
+
+- RTT;
+- measured delivery/goodput;
+- queue/outstanding state;
+- penalty and path health;
+- disconnect/timeout history;
+- bounded feedback timing.
+
+The configured Mbps values are **not fixed traffic percentages**. A path configured as 100 Mbps can receive less traffic than a 50 Mbps path if current feedback shows the first path is congested or unhealthy.
+
+### Directional capacities
+
+A local Profile can provide `download_mbps` and optional `upload_mbps` per Relay. Download capacity is the normal required capacity input for Weighted operation; upload can be provided when known.
+
+Capacity hints are scheduling information, not MPX flow-control credit.
+
+## Which mode should I use?
+
+| Goal | Suggested mode |
+| --- | --- |
+| General production default | **Auto** |
+| Maximize healthy multi-path use | **Aggregate** |
+| Isolate unstable paths aggressively | **Protect** |
+| Known asymmetric path capacities | **Weighted** |
+
+## Congestion-control baseline
+
+Scheduler behavior depends on the feedback produced by underlying TCP Carriers. The recommended host baseline is:
+
+- **Landing = CUBIC**;
+- **Relay = BBR + `fq` preferred**.
+
+If a scheduler appears unstable, verify this baseline and inspect loaded RTT/queue before changing scheduler constants. Bottom-layer queue growth can look like a scheduler problem.
+
+## Diagnostics
+
+When comparing modes, record at least:
+
+- effective scheduler mode;
+- connected/eligible path count;
+- path role/reason;
+- RTT;
+- measured goodput;
+- queue and outstanding bytes;
+- retransmits/reinjection;
+- Stream/Session WINDOW waits;
+- Relay/Landing CPU.
+
+Use repeated tests and compare the same topology. One peak speed-test result is not sufficient evidence for a scheduler change.

@@ -1,3 +1,6 @@
+> **Historical document / 历史文档** — 本文描述早期 Rev2 Shared Credit 方案，已被后续 MPX/4 Stable 与 v1.1.1 Flow Control 取代。不要用本文参数指导当前生产环境；请阅读 [ADAPTIVE-FLOW-CONTROL.md](ADAPTIVE-FLOW-CONTROL.md)。
+>
+
 # MPX/3 capability revision 5 (0.9.5)
 
 > **Historical MPX/3 document.** Retained for implementation archaeology; current v0.10.3 MPX/4 behavior is documented in [PROTOCOL.md](PROTOCOL.md).

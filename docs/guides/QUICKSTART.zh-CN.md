@@ -1,107 +1,205 @@
-# 快速开始
+# 快速开始 — MPTCP Userspace v1.1.1
 
-[English](QUICKSTART.md)
+本文用最短路径搭起一套 Client → Relay → Landing → Backend 的 v1.1.1 环境。
 
-本文面向 **MPTCP Userspace v0.10.7 / MPX/4 Draft 04**。
+## 1. 先明确拓扑
 
-## 1. 下载并校验
+推荐生产结构：
 
-从 [v0.10.7 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.7) 下载需要的文件。
+```text
+MPTCP Desk / Linux Client
+       | TCP Carrier 1 -> Relay A --+
+       | TCP Carrier 2 -> Relay B --+--> Landing --> Backend
+       | TCP Carrier 3 -> Relay C --+
+```
 
-常用产物：
+Relay 只是字节转发节点；真正的 MPX/4 端点只有 Client 和 Landing。
 
-- MPTCP-Desk-0.10.7-universal.dmg
-- mptcp-client-linux-amd64 / arm64
-- mptcp-landing / mptcp-landing-linux-arm64
-- 需要远端配置时下载 mpx-provision / arm64
-- MPTCP-Userspace-0.10.7-SHA256SUMS
+## 2. 下载并校验 v1.1.1
 
-安装前先校验 SHA256。
+常用 Release 文件：
 
-## 2. 准备 Landing
+```text
+MPTCP-Desk-1.1.1-universal.dmg
+mptcp-client-linux-amd64
+mptcp-client-linux-arm64
+mptcp-landing
+mptcp-landing-linux-arm64
+MPTCP-Userspace-1.1.1-SHA256SUMS
+```
 
-Linux 上：
+生产环境替换二进制前先核对 SHA256，不要只看文件名。
 
-~~~sh
-chmod 755 ./mptcp-landing
-./mptcp-landing version
-./mptcp-landing menu
-~~~
+## 3. 安装 Landing
 
-已有部署升级时，先备份当前二进制、systemd unit 与配置，再替换二进制并重启服务。不要把 Transport Key 写进公开仓库、Issue 或普通日志。
+`mptcp-landing` 无参数运行会进入中文交互菜单，也可以非交互安装。
 
-推荐正式组合为 0.10.7 Client + 0.10.7 Landing。
+Landing 配置是 schema 1，例如：
 
-## 3. 安装 Client
+```json
+{
+  "schema_version": 1,
+  "listen_tcp": "0.0.0.0:24001",
+  "listen_udp": "0.0.0.0:24001",
+  "backend_tcp": "127.0.0.1:8388",
+  "backend_udp": "127.0.0.1:8388",
+  "udp_enabled": true,
+  "uot_enabled": false,
+  "transport_key": "替换为64位十六进制TransportKey",
+  "max_sessions": 4,
+  "scheduler_mode": "auto"
+}
+```
+
+`max_sessions` 允许 1–16。配置文件包含 Transport Key，必须是普通 `0600`/`0400` 文件，或者由受管理的 systemd credential 路径提供。
+
+安装并启动：
+
+```sh
+sudo ./mptcp-landing install --config ./landing.json --yes --start
+sudo /usr/local/bin/mptcp-landing status
+sudo /usr/local/bin/mptcp-landing doctor
+```
+
+Landing 的 MPX listener 和 backend 不要用同一个会形成回环的 endpoint。
+
+## 4. **Landing 设置为 CUBIC**
+
+这是当前项目的推荐生产基线：
+
+```sh
+sudo sysctl -w net.ipv4.tcp_congestion_control=cubic
+sysctl net.ipv4.tcp_congestion_control
+```
+
+持久化示例：
+
+```text
+# /etc/sysctl.d/90-mptcp-userspace-landing.conf
+net.ipv4.tcp_congestion_control = cubic
+```
+
+不要在这个阶段顺手修改一堆其它 TCP 参数。先把 Landing=CUBIC 固定下来。
+
+## 5. 配置 Relay，并**启用 BBR**
+
+每台 Relay 把对外 Carrier TCP 端口透明转发到 Landing 的 `listen_tcp`。
+
+Relay 推荐 **BBR + `fq`**：
+
+```sh
+sudo modprobe tcp_bbr
+sudo sysctl -w net.core.default_qdisc=fq
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
+sysctl net.ipv4.tcp_available_congestion_control
+sysctl net.ipv4.tcp_congestion_control
+sysctl net.core.default_qdisc
+```
+
+如果 `tcp_available_congestion_control` 里没有 `bbr`，先解决内核支持问题，不要假装配置已经生效。
+
+**Transport Key 不需要放到 Relay 上。**
+
+## 6. 创建 Client Profile
+
+本地 Userspace Profile 使用 schema 3：
+
+```json
+{
+  "schema_version": 3,
+  "mode": "userspace_multipath",
+  "listen_port": 1081,
+  "tcp_enabled": true,
+  "udp_enabled": true,
+  "transport_key": "与Landing完全相同的64位十六进制密钥",
+  "relays": [
+    {
+      "host": "192.0.2.10",
+      "port": 24001,
+      "download_mbps": 50.0,
+      "upload_mbps": 20.0
+    },
+    {
+      "host": "198.51.100.20",
+      "port": 24001,
+      "download_mbps": 50.0
+    }
+  ],
+  "scheduler_mode": "weighted"
+}
+```
+
+当前实现同时 active Carrier 上限为 8。Weighted 中的上下行容量是调度先验，不是固定分流比例。
 
 ### macOS
 
-打开 Universal DMG 安装 MPTCP Desk。当前发布为 ad-hoc 签名，未做 Developer ID notarization。
-
-首页可以选择：
-
-- **本地配置**：直接填写运行参数；
-- **远端配置**：保存一条 secret Provisioning Profile/Bundle URL。
+安装 `MPTCP-Desk-1.1.1-universal.dmg`，添加本地 Profile 或 Provisioning URL，然后启动。
 
 ### Linux
 
-~~~sh
-chmod 755 ./mptcp-client-linux-amd64
+先验证：
+
+```sh
 ./mptcp-client-linux-amd64 version
 ./mptcp-client-linux-amd64 doctor-userspace
-~~~
+./mptcp-client-linux-amd64 validate < profile.json
+```
 
-Linux 只支持 Userspace MPX/4；Native MPTCP fallback 仍只在 macOS。
+再运行：
 
-## 4. 本地配置
+```sh
+./mptcp-client-linux-amd64 run < profile.json
+```
 
-当前 Userspace Profile 需要：
+本地应用入口是 `127.0.0.1:<listen_port>`。
 
-- listen_port，例如 1081；
-- TCP/UDP 开关；
-- Auto / Aggregate / Protect / Weighted；
-- 2–8 条 Relay IPv4/端口；
-- 64 位十六进制 Transport Key；
-- Weighted 模式下的路径容量。
+## 7. 测速前先做连通性验收
 
-127.0.0.1:<listen_port> 是透明 TCP 入口，不是 SOCKS5。
+确认：
 
-## 5. 远端 Provisioning
+1. Landing 服务 active，监听端口正确；
+2. **Landing 当前 congestion control 是 CUBIC**；
+3. Relay 能访问 Landing；
+4. **每台 Relay 当前 congestion control 是 BBR，qdisc 优先为 `fq`**；
+5. Client 能访问每条 Relay；
+6. Client/Landing Transport Key 一致；
+7. 诊断页面能看到多条 Carrier connected；
+8. Landing 能访问 backend。
 
-Provisioning 可以下发单个 Profile，也可以下发包含 1–32 个 Profile 的 Bundle。
+Linux 主机可辅助看：
 
-macOS 在 **远端配置** 中粘贴 secret URL，保存并完成第一次同步。第一次成功同步会生成持久化 Last Known Good 缓存；之后正常启动、App/系统重启和睡眠唤醒恢复都直接从匹配缓存启动，API 在后台刷新，不再等待 API timeout。
+```sh
+ss -s
+ss -ti
+```
 
-Linux 建议通过 stdin 传 URL，避免 bearer credential 出现在 ps：
+Landing 日志：
 
-~~~json
-{"url":"https://config.example.com/v1/bundle/<secret>","profile_ids":["profile-a","profile-b"]}
-~~~
+```sh
+sudo /usr/local/bin/mptcp-landing logs
+```
 
-~~~sh
-mptcp-client-linux-amd64 validate-managed < managed.json
-mptcp-client-linux-amd64 run-managed < managed.json
-~~~
+## 8. Scheduler 怎么选
 
-远端 URL 必须使用 HTTPS。0.10.2+ Provisioning 的公网响应是加密 envelope，0.10.7 Client 会自动解密。
+默认先用 **Auto**。
 
-## 6. Parallel Bundle
+- Aggregate：明确希望多条健康路径积极并发；
+- Protect：更重视把异常路径隔离；
+- Weighted：知道每条路径大致上下行能力，希望把容量先验加入实时调度。
 
-parallel 启动前先原子检查所有已选择 Profile 的本地 listen_port 是否唯一且可用。
+协议不要求 Client/Landing Scheduler 完全一致，但生产环境通常建议一致，便于理解上下行调度。
 
-预检查通过后，各 Profile 独立运行：一份配置连接/认证失败，只标记该 Profile 错误，其他健康 Profile 继续运行。只有全部不可用或用户主动停止时才结束整组。
+## 9. UDP 怎么选
 
-## 7. 验证运行
+- Native UDP：走独立 MPU/1 数据面；
+- UoT：把 UDP payload 放进认证后的 TCP Carrier Session。
 
-MPTCP Desk 打开 **路径诊断**，查看：
+Landing=CUBIC / Relay=BBR 不会直接改变 Native UDP 的拥塞控制，因为它不是 TCP。
 
-- Profile 状态；
-- 配置/当前 Scheduler；
-- 路径数量；
-- RTT / Goodput / queue / outstanding；
-- retransmit、reorder、pending；
-- Stream/Lifecycle 与 Window/Credit 资源。
+## 10. 下一步
 
-远端 Profile 的客户 UI 会隐藏 Relay IP/端口。
-
-更多说明见 [故障排查](TROUBLESHOOTING.zh-CN.md) 与 [部署/回滚](../userspace/DEPLOYMENT.zh-CN.md)。
+- [网络与拥塞控制调优](NETWORK-TUNING.zh-CN.md)
+- [系统架构](ARCHITECTURE.zh-CN.md)
+- [部署、升级与回滚](../userspace/DEPLOYMENT.zh-CN.md)
+- [故障排查](TROUBLESHOOTING.zh-CN.md)
+- [Scheduler 模式](../userspace/SCHEDULER-MODES.md)

@@ -1,114 +1,129 @@
-# 从源码构建
+# 构建 MPTCP Userspace v1.1.1
+
+本文说明当前 v1.1.1 整套组件的源码构建。**构建过程不会修改生产机的网络参数、systemd 服务、防火墙或拥塞控制。**
+
+## 版本与协议身份
+
+```text
+产品版本：       1.1.1
+Wire Protocol： MPX/4 Protocol Version 4 Stable
+协议发布：       protocol-v4.0.0
+协议源码：       44f587fd279ed2238b070dd68114c76822353f4d
+Capability Rev：8
+```
+
+整套发布时 `macos/VERSION` 和 `provisioning/VERSION` 必须一致。二进制通过冻结 source manifest 写入 Source-ID。
 
 ## 工具链
 
-发布构建使用：
+- Go：Userspace Engine、Linux Client、Landing、Provisioning；
+- Swift / Xcode Command Line Tools：MPTCP Desk；
+- Python 3：source manifest、打包与验证；
+- macOS 原生工具：`codesign`、`hdiutil`、`lipo`、`plutil`。
 
-- Go：Engine、Linux Client、Landing、Provisioning；
-- Swift / Xcode Command Line Tools：macOS UI；
-- Sparkle 2.10.0，并固定 SHA-256；
-- macOS 自带 codesign、hdiutil 等工具。
-
-如果所需 Go 不是默认 `go`，使用 `MPTCP_GO` 指定。
+Go 优先使用 `MPTCP_GO`；否则尝试 `macos/build/go-path`，最后才使用 PATH 中的 `go`。
 
 ## Linux Client
 
-~~~sh
+```sh
 ./scripts/build-linux-client.sh
-~~~
+```
 
-## Linux Landing
+生成静态 `CGO_ENABLED=0` 的 amd64/arm64 二进制：
 
-~~~sh
+```text
+mptcp-client-linux-amd64
+mptcp-client-linux-arm64
+```
+
+输出位于 `dist/userspace-1.1.1/`，并附带 SHA256 与 BUILDINFO。
+
+## Landing
+
+```sh
 ./scripts/build-userspace-landing.sh
-~~~
+```
+
+生成：
+
+```text
+mptcp-landing
+mptcp-landing-linux-arm64
+```
+
+这个脚本**只构建**，不会安装服务，也不会调整内核、proxy、防火墙或 congestion control。
 
 ## Provisioning
 
-~~~sh
+```sh
 ./scripts/build-provisioning.sh
-~~~
+```
 
-## 构建 macOS DMG
+整套发布模式下生成：
 
-正式 App 内更新版本默认使用固定的长期本地签名身份：
+```text
+mpx-provision
+mpx-provision-linux-arm64
+```
 
-~~~sh
+默认 suite scope 要求 Provisioning 版本与主套件版本一致。
+
+## MPTCP Desk
+
+```sh
 ./macos/build.sh
-~~~
+```
 
-固定身份名称为 `MPTCP Desk Stable Local Code Signing`。其**公开证书**固定保存在
-`macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt`；**私钥只保存在发布机器的登录钥匙串中，
-绝不能提交到仓库**。构建脚本会核对钥匙串中的证书指纹与仓库 pin 是否一致，并把最终
-Designated Requirement 写入 `MPTCP-Desk.BUILDINFO`。
+默认使用长期固定的本地签名身份 `MPTCP Desk Stable Local Code Signing`，并在构建 App 前校验冻结的 `MPTCPKeychainBroker` v1。
 
-仅用于开发的 ad-hoc 构建要显式指定：
+Broker 固定 SHA256：
 
-~~~sh
-MPTCP_CODESIGN_IDENTITY=- ./macos/build.sh
-~~~
+```text
+5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9
+```
 
-如果以后使用 Developer ID，则显式切换：
+默认输出 Universal arm64+x86_64 DMG 到 `dist/userspace-1.1.1/`。
 
-~~~sh
-MPTCP_CODESIGN_STYLE=developer-id \
-MPTCP_CODESIGN_IDENTITY='Developer ID Application: ...' \
-./macos/build.sh
-~~~
+只有显式提供 Developer ID 与 notarization profile 时才走 Developer-ID/notarized 构建。长期本地自签名与 Apple notarization 是两个不同概念。
 
-Developer ID 模式会开启 hardened runtime 和 timestamp。只有该模式允许再配置
-`MPTCP_NOTARY_PROFILE` 做 Apple notarization。
+## 打包与发布验证脚本
 
-主要输出：
+```text
+scripts/package-userspace.py
+scripts/build-appcast.sh
+scripts/verify-userspace.py
+scripts/release-gates.py
+scripts/scheduler-gates.py
+```
 
-- MPTCP-Desk-<version>-universal.dmg
-- MPTCP-Desk-<version>-SHA256SUMS
-- MPTCP-Desk.BUILDINFO
+正式发布应从同一个 frozen Source-ID 生成整套产物，不要把不同工作树/不同提交构建出来的文件拼在一个 Release 里。
 
-### 为什么要使用稳定的自签名身份
+## 基础源码回归
 
-MPTCP Desk 当前有三类独立的 Keychain 凭据：
+Engine：
 
-- MPX Transport Key；
-- Provisioning URL；
-- Remote Management credential。
+```sh
+cd macos/engine
+go test ./... -count=1
+go vet ./...
+go test -race ./multipath -count=1
+```
 
-ad-hoc 签名的 Designated Requirement 绑定程序内容哈希；每次重新构建以后哈希变化，Keychain
-可能把新版 App 视为新的访问者，于是三个条目分别要求授权，这正好对应更新后连续出现多次密码提示。
+Provisioning：
 
-长期保存的自签名代码签名证书提供稳定的证书锚点、Bundle ID 与 Designated Requirement。
-按照 Apple 的代码签名/Keychain ACL 规则，这一“身份连续性”并不要求 Developer ID。
+```sh
+cd provisioning
+go test ./... -count=1
+go vet ./...
+```
 
-从已有 ad-hoc 版本切换到稳定签名版本时属于一次性迁移：旧 Keychain 项目仍可能要求重新授权。
-完成第一次授权后，必须连续构建两个不同版本、使用**同一张证书**签名并完成一次真实更新测试。
-第二次更新才是关键回归：三个 Keychain 项目不应再次请求授权。
+正式 Release 还需要 package/UI/provenance 等检查，见 [VALIDATION.md](../userspace/VALIDATION.md)。
 
-不能为了消除提示而给所有应用开放 Keychain、修改为明文保存或降低凭据保护。
+## 拥塞控制属于部署，不属于构建
 
-稳定自签证书只解决本机代码身份连续性；它不等于 Apple notarization，也不会自动获得
-`/Applications` 的写权限。Sparkle 的 EdDSA 更新签名仍然独立负责更新包真实性。
+生产推荐：
 
-### 私钥保管
+- **Landing = CUBIC**；
+- **Relay = BBR**，优先 `fq`。
 
-这张私钥就是后续版本的连续身份。必须导出一份带强密码的 PKCS#12 离线备份，不能随普通版本
-轮换证书。私钥丢失或换证书都会造成下一次 Keychain 身份迁移。
-
-## Source-ID
-
-构建脚本会在构建前后计算 Source-ID，防止构建过程中源码漂移。固定的**公开**签名证书进入
-source manifest；私钥不进入。
-
-每个正式版本对应的 Git tag 是该 Release 的权威源码快照。顶层 README 与 docs/guides 下的
-使用说明不进入 release source manifest。
-
-## 测试与 Release Gate
-
-“成功编译”不等于“完整验收通过”。正式发布还必须通过
-[验证边界](../userspace/VALIDATION.md) 中的 gates，并发布与 Source-ID 匹配的证据。
-### 冻结 Keychain Broker
-
-0.10.11 起，稳定自签名 App 的 Designated Requirement 仍用于验证主 App，但三个 file-based Keychain 条目不再由主 App 直接访问。原因是现代 macOS 还会维护独立的 `partition_id`，其中包含访问进程的 cdhash；即使主 App 的 Designated Requirement 不变，每次重建仍会产生新的 cdhash。
-
-因此发布包固定携带 `macos/keychain-broker/MPTCPKeychainBroker.v1.b64`。它是已经签名的 Universal Broker 二进制的 Base64 表示；构建脚本只把这些字节作为资源复制进 App，绝不能重新编译或重新签名后仍声称是 v1。主 App 会核对 SHA-256 `5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`，解码安装一次后长期复用。
-
-如果未来必须修改 Broker，必须升为新的 Broker protocol/version，并按一次新的 Keychain 身份迁移处理，不能覆盖 v1。
+构建脚本不会自动改这些 sysctl。部署时按 [网络与拥塞控制调优](NETWORK-TUNING.zh-CN.md) 单独设置、验证和回滚。

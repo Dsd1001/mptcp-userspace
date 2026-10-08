@@ -1,121 +1,137 @@
-# Building from source
+# Building MPTCP Userspace v1.1.1
 
-## Toolchain
+This guide covers source builds for the current v1.1.1 suite. Building artifacts does **not** modify production network settings, services, firewalls or congestion control.
 
-The release build uses:
+## Version and protocol identity
 
-- Go for the engine, Linux Client, Landing and Provisioning;
-- Swift / Xcode Command Line Tools for the macOS UI;
-- Sparkle 2.10.0, pinned by SHA-256;
-- standard macOS signing and disk-image tools.
+The current suite uses:
 
-Set `MPTCP_GO` when the required Go toolchain is not the default `go`.
+```text
+Product version:   1.1.1
+Wire protocol:     MPX/4 Protocol Version 4 Stable
+Protocol release:  protocol-v4.0.0
+Protocol source:   44f587fd279ed2238b070dd68114c76822353f4d
+Capability rev:    8
+```
 
-## Build Linux Client
+`macos/VERSION` and `provisioning/VERSION` must agree for suite builds. Release binaries embed a Source-ID derived from the frozen source manifest.
 
-~~~sh
+## Toolchains
+
+The repository uses:
+
+- Go for the userspace engine, Linux Client, Landing and Provisioning;
+- Swift + Xcode Command Line Tools for MPTCP Desk;
+- Python 3 for source manifests, packaging and verification;
+- standard macOS tools (`codesign`, `hdiutil`, `lipo`, `plutil`) for the Mac artifact.
+
+The scripts prefer `MPTCP_GO` when set, otherwise the pinned path in `macos/build/go-path` when present, otherwise `go` from PATH.
+
+## Linux Client
+
+```sh
 ./scripts/build-linux-client.sh
-~~~
+```
 
-The script emits amd64 and arm64 binaries plus BUILDINFO and SHA256 files.
+The script produces static `CGO_ENABLED=0` builds for amd64 and arm64 under `dist/userspace-1.1.1/`:
 
-## Build Linux Landing
+```text
+mptcp-client-linux-amd64
+mptcp-client-linux-arm64
+```
 
-~~~sh
+Each binary gets a SHA256 file and BUILDINFO with version, Source-ID and protocol identity.
+
+## Landing
+
+```sh
 ./scripts/build-userspace-landing.sh
-~~~
+```
 
-The Landing build uses CGO_ENABLED=0, GOOS=linux and GOARCH=amd64/arm64.
+Outputs:
 
-## Build Provisioning
+```text
+mptcp-landing
+mptcp-landing-linux-arm64
+```
 
-~~~sh
+This script is build-only. It does not install a service and does not change kernel, proxy, firewall or TCP congestion-control settings.
+
+## Provisioning
+
+Suite build:
+
+```sh
 ./scripts/build-provisioning.sh
-~~~
+```
 
-## Build the macOS DMG
+Outputs include:
 
-Official updater builds use the pinned long-lived local signing identity:
+```text
+mpx-provision
+mpx-provision-linux-arm64
+```
 
-~~~sh
+The default suite scope requires Provisioning and MPTCP Desk/engine versions to match.
+
+## MPTCP Desk
+
+```sh
 ./macos/build.sh
-~~~
+```
 
-The default identity is `MPTCP Desk Stable Local Code Signing`. Its public certificate is pinned at
-`macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt`; the private key stays only in the release
-machine's login Keychain and must never be committed. The build verifies that the Keychain certificate
-fingerprint matches the repository pin and records the resulting Designated Requirement in
-`MPTCP-Desk.BUILDINFO`.
+The default build expects the long-lived local signing identity `MPTCP Desk Stable Local Code Signing`. The build also verifies that the frozen `MPTCPKeychainBroker` v1 bytes are unchanged before constructing the app.
 
-For a contributor-only ad-hoc build:
+The broker SHA256 is pinned to:
 
-~~~sh
-MPTCP_CODESIGN_IDENTITY=- ./macos/build.sh
-~~~
+```text
+5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9
+```
 
-For a Developer ID build, explicitly select that mode:
+The default output is a Universal arm64+x86_64 DMG under `dist/userspace-1.1.1/`.
 
-~~~sh
-MPTCP_CODESIGN_STYLE=developer-id \
-MPTCP_CODESIGN_IDENTITY='Developer ID Application: ...' \
-./macos/build.sh
-~~~
+Developer-ID/notarized builds are supported only when the required signing identity/profile is explicitly provided. Do not confuse local code-signing continuity with Apple notarization.
 
-The Developer ID mode enables hardened runtime and timestamping. Notarization remains available through
-`MPTCP_NOTARY_PROFILE`, and is only accepted with `MPTCP_CODESIGN_STYLE=developer-id`.
+## Full packaging
 
-Expected output includes:
+The repository also contains:
 
-- MPTCP-Desk-<version>-universal.dmg
-- MPTCP-Desk-<version>-SHA256SUMS
-- MPTCP-Desk.BUILDINFO
+```text
+scripts/package-userspace.py
+scripts/build-appcast.sh
+scripts/verify-userspace.py
+scripts/release-gates.py
+scripts/scheduler-gates.py
+```
 
-### Why the stable local certificate exists
+These manage source freeze, release packaging, Sparkle metadata and evidence verification. Release artifacts should be produced from one frozen source identity, not by mixing binaries from different working trees.
 
-MPTCP Desk stores three independent secrets in Keychain: the transport key, Provisioning URL and
-remote-management credential. An ad-hoc signature has a content-hash-based Designated Requirement, so a
-rebuilt App is a different Keychain client and macOS may ask for authorization again for each item.
+## Basic source checks
 
-The long-lived self-signed code-signing certificate gives successive releases a stable certificate anchor,
-bundle identifier and Designated Requirement. This follows Apple's code-signing guidance for Keychain ACL
-tracking; Developer ID is not required for this specific identity-continuity property.
+For the engine:
 
-Migration from an already-installed ad-hoc build is intentionally one-time: the first stable-signed build may
-still require authorization for existing Keychain items because those items were created for the old ad-hoc
-requirement. After that authorization, validate with two consecutively built versions signed by the same
-certificate. The second update is the important regression test: it should not ask again for the three
-Keychain items.
+```sh
+cd macos/engine
+go test ./... -count=1
+go vet ./...
+go test -race ./multipath -count=1
+```
 
-Do not weaken Keychain ACLs, grant all applications access, or move secrets to plaintext storage to avoid
-prompts.
+For Provisioning:
 
-The stable certificate is a local identity, not Apple trust/notarization. Gatekeeper distribution and
-installation-directory write authorization are separate concerns. Sparkle EdDSA still authenticates the update
-payload independently.
+```sh
+cd provisioning
+go test ./... -count=1
+go vet ./...
+```
 
-### Release key custody
+The full release process has additional package/UI/provenance gates; see [Validation](../userspace/VALIDATION.md).
 
-The private key is the continuity identity for all future local-signed releases. Export it once as a
-password-protected PKCS#12 backup, store that backup offline, and do not rotate the certificate during ordinary
-updates. Losing or replacing this key creates another Keychain identity migration.
+## Network tuning is deployment-time, not build-time
 
-## Source identity behavior
+The recommended production host baseline is:
 
-The build scripts compute Source-ID before producing binaries and verify that reviewed source does not change
-during the build. The pinned public local-signing certificate is part of the source manifest; the private key is
-not.
+- **Landing: CUBIC**;
+- **Relay: BBR**, preferably with `fq`.
 
-The Git tag for each published version is the authoritative source snapshot for that release. Documentation-only
-files under docs/guides and the top-level README files are intentionally outside the release source manifest.
-
-## Validation
-
-Building successfully is not equivalent to release acceptance. A release candidate must also pass the gates in
-[Validation](../userspace/VALIDATION.md) and publish source-matched evidence.
-### Frozen Keychain Broker
-
-Starting with 0.10.11, the stable self-signed Designated Requirement still authenticates the main app, but the main app no longer accesses the three file-based Keychain items directly. Modern macOS also maintains a separate `partition_id` containing the accessing process cdhash; rebuilding the app changes that cdhash even when its Designated Requirement is stable.
-
-The release therefore carries `macos/keychain-broker/MPTCPKeychainBroker.v1.b64`, the Base64 representation of a signed Universal broker whose bytes are frozen. The build copies this resource verbatim and must never rebuild or re-sign it while calling it v1. MPTCP Desk verifies SHA-256 `5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`, installs those exact bytes once, and reuses them across updates.
-
-Any future broker change requires a new broker protocol/version and an explicit one-time Keychain identity migration; v1 must not be overwritten.
+Build scripts intentionally do not apply these sysctls. Apply and verify them only during deployment using [Network tuning](NETWORK-TUNING.md).

@@ -1,37 +1,62 @@
-# MPTCP Desk 1.0.0 validation
+# MPTCP Desk v1.1.1 validation
 
-1.0.0 Mac release candidate must preserve every 0.10.x product capability while moving the Userspace engine to MPX/4 Protocol Version 4 Stable.
+This file summarizes the Mac-specific validation boundary for the current release.
 
-Required checks include:
+## Identity
 
-- engine/Landing Go test, vet and race coverage;
-- the exact 20 Stable Core vectors from `protocol-v4.0.0`;
-- MAX_CARRIERS, Stable CREATE/JOIN, DORMANT, TRANSMISSION_RETIRE, confirmation/replay, credit reordering and error-scope tests;
-- Auto / Aggregate / Protect / Weighted local-policy regression;
-- Provisioning test/vet and encrypted Profile/Bundle/device behavior;
-- persistent LKG and cache-first recovery;
-- parallel Profile fault isolation and exact 1s/2s/5s/10s/30s/30s retry schedule;
-- remote management default-off/local-only enable and signed-update whitelist;
-- arm64 and x86_64 Swift typecheck and UI smoke;
-- Universal DMG plus Linux Client/Landing/Provisioning amd64+arm64 builds;
-- one Source-ID and version 1.0.0 across the suite;
-- source-matched Scheduler, capacity and 180s runtime evidence.
+```text
+MPTCP Desk:         1.1.1
+MPX wire version:   4
+Protocol release:   protocol-v4.0.0
+Protocol source:    44f587fd279ed2238b070dd68114c76822353f4d
+Capability revision:8
+```
+
+## Required Mac checks
+
+- Swift typecheck/build for arm64 and x86_64;
+- Universal App/DMG architecture verification;
+- embedded engine version and Source-ID match the suite source;
+- local/managed Profile and Bundle parsing;
+- parallel Profile isolation/recovery;
+- UI smoke for current scheduler/diagnostic surfaces;
+- Sparkle appcast/EdDSA verification;
+- no direct main-App Keychain access for the Broker-owned secrets;
+- frozen Broker resource verification.
 
 ## Frozen Broker continuity
 
-The main App must contain no direct SecItem access for Transport Key, Provisioning URL or Remote Control credential.
+`MPTCPKeychainBroker.v1.b64` must decode to:
 
-`MPTCPKeychainBroker.v1.b64` must decode to the exact 0.10.12 Broker v1 binary:
+```text
+SHA256 5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9
+```
 
-- SHA-256 `5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`;
-- Universal arm64+x86_64;
-- identifier `org.mptcp.desktop.keychainbroker.v1`;
-- unchanged pinned parent Designated Requirement.
+The Broker remains Universal arm64+x86_64 and keeps its pinned v1 identity/parent requirement. The main App may change between releases; the frozen v1 Broker bytes must not silently change with it.
 
-The build script fails before App construction if Broker bytes differ. The release verifier independently checks resource equality, decoded hash, signature, architecture and requirement.
+## Engine correctness inherited by Desk
 
-A final update-continuity acceptance must upgrade an installed 0.10.12 App to 1.0.0 through Sparkle and confirm the parent App changes while the Broker resource remains byte-identical and Keychain access does not return to repeated authorization prompts.
+MPTCP Desk uses the same userspace engine that is validated for:
 
-Correctness tests do not constitute WAN performance validation. CAPACITY.json and RUNTIME.json remain separate source-matched evidence.
+- MPX/4 Stable handshake and records;
+- Stream/Session WINDOW flow control;
+- v1.1.1 peer-WINDOW-authoritative send-credit semantics;
+- concurrent multi-Stream/multi-Carrier operation;
+- retransmission/reinjection;
+- Auto/Aggregate/Protect/Weighted;
+- UoT product path.
 
-The macOS DMG uses the pinned stable local self-signed identity and is not Apple Developer ID notarized.
+## Performance boundary
+
+Mac correctness/UI/build validation is not a physical-WAN throughput claim. v1.1.1 did not run a new WAN/capacity performance promotion before release.
+
+For production path comparisons, document the Linux host baseline separately:
+
+```text
+Landing = CUBIC
+Relay   = BBR (fq preferred)
+```
+
+These are deployment settings below the Mac/MPX product layer, not Mac build conditions.
+
+The current release uses the pinned stable local self-signed code-signing identity by default unless an explicit Developer-ID build is requested.

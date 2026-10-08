@@ -1,106 +1,176 @@
-# MPX/4 Protocol Version 4 Stable implementation profile
+# MPX/4 implementation profile — MPTCP Userspace v1.1.1
 
-MPTCP Userspace **1.0.0** implements **MPX/4 Protocol Version 4 Stable** over ordinary TCP Carriers. The frozen protocol boundary is Dsd1001/MPX-4 tag `protocol-v4.0.0`, commit `44f587fd279ed2238b070dd68114c76822353f4d`, with Draft 11 as the stable specification revision.
+This document describes the MPX/4 behavior implemented by MPTCP Userspace v1.1.1. The normative protocol source is the separate MPX/4 repository release:
 
-Provisioning remains a separate configuration/control plane and does not alter MPX/4 data-plane bytes. Every active Profile owns an independent MPX Session and Carrier set.
+```text
+Protocol release: protocol-v4.0.0
+Protocol source:  44f587fd279ed2238b070dd68114c76822353f4d
+Wire version:     4
+Capability rev:   8
+```
 
-## Version and compatibility
+When this document and the normative MPX/4 protocol text differ, the normative protocol text and the v1.1.1 source are authoritative.
 
-The wire Protocol Version remains **4**. That number is distinct from the MPTCP Userspace product version and from the Keychain Broker version.
+## 1. Scope
 
-Pre-Stable Draft 04 implementations also used Protocol Version 4 but do not implement the frozen Stable handshake/state semantics. MPTCP Userspace 1.0.0 therefore does **not** silently fall back to Draft 04 on the same listener. A staged migration should use separate old/new listeners or ports.
+MPX/4 is an authenticated application-layer multipath transport. It runs over ordinary byte-stream Carriers. In this product those Carriers are TCP connections that may traverse opaque Relay nodes.
 
-## Carrier identity and limits
+The protocol endpoints are:
 
-One TCP connection maps to one MPX/4 Carrier. TCP segmentation and read/write call boundaries have no MPX meaning.
+- **Client** — MPTCP Desk or Linux Client;
+- **Landing** — `mptcp-landing`.
 
-Stable MPX/4 defines CARRIER_ID as any non-zero MPX VarInt from 1 through 2^62-1. Carrier IDs may be sparse. `MAX_CARRIERS` is a separate Session capability and limits the number of simultaneously active logical Carriers.
+Relay is not an MPX endpoint and does not need the Transport Key.
 
-The current product accepts **2–8 configured Relays per Profile** and advertises a local `MAX_CARRIERS=8`. This is an implementation/resource bound, not a wire identifier bound.
+## 2. Session, Carrier and Stream
 
-Carrier Generation rules include:
+A **Session** is the authenticated logical transport between Client and Landing.
 
-- an unused Carrier ID starts at Generation 0;
-- replacements use a strictly greater Generation;
-- failed or unauthenticated candidates do not advance accepted Generation;
-- stale/equal candidates are rejected without mutating the live Session;
-- a higher authenticated Generation atomically supersedes the previous incarnation;
-- superseded incarnations cannot create protocol state or receive new Attempts;
-- Generation never wraps;
-- replacement preserves Session-owned Stream, credit, tombstone and Transmission state.
+A **Carrier** is one authenticated transport path attached to the Session. Carriers may arrive, disappear and be replaced while the Session and Streams continue.
 
-If all Carriers disappear, the Session enters DORMANT for the bounded local retention window. Existing reliable state is retained for recovery; new Stream/DATA commitment is blocked until a Carrier is established again.
+A **Stream** is an ordered reliable application byte stream multiplexed inside the Session. Multiple Streams may be active concurrently and may use multiple Carriers concurrently.
 
-## Handshake and security
+The protocol allows Carrier IDs in the MPX VarInt space. The current product implementation limits simultaneously active Carriers to **8**.
 
-The implementation supports Stable CREATE and JOIN with:
+## 3. Stable handshake and authentication
 
-- 32-byte pre-shared Transport Key;
-- HKDF-SHA256 and MPX-Expand-Label;
-- HMAC-SHA256 Client/Server Finished;
-- AES-256-GCM Secure Records;
-- canonical MPX VarInts and strictly ordered Parameters;
-- directional `MAX_FRAME_PAYLOAD`, `MAX_RECORD_SIZE` and `MAX_STREAMS`;
-- critical Session-wide `MAX_CARRIERS`;
-- `VERSION_NEGOTIATION` for unsupported Preface versions;
-- classified pre-establishment `HANDSHAKE_REJECT` where a safe response boundary exists;
-- unknown optional Parameters ignored and unknown critical Parameters rejected.
+The stable handshake authenticates both endpoints using the pre-shared Transport Key and binds negotiated parameters to the handshake transcript. The implementation uses the protocol-defined SHA-256/HMAC/HKDF construction and AES-256-GCM protected records.
 
-CREATE-time Session-scoped limits are immutable. JOIN repeats the endpoint's CREATE-time Session-scoped values; incompatible values are rejected without changing the retained Session.
+Operational requirements:
 
-Unauthenticated candidates never attach application Carrier state to a live Session.
+- Client and Landing must use the same Transport Key;
+- Transport Key must never be placed on an opaque Relay;
+- a Carrier that fails authentication is not admitted to a Session;
+- JOIN must match the retained Session identity and negotiated limits.
 
-## Frames, Streams and Transmission identity
+The implementation applies a short pre-handshake admission deadline and a bounded authenticated handshake timeout to prevent silent unauthenticated connections from holding server resources indefinitely.
 
-The Core implementation includes PING/PONG, CARRIER_CLOSE, SESSION_CLOSE, STREAM_OPEN, STREAM_OPEN_OK, STREAM_OPEN_REJECT, STREAM_DATA, TRANSMISSION_ACK, STREAM_CREDIT, STREAM_FIN, RESET_STREAM, STOP_SENDING, STREAM_CONSUMED, **TRANSMISSION_RETIRE**, SESSION_CREDIT and CREDIT_PROBE.
+## 4. Secure records and frames
 
-STREAM_DATA is limited to 32768 bytes. Stream byte identity is `(Stream ID, Offset)` and is independent of Carrier identity.
+After authentication, MPX Frames are carried inside authenticated encrypted records. Important frame classes include:
 
-Reliable Frames use Session-wide monotonically allocated Transmission IDs. Retransmission or cross-Carrier reinjection keeps the same Transmission ID. Confirmation type and Stream identity must match the original Transmission.
+- Stream open / open result;
+- DATA;
+- ACK;
+- Stream WINDOW;
+- Session WINDOW;
+- FIN / RST / reset / stop-receiving;
+- liveness / control frames;
+- transmission retirement;
+- Carrier and Session close.
 
-The sender tracks the contiguous Settled Through prefix and advertises it with TRANSMISSION_RETIRE. The receiver retains replayable confirmations until the peer's retirement watermark permits compaction.
+The maximum STREAM_DATA payload in v1.1.1 is **32 KiB** and the maximum record size is **64 KiB**.
 
-## Flow control and reordering
+## 5. Reliability and cross-Carrier reinjection
 
-Application DATA requires both Stream and Session credit. Credit is absolute. Older/stale credit pairs may arrive on another Carrier and are ignored; crossed/non-monotonic pairs are FLOW_CONTROL_ERROR.
+Reliable DATA is tracked with Session-wide transmission identity rather than assuming one TCP Carrier is permanently responsible for one application byte range.
 
-Retransmission or reinjection of already committed logical bytes consumes no additional logical credit.
+This permits:
 
-Current 1.0.0 bounds are:
+- DATA for one Stream to travel over different Carriers;
+- cross-Carrier out-of-order arrival;
+- retransmission or reinjection after a Carrier degrades or disappears;
+- duplicate/replay detection;
+- retirement only after the protocol state proves the transmission no longer needs to remain recoverable.
 
-- active peer-initiated Streams: 2048;
-- STREAM_DATA payload: 32 KiB;
-- per-Stream receive-credit window: 16 MiB;
-- Session receive-credit window: 128 MiB;
-- physical receive allocation: 128 MiB;
-- locally active MPX Carriers: 8;
-- bounded sender DATA/control queues.
+A Carrier failure does not automatically destroy the Streams that used it.
 
-## Error scope
+## 6. Flow control
 
-Stable failure scope is enforced at the candidate, Carrier, Stream or Session boundary as appropriate. In particular:
+MPX/4 has both Stream-level and Session-level receiver credit.
 
-- safe pre-establishment failures may use HANDSHAKE_REJECT;
-- FRAME_ENCODING_ERROR is Carrier-scoped;
-- Secure Record authentication/integrity failure terminates the affected Carrier;
-- FLOW_CONTROL_ERROR, FINAL_SIZE_ERROR, TRANSMISSION_ID_ERROR and established STREAM_STATE_ERROR are Session-scoped;
-- rejecting a JOIN candidate does not mutate the existing Session;
-- local Carrier output failure does not reclassify valid peer input as a peer protocol violation.
+v1.1.1 implementation limits:
 
-## Scheduler policy
+```text
+Max Streams:                 2048
+Max STREAM_DATA:             32 KiB
+Max per-Stream receive win:  16 MiB
+Session receive-credit:      128 MiB
+Physical receive accounting: 128 MiB
+```
 
-MPX/4 Stable Core intentionally does **not** negotiate Auto, Aggregate, Protect or Weighted. These names are MPTCP Userspace endpoint-local policies.
+### v1.1.1 send-credit rule
 
-The optional published **Carrier Receive Capacity Hint** extension uses Parameter Type `0x40 RECEIVE_CAPACITY_HINT`, CRITICAL=0. It is unilateral, Carrier-scoped and authenticated by the successful handshake transcript. It is scheduling metadata only: not flow-control credit, a bandwidth reservation or a delivery guarantee.
+The peer's advertised MPX windows are authoritative:
 
-A configured Weighted client can advertise its receive-side estimate so Landing can use it for server-to-client scheduling. Upload capacity remains a local client-side input. Landing also has an independent local scheduler policy.
+```text
+Stream send room  = peer_stream_limit - stream_tx_next
+Session send room = peer_session_limit - session_tx_committed
+```
 
-## UDP
+A DATA send requires room in both protocol windows and room in local resource queues.
 
-UDP remains the independent authenticated MPU/1 datagram plane with its own path health, receipts, fragmentation/reassembly and scheduling. It is not an MPX/4 Core Datagram extension.
+v1.1.1 deliberately does **not** use the old local `txUsed` / `txGrowth` ledger as a second protocol-like admission pool. Those fields can remain in telemetry as diagnostic mirrors.
 
-## Interoperability verification
+Local protection still exists for:
 
-The source tree vendors the **20 frozen Core JSON vector files** from `protocol-v4.0.0`, plus the published capacity-hint extension vector. Tests cover Stable key schedule, Finished authentication, Secure Records, MAX_CARRIERS, VERSION_NEGOTIATION, HANDSHAKE_REJECT, Carrier Generation, DORMANT recovery, confirmation validity, credit reordering, TRANSMISSION_RETIRE and error scope.
+- pending frame count;
+- pending DATA bytes (1 GiB pool);
+- bootstrap pending-capacity fairness;
+- Carrier flight/budget;
+- receiver memory/page accounting;
+- lifecycle limits.
 
-For release requirements and evidence classes, see [VALIDATION.md](VALIDATION.md).
+These local resources must not be confused with peer-advertised MPX flow-control credit.
+
+## 7. Concurrency model
+
+MPX/4 requires some Session-wide shared state, including Session WINDOW, transmission identity, Carrier lifecycle and replay/retirement state. The protocol therefore does not imply that every Stream can be implemented with zero shared synchronization.
+
+v1.1.1 reduces contention by using:
+
+- per-Stream ready queues/rings;
+- bounded dispatcher batches;
+- Stream-local receive synchronization;
+- short Session critical sections;
+- per-Stream targeted writer wakeups;
+- receive payload work outside long Session locks where safe.
+
+The concurrency implementation changes performance characteristics without changing wire semantics.
+
+## 8. Scheduler relationship
+
+MPX/4 Stable Core does not negotiate the product's Auto/Aggregate/Protect/Weighted mode as a wire Scheduler ID. Scheduler mode is endpoint-local policy.
+
+The Client scheduler chooses Carriers for Client-to-Landing DATA. The Landing scheduler chooses Carriers for Landing-to-Client DATA. They may differ, although matched modes are usually easier to operate.
+
+A scheduling decision cannot override protocol eligibility, flow-control limits, transmission identity or replay rules.
+
+## 9. Capacity hints
+
+The product can use the published MPX/4 receive-capacity hint extension to communicate directional capacity information used by local scheduling. Weighted mode also consumes configured direction capacities.
+
+A capacity value is a scheduling prior. It is not a reservation, fixed percentage or guaranteed throughput.
+
+## 10. UDP is outside MPX/4 Core
+
+Native UDP uses the separate authenticated MPU/1 data plane.
+
+UoT is a product service that carries UDP payload through an authenticated TCP Carrier Session. It reuses MPX transport but does not redefine MPX/4 Core as a datagram protocol.
+
+## 11. Product fast-start
+
+The product layer can keep a bounded pool of authenticated, already-opened Streams for TCP/UoT service startup. This removes avoidable service-setup RTTs from the hot path without changing MPX/4 Core frame grammar.
+
+## 12. Resource and implementation limits
+
+Current product constants include:
+
+```text
+Active Carriers:       8
+Streams:               2048
+Pending frames:        32768
+Pending DATA bytes:    1 GiB
+Receive buffer account:128 MiB
+```
+
+These are implementation/resource limits, not all protocol namespace limits.
+
+## 13. Linux TCP congestion control is below MPX/4
+
+MPX/4 does not specify Linux TCP congestion-control algorithms. For the current deployment profile the project recommends:
+
+- **Landing: CUBIC**;
+- **Relay: BBR**, preferably with `fq`.
+
+This changes the behavior of underlying TCP Carriers, not MPX/4 wire compatibility. See [Network tuning](../guides/NETWORK-TUNING.md).

@@ -1,3 +1,6 @@
+> **Historical release note / 历史版本说明** — 本文只描述 0.10.1，不代表当前 v1.1.1 行为。当前发布说明见 [RELEASE.zh-CN.md](RELEASE.zh-CN.md)，当前部署网络基线为 **Landing=CUBIC、Relay=BBR**。
+>
+
 # MPTCP Userspace 0.10.1 / MPX/4 Draft 04 + Parallel Bundle Fault Isolation
 
 这是 0.10.0 的 Client / Landing 补丁版本。Provisioning 继续使用 0.10.0，Bundle schema 2 与 Profile schema 1 均不变。

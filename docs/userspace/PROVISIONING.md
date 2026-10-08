@@ -1,183 +1,143 @@
-# MPX Provisioning 1.0.0
+# Provisioning and remote device control — v1.1.1
 
-MPX Provisioning is the optional configuration/control plane for MPTCP Userspace. It is **not** a data proxy and does not change MPX/4 Protocol Version 4 Stable data-plane bytes.
+Provisioning is the optional control plane for distributing MPTCP Userspace Profiles/Bundles and managing opted-in MPTCP Desk devices. Application payload traffic does **not** pass through Provisioning.
 
-## Objects
+## Deployment model
 
-### Profile
+Recommended production layout:
 
-A Profile is one complete authoritative runtime configuration:
+```text
+Internet HTTPS
+     |
+ nginx / Caddy
+     |
+127.0.0.1:<provision-port>
+     |
+ mpx-provision
+```
 
-- transport mode;
-- listen_port;
-- TCP / UDP switches;
-- Auto / Aggregate / Protect / Weighted scheduler;
-- 2–8 Relay IPv4/port entries;
-- optional Weighted upload/downlink capacity values;
-- MPX Transport Key;
-- background-resident setting.
+Keep the Provisioning process on loopback/private service networking and terminate public TLS in a mature reverse proxy.
 
-Each Profile owns its own local listener, Relay set, Scheduler, Transport Key and MPX Session.
+## Profile and Bundle URLs
 
-### Bundle
+A public configuration URL is a high-entropy bearer credential, for example:
 
-A Bundle contains 1–32 Profiles and one runtime policy:
-
-- **single_select** — exactly one Profile is active; different Profiles may reuse the same listen_port;
-- **parallel** — one or more Profiles may run simultaneously; selected Profiles must use unique local listen ports.
-
-Parallel Profiles are independent runtimes. Their Relay lists are never flattened into one Session.
-
-Provisioning rejects invalid Bundle membership/port plans. The Client repeats validation and performs an atomic local socket preflight before starting child runtimes.
-
-After preflight, remote runtime failures are isolated: one failed/unreachable Profile reports its own error while healthy Profile listeners keep running.
-
-## Public URLs and schemas
-
-Profile and Bundle URLs remain high-entropy bearer credentials:
-
-~~~text
+```text
 https://config.example.com/v1/config/<64-hex-secret>
 https://config.example.com/v1/config/<alias>/<64-hex-secret>
-
 https://config.example.com/v1/bundle/<64-hex-secret>
 https://config.example.com/v1/bundle/<alias>/<64-hex-secret>
-~~~
+```
 
-The decrypted inner payload still uses:
-
-- schema 1 for a single Profile;
-- schema 2 with kind=bundle for a Bundle.
-
-The public HTTP response, however, is **not readable configuration JSON** in current releases.
+Possession of the complete URL grants configuration access and decryption capability. Never publish these URLs in logs, screenshots or issues.
 
 ## Opaque response envelope
 
-Since 0.10.2, public Profile/Bundle responses are wrapped in a compact encrypted envelope:
+Public Profile/Bundle responses use an encrypted envelope:
 
-~~~json
+```json
 {"v":1,"n":"<nonce>","d":"<ciphertext>"}
-~~~
+```
 
-The existing 256-bit URL secret is used as key material. HMAC-SHA256 over the fixed context mpx-provision-config-envelope-v1 derives the AES-256-GCM key. Each response uses a fresh 96-bit random nonce and authenticates the fixed AAD mpx-provision-envelope-v1.
+The URL secret is used as key material for the envelope derivation. The plaintext inside remains the validated Profile/Bundle control document.
 
-The encrypted plaintext is still the existing schema-1 Profile or schema-2 Bundle document, so the internal control-plane model remains simple.
+The envelope reduces accidental disclosure in browsers/proxies but **does not replace HTTPS** because anyone holding the full URL also has the material needed to decrypt the response.
 
-This layer is intentionally lightweight: Profile/Bundle decryption still needs no device enrollment or public-key infrastructure. The optional Device Control service added in 0.10.6 is a separate control credential and is not required to fetch/decrypt a Provisioning URL.
+Current clients retain legacy plaintext response compatibility only for migration.
 
-**Possession of the complete URL still grants decryption capability.** HTTPS remains mandatory for remote use.
+## Bundle modes
 
-1.0.0 clients also accept legacy plaintext schema-1/schema-2 responses for migration.
+A Bundle can be:
 
-## 0.10.6 managed client cache
+- **single_select** — one Profile active at a time;
+- **parallel** — one or more Profiles active concurrently.
 
-After the first successful managed sync, MPTCP Desk persists the Last Known Good Profile/Bundle response under the user's Application Support/MPTCPDesk directory. The cache file is mode 0600 and contains the endpoint SHA-256 fingerprint, fetch time, selected Profile IDs and the last validated response bytes. The full Provisioning URL is not written to this file and remains in Keychain.
+Parallel Profiles remain independent runtimes. Their Relay lists are not flattened into one Session.
 
-A matching cache becomes the startup source. Normal start, app/system restart and sleep/wake recovery can launch immediately from it without waiting for the Provisioning request timeout. API refresh runs asynchronously.
+Provisioning validates membership and local port plans. The Client validates again and performs local socket preflight before starting a parallel set.
 
-A successful refresh updates the cache for the next reconnect and does not restart the active runtime. The cache has no TTL. Each successful sync schedules another check 48 hours later; failures retain the old cache and retry after 1 minute, 5 minutes, 30 minutes and then every 3 hours. A changed Provisioning URL cannot consume a cache created for the previous URL.
+Runtime failures are isolated after startup: one failed Profile does not stop healthy Profile listeners.
 
-With current encrypted Provisioning responses, the cached response bytes remain the opaque v/n/d envelope. Legacy plaintext responses are still accepted for migration and are protected by the local 0600 file permission.
+## Last Known Good on macOS
 
-## macOS behavior
+After the first successful managed sync, MPTCP Desk keeps a protected Last Known Good cache associated with the source endpoint fingerprint.
 
-MPTCP Desk stores the secret Provisioning URL in Keychain.
+The cache allows normal start, app/system restart and sleep/wake recovery to start from the last validated configuration without waiting on a fresh network request. API refresh runs asynchronously.
 
-The home page explicitly separates:
+A successful refresh updates the next-reconnect configuration and does not forcibly interrupt the current Session. A changed Provisioning URL cannot reuse a cache associated with the previous source fingerprint.
 
-- Local configuration;
-- Remote configuration.
+The full Provisioning URL remains in Keychain rather than the ordinary cache file.
 
-For a Bundle, the Client remembers the selected Profile IDs by non-secret bundle_id. Transport Keys are used from the authoritative response and engine stdin; they are not copied into ordinary preferences.
+## Linux managed mode
 
-If a matching Last Known Good cache exists, managed startup uses it immediately and treats the API as an asynchronous update source. Only first use, or a newly changed URL with no matching cache, requires a successful authoritative fetch before startup.
+Linux Client reads a managed control document from stdin:
 
-Remote Bundle diagnostics are shown per Profile. The customer UI hides Relay IP/port and raw endpoint errors while still showing scheduler, RTT, Goodput, queue, outstanding, retransmit, reorder and resource state.
+```json
+{"url":"https://config.example.com/v1/bundle/<secret>","profile_ids":["profile-a"]}
+```
 
-## Linux behavior
-
-The Linux Client can fetch a Profile or Bundle without placing the secret URL in process arguments:
-
-~~~json
-{"url":"https://config.example.com/v1/bundle/<secret>","profile_ids":["profile-a","profile-b"]}
-~~~
-
-~~~sh
+```sh
 mptcp-client-linux-amd64 validate-managed < managed.json
 mptcp-client-linux-amd64 run-managed < managed.json
-~~~
+```
 
-Remote URLs require HTTPS. Loopback HTTP is accepted for development. Redirects are rejected.
+Remote HTTP is rejected; loopback HTTP is allowed for development. Redirects are rejected.
 
-Response limits remain:
+## Device control
 
-- single Profile: 64 KiB;
-- Bundle: 512 KiB.
+Remote device control is separate from Profile/Bundle configuration access and is opt-in on the Mac.
 
-## Administration UI
+The user must locally:
 
-The admin console contains:
+1. enable Remote Management;
+2. configure the HTTPS control-server root URL;
+3. enter a short-lived pairing code.
 
-- **Profiles / 配置中心** — Profile editor with Relay, scheduler, issuance and runtime settings;
-- **Client Bundles** — Bundle membership, single_select/parallel mode, port-plan validation and independent Bundle URL controls;
-- **System** — service/version information and administrator password management.
+Provisioning cannot remotely enable this switch or replace the locally chosen control-server address.
 
-Profile and Bundle URLs support:
+After pairing, MPTCP Desk uses outbound HTTPS long polling, so the Mac does not need a public IP or inbound port.
 
-- random 256-bit secret;
-- optional readable alias plus secret;
-- secret rotation;
-- automatic rotation when URL mode/alias changes.
+The control plane exposes bounded product operations such as:
 
-Transport Keys and URLs are masked by default.
+- desired running/stopped state;
+- Profile/Bundle assignment;
+- configuration sync generation;
+- forwarding restart generation;
+- signed-app update generation.
 
-## Device control / remote management
+There is no arbitrary Shell command field.
 
-0.10.6 adds a Devices control plane to the existing Provisioning service. It is intentionally opt-in from the Mac side.
+## Device credentials
 
-A device record stores only desired/observed state and a hash of its device credential. The Mac must:
+Each paired Mac gets a unique device credential. The Mac stores its secret in Keychain; Provisioning stores a hash in `devices.json`. Pairing codes are also persisted as hashes rather than plaintext secrets.
 
-1. enable Remote Management locally;
-2. enter the HTTPS control-server root URL locally;
-3. enter a 10-minute one-time pairing code locally.
+Admin operations can rotate pairing, revoke/delete a device and inspect bounded audit history.
 
-Neither Profile/Bundle Provisioning nor Device Control responses contain a field that can enable remote management or replace the locally configured control-server address.
+## Reverse-proxy requirements
 
-After pairing, the Mac uses outbound HTTPS long polling and therefore needs no inbound port or public IP. The server exposes fixed device operations for desired running/stopped state, Profile/Bundle assignment, configuration sync generation, forwarding restart generation and signed-app update generation. There is no Shell or arbitrary-command field.
+- HTTPS is mandatory for remote use.
+- Do not log full `/v1/config/` or `/v1/bundle/` secret paths.
+- Do not log `Authorization` headers.
+- Device long polling needs an upstream timeout longer than the poll interval; roughly 35–60 seconds is a practical proxy setting.
+- Configuration responses should remain `Cache-Control: no-store`.
 
-Device credentials are unique per Mac. The device secret is stored in the macOS Keychain; Provisioning stores only its SHA-256 hash in devices.json. Pairing codes are also stored only as hashes. The admin UI can rotate pairing, revoke/delete a device and inspect a bounded audit log.
+## Data files
 
-The relevant device endpoints are:
+Protect Provisioning state as private service data. Typical files include:
 
-~~~text
-POST /v1/device/pair
-GET  /v1/device/poll?since=<control-revision>
-POST /v1/device/report
-POST /v1/device/unpair
+```text
+profiles.json
+bundles.json
+devices.json
+administrator password state
+```
 
-GET/POST       /admin/api/devices
-GET/PUT/DELETE /admin/api/devices/<id>
-POST           /admin/api/devices/<id>/pairing
-POST           /admin/api/devices/<id>/sync
-POST           /admin/api/devices/<id>/restart
-POST           /admin/api/devices/<id>/update
-~~~
+Use restrictive permissions such as `0600` and keep backups with the same secrecy as the live data.
 
-The public device endpoints use a per-device Bearer secret plus X-MPX-Device-ID. Admin endpoints remain behind the existing administrator authentication.
+## Relationship to Relay/Landing tuning
 
-## Security and storage
+Provisioning does not carry application payload and therefore the project recommendation **Landing=CUBIC / Relay=BBR** is unrelated to the Provisioning HTTP server itself. Apply those congestion-control roles to actual Landing and Relay hosts, not blindly to the control-plane server.
 
-- Configure reverse-proxy access logs to omit/redact /v1/config/ and /v1/bundle/ paths.
-- Public configuration responses use Cache-Control: no-store.
-- Profile/Bundle/device data files should be mode 0600 under a private directory.
-- Administrator password persistence is atomic and mode 0600.
-- Never expose the full URL or Transport Key in public logs/screenshots.
-- Provisioning is a control plane; application traffic never passes through it.
+## Version matching
 
-## Upgrade compatibility
-
-1.0.0 keeps the existing Profile/Bundle data model and URL format. Existing records and URLs remain valid unless explicitly edited/rotated.
-
-When upgrading from a Provisioning version before 0.10.2, upgrade clients to 0.10.2+ before switching the server to encrypted envelope responses.
-
-For the current release, use a matched **1.0.0 Client + 1.0.0 Landing + 1.0.0 Provisioning** suite.
+For normal production operation use a matched **v1.1.1 Client + v1.1.1 Landing + v1.1.1 Provisioning** suite. The control-plane formats retain migration compatibility, but matched versions reduce ambiguity during incident response.

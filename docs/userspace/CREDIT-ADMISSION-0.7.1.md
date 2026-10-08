@@ -1,3 +1,6 @@
+> **Historical document / 历史文档** — 本文记录 0.7.1 时期的 Credit Admission 设计，不代表 v1.1.1 当前发送侧行为。当前实现以对端 MPX Stream/Session WINDOW 为发送信用权威来源；请优先阅读 [ADAPTIVE-FLOW-CONTROL.md](ADAPTIVE-FLOW-CONTROL.md) 与 [PROTOCOL.md](PROTOCOL.md)。
+>
+
 # 0.7.1：接收信用、公平建流与错误隔离
 
 > **历史文档。** 本文描述 MPX/2 时代的实现，保留用于实现考古；当前 v0.10.3 / MPX/4 以 [PROTOCOL.md](PROTOCOL.md) 为准。

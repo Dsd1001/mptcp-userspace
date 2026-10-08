@@ -1,3 +1,6 @@
+> **Historical document / 历史文档** — 本文记录 MPX/3 / 早期共享 Credit 模型，仅用于实现考古，不是 v1.1.1 / MPX/4 Stable 的部署或调优指南。当前协议与 Flow Control 请阅读 [PROTOCOL.md](PROTOCOL.md) 和 [ADAPTIVE-FLOW-CONTROL.md](ADAPTIVE-FLOW-CONTROL.md)。
+>
+
 # MPX/3 Rev5 credit model (0.9.5)
 
 > **Historical MPX/3 document.** Do not use this as the current wire/resource specification. Current v0.10.3 behavior is described in [PROTOCOL.md](PROTOCOL.md).

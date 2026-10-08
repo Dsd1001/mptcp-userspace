@@ -133,3 +133,14 @@ Session-wide Transmission ID、Session/Stream Flow Control、duplicate/replay、
 - DMG、代码签名、Sparkle EdDSA 与冻结 Broker 校验。
 
 因此 1.1.1 声明 **correctness/build evidence passed**，但不宣称新的吞吐、capacity 或物理 WAN 性能验收结果。
+
+## 推荐生产网络基线
+
+v1.1.1 的协议与二进制不会自动修改 Linux congestion control。当前项目推荐把生产测试基线固定为：
+
+- **Landing：CUBIC**；
+- **Relay：BBR**，优先配合 `fq`。
+
+这是部署/性能基线，不是 MPX/4 wire requirement，也不会影响 Native UDP 的 TCP 拥塞控制。需要比较其它算法时，应以这组配置做单变量 A/B，并同时观察 loaded RTT、queue/outstanding、retransmit 与 CPU，而不是只比较峰值吞吐。
+
+完整配置见 `docs/guides/NETWORK-TUNING.zh-CN.md`。

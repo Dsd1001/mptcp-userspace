@@ -1,84 +1,106 @@
-# v1.0.0 / MPX/4 Protocol Version 4 Stable validation and release limits
+# Validation — MPTCP Userspace v1.1.1
 
-This document is the current v1.0.0 release gate. Historical release documents are not the source of truth for 1.0.0.
+This document defines how to interpret validation for the current v1.1.1 suite.
 
-## Required protocol and correctness gates
+## Release identity
 
-A Stable release candidate must pass, at minimum:
+The current source declares:
 
-1. Engine/Landing full Go test and vet suites, plus race-enabled multipath/runtime coverage.
-2. The exact 20 frozen Core JSON vectors from MPX/4 `protocol-v4.0.0` / commit `44f587fd279ed2238b070dd68114c76822353f4d`.
-3. Stable key schedule, Finished, AES-256-GCM Secure Record and canonical VarInt/Frame checks.
-4. MAX_CARRIERS, full VarInt Carrier identity, Generation replacement and active-count admission.
-5. VERSION_NEGOTIATION and classified HANDSHAKE_REJECT behavior.
-6. DORMANT retention/recovery and no new OPEN/DATA commitment while no Carrier is usable.
-7. Transmission allocation/confirmation validity, replay retention and TRANSMISSION_RETIRE.
-8. Reordered Stream/Session credit handling, final-size and terminal-flow-control rules.
-9. Stable error-scope and superseded-Carrier receive/output isolation.
-10. Published RECEIVE_CAPACITY_HINT extension encoding/invalid cases.
-11. Auto / Aggregate / Protect / Weighted regressions as endpoint-local policies.
-12. Provisioning full test/vet, including Profile/Bundle validation, encrypted envelope and device control.
-13. LKG cache, cache-first launch, refresh/retry and parallel Bundle isolation/recovery.
-14. Exact Profile reconnect schedule 1s/2s/5s/10s/30s then every 30s.
-15. Swift arm64/x86_64 typecheck and macOS UI smoke.
-16. Linux amd64/arm64 Client, Landing and Provisioning builds/runtime smoke.
-17. Universal macOS DMG, Sparkle appcast/EdDSA verification and frozen-source reproducibility.
-18. One Source-ID and one **1.0.0** component version across Desk/Linux Client/Landing/Provisioning.
+```text
+Version:             1.1.1
+Wire protocol:       4
+Capability revision: 8
+Protocol release:    protocol-v4.0.0
+Protocol source:     44f587fd279ed2238b070dd68114c76822353f4d
+```
 
-## Scheduler/capacity/runtime evidence
+Validation records must match the source identity they claim to validate.
 
-Scheduler correctness and performance are separate from Core protocol conformance. The v1 scheduler record uses local **scheduler policy revision 6** and must not claim an MPX/4 wire Scheduler ID.
+## Correctness gates
 
-A formal 1.0.0 release requires fresh, source-matched:
+The v1.1.1 release regression scope includes, at minimum:
 
-- `SCHEDULER-MODES.json`;
-- ten 30-second capacity cases: 128/256/512/1024/2048 simultaneous Streams × two rounds;
-- the independent 180-second mixed runtime scenario;
-- `TESTS.json` and `PROVENANCE.json`.
+- engine package tests;
+- Landing/multipath tests;
+- Provisioning tests;
+- `go vet` for engine and Provisioning;
+- `go test -race ./multipath`;
+- MPX/4 Stable handshake/record/frame vectors and error scopes;
+- CREATE/JOIN, Carrier lifecycle and cross-Carrier reliability cases;
+- Stream/Session flow-control cases;
+- peer-WINDOW-authoritative v1.1.1 send-credit regression;
+- pending frame/byte resource protection;
+- concurrent cross-Carrier Stream receive/publication cases;
+- Auto/Aggregate/Protect/Weighted regressions;
+- Bundle/Profile isolation and reconnect supervision;
+- UoT/product fast-start cases;
+- Linux amd64/arm64 build verification;
+- macOS Universal build, signing/update and frozen Broker verification.
 
-The old absolute 300/500 Mbps uniform-path thresholds are not used as a release gate because they vary with the validation host's loopback scheduler and CPU conditions. The historical Draft-era rule that required the heterogeneous `300+20+180 Mbps` result to reach 95% of the fastest-only path is also not used for Stable 1.0 because unchanged 0.10.12 `origin/main` does not satisfy that rule. Instead, Auto and Aggregate uniform matrices and Auto/Aggregate/Protect heterogeneous measurements are repeated on the same host for both the frozen 0.10.12 commit `e5f6a33868031dd33c0557942ed2ecc4e2d75998` and the 1.0.0 candidate; each candidate per-case median must retain at least 90% of the 0.10.12 median. Raw baseline/candidate evidence, repetition counts and hashes are part of the scheduler record.
+## v1.1.1 flow-control acceptance
 
-Passing unit tests alone does not prove WAN throughput or production behavior.
+A conforming v1.1.1 implementation must preserve these distinctions:
 
-## Current implementation bounds
+- peer Stream WINDOW is a real protocol send gate;
+- peer Session WINDOW is a real protocol send gate;
+- local pending/flight/memory bounds remain hard resource gates;
+- legacy `txUsed` / `txGrowth` mirrors do **not** reintroduce the old second send-admission pool;
+- Session receive-credit hard limit remains 128 MiB.
 
-- 2–8 configured Relays per Profile;
-- local/effective active Carrier limit up to 8 for this product;
-- CARRIER_ID wire space: non-zero MPX VarInt, 1 through 2^62-1;
-- 2048 active peer-initiated Streams;
-- 32 KiB STREAM_DATA maximum;
-- 32 KiB STREAM_DATA / bootstrap-accounting unit;
-- 16 MiB optimistic per-Stream receive WINDOW entitlement;
-- 128 MiB Session receive-credit hard limit;
-- the historic 64 MiB bootstrap / 64 MiB growth split remains observable for accounting, but unused bootstrap share is borrowable by active growth and is not an independent RC7 throughput ceiling;
-- 128 MiB physical receive-page accounting.
+## Concurrency acceptance
 
-RC7 changes Stream flow control from predictive per-Stream rate control to optimistic entitlement. Every open Stream may advertise a rolling 16 MiB receive WINDOW. This entitlement allocates no receive pages and reserves no Session credit by itself; actual unconsumed DATA remains charged once to the 128 MiB Session ledger and the 128 MiB physical receive-page limit. Application consumption refreshes the rolling Stream allowance in 128 KiB batches, so an idle or bursty long-lived Stream does not need to re-learn BDP, RTT or warm history before transmitting again.
+The v1.1.0+ data-plane refactor must continue to allow useful concurrency across Streams and Carriers while preserving shared Session semantics. Tests cover bounded dispatcher work, Stream-local receive work, cross-Carrier publication ordering and targeted wakeups.
 
-The Session is the resource governor. At or below 70% receive pressure, RC7 keeps a full 128 MiB Session refill target. From 70% through 95% pressure the refill target tapers linearly toward zero; at 95% or above, RC7 stops extending the absolute Session WINDOW until application consumption releases resources. Already advertised absolute credit is never revoked. The sender still obeys the peer's Session WINDOW, actual 128 MiB commitment bound, DATA pending-frame/byte bounds and writer fairness.
+Correctness requires retaining shared Session state where the protocol requires it; it does not mean making all protocol accounting thread-local.
 
-RC7 therefore no longer uses measured Stream rate, base/load RTT, warm history or the RC6 bulk fair-share floor to decide per-Stream receive entitlement. Those RTT/bulk fields remain telemetry and scheduler/path inputs, while Carrier TCP congestion control, pacing, path flight budgets and the MPX scheduler determine actual network sending rate. Engine/App stats additionally expose `stream_allowance_bytes`, `session_refill_target_bytes`, receive pressure, credit base/load RTT and active-demand/bulk counts so field tests can distinguish Stream entitlement, Session pressure and Carrier behavior. The RC3 DATA-receipt timeout hysteresis is retained: one timeout retransmits without removing a healthy Carrier from scheduling, repeated timeout epochs without DATA progress may temporarily deprioritize a Carrier, and successful DATA progress clears the suspicion.
+## Product/control-plane acceptance
 
-RC7 also includes the product-level UoT change from PR #1. TCP, native UDP and UoT service selection stay outside the MPX/4 Core wire grammar; UoT payload transport reuses the existing authenticated TCP Carrier Session. The product preface uses the same 1.5-second pre-handshake admission deadline as the existing MPX entry path so slow or silent clients cannot hold source-concurrency slots for the later 5-second authenticated handshake timeout.
+Current validation also covers:
 
-RC8 removes the product-service setup RTTs from the hot path without changing MPX/4 Core framing. Product-mux client Sessions maintain a bounded pool of 16 already authenticated and STREAM_OPEN/OPEN_OK-complete Streams. A checkout sends the 6-byte MPS1 service selector immediately and may send TCP/UoT payload without waiting for the 6-byte MPA1 service response. The first Stream Read consumes and validates MPA1 internally before exposing backend bytes, so service rejection and backend failure still surface as errors rather than application payload. The capability probe remains synchronous.
+- Profile/Bundle schema validation;
+- encrypted Provisioning envelope;
+- Last Known Good cache behavior;
+- independent parallel Profile supervision;
+- reconnect schedule `1s -> 2s -> 5s -> 10s -> 30s -> every 30s`;
+- remote management default-off and local-only enable/server configuration;
+- absence of arbitrary remote shell execution;
+- frozen Keychain Broker continuity.
 
-Pre-opened Streams do not connect a backend and do not allocate a Landing UDP socket until MPS1 selects a service. The pool refreshes in the background, retires unused entries after two minutes, and the authenticated Landing product selector permits up to three minutes for an idle pre-opened Stream to receive MPS1. This keeps the optimization bounded while avoiding periodic per-flow setup RTTs. UoT also emits each common small datagram length+payload in one Stream Write, avoiding unnecessary cross-Carrier reassembly head-of-line delay between a two-byte length prefix and its payload.
+## Frozen Broker
 
-Controlled 60 ms RTT tests measured the first UoT request/response on a fresh local association at 64.054 ms, 63.858 ms and 71.797 ms; RC7's first packet was approximately three RTTs while subsequent packets were one RTT. Product-mode Weighted 92 Mbps x 6 startup tests open TCP Streams concurrently after timing starts: 53 Streams reached 390.302 Mbps in the first 200 ms and 555.980 Mbps in the second, averaging 541.771 Mbps; 150 Streams reached 378.728 Mbps in the first 200 ms and 552.952 Mbps in the second, averaging 544.067 Mbps, with zero retransmits in both runs.
+The `MPTCPKeychainBroker` v1 resource remains pinned to:
 
-## Keychain Broker / updater continuity
+```text
+SHA256 5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9
+```
 
-The 1.0.0 Mac App preserves the 0.10.12 Broker split.
+A main-App update must not silently rebuild/re-sign/replace the frozen v1 Broker under the same identity.
 
-- Main App has no direct SecItem access for Transport Key, Provisioning URL or Remote Control credential.
-- `MPTCPKeychainBroker` remains **v1**.
-- Base64 must decode to SHA-256 `5df1fa0f97f976a7cae25733ce1e3e86f6dd77b7d7684dcd11a116a80dc83fc9`.
-- Broker identifier/parent requirement remains unchanged.
-- Rebuilding, re-signing or replacing Broker v1 is a release failure.
-- A 0.10.12 → 1.0.0 Sparkle update must install a changed parent App while reusing the exact same Broker bytes, without recreating the repeated Keychain authorization problem.
-- Remote-management enable/server URL remains local-only; remote control cannot enable itself or run arbitrary commands.
+## Performance and WAN boundary
 
-## Production boundary
+Correctness tests do not prove physical-WAN throughput. Scheduler/capacity/runtime evidence is separate from protocol correctness and must be tied to the exact source and test environment.
 
-Packaging does not silently change production Landing, Provisioning, Relay, firewall, backend, Surge or Native MPTCP services. Deployment is a separate operation with backup, hash verification, service health checks and rollback readiness.
+v1.1.1 specifically did **not** run a new WAN/capacity/high-BDP performance promotion before release. Do not infer a new throughput guarantee from the correctness result.
+
+## Deployment validation
+
+Before collecting performance evidence on Linux hosts, establish and record the recommended baseline:
+
+```text
+Landing congestion control: CUBIC
+Relay congestion control:   BBR
+Relay qdisc:                 fq preferred
+```
+
+At minimum capture:
+
+```sh
+sysctl net.ipv4.tcp_congestion_control
+sysctl net.core.default_qdisc
+ss -s
+ss -ti
+```
+
+Then correlate with product telemetry: Carrier RTT/goodput/queue/outstanding, retransmission/reinjection, Stream/Session WINDOW waits and CPU.
+
+This host baseline is not a wire-protocol conformance condition, but it is the recommended reference configuration for production performance comparisons.

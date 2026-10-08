@@ -1,106 +1,201 @@
-# Quick Start
+# Quick Start — MPTCP Userspace v1.1.1
 
-[中文版](QUICKSTART.zh-CN.md)
+This guide brings up one v1.1.1 MPX/4 deployment from Client through Relay to Landing.
 
-This guide targets **MPTCP Userspace v0.10.7 / MPX/4 Draft 04**.
+## 1. Topology
 
-## 1. Download and verify
+A normal production path is:
 
-Download the required artifacts from the [v0.10.7 release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v0.10.7).
+```text
+MPTCP Desk / Linux Client
+       | ordinary TCP Carrier 1 -> Relay A --+
+       | ordinary TCP Carrier 2 -> Relay B --+--> Landing --> backend
+       | ordinary TCP Carrier 3 -> Relay C --+
+```
 
-Typical files:
+The Relay is an opaque forwarder. The Client and Landing are the MPX/4 endpoints.
 
-- MPTCP-Desk-0.10.7-universal.dmg
-- mptcp-client-linux-amd64 or mptcp-client-linux-arm64
-- mptcp-landing or mptcp-landing-linux-arm64
-- mpx-provision or mpx-provision-linux-arm64 when managed configuration is needed
-- MPTCP-Userspace-0.10.7-SHA256SUMS
+## 2. Download and verify v1.1.1
 
-Verify hashes before installing.
+Download the required v1.1.1 release assets. The common files are:
 
-## 2. Prepare Landing
+```text
+MPTCP-Desk-1.1.1-universal.dmg
+mptcp-client-linux-amd64
+mptcp-client-linux-arm64
+mptcp-landing
+mptcp-landing-linux-arm64
+MPTCP-Userspace-1.1.1-SHA256SUMS
+```
 
-On Linux:
+Verify the SHA256 file before replacing production binaries.
 
-~~~sh
-chmod 755 ./mptcp-landing
-./mptcp-landing version
-./mptcp-landing menu
-~~~
+## 3. Prepare Landing
 
-Keep the Landing configuration, backend, transport key and Relay topology private. For an existing installation, back up the current binary/config before replacing the binary and restart the systemd service only after verifying the release hash.
+The Landing binary has an interactive Chinese installer when run with no arguments, or it can be installed non-interactively.
 
-The recommended deployment pair is 0.10.7 Client + 0.10.7 Landing.
+A Landing configuration is schema version 1 and contains the MPX listener, backend, Transport Key, session limit and local scheduler policy:
 
-## 3. Install the client
+```json
+{
+  "schema_version": 1,
+  "listen_tcp": "0.0.0.0:24001",
+  "listen_udp": "0.0.0.0:24001",
+  "backend_tcp": "127.0.0.1:8388",
+  "backend_udp": "127.0.0.1:8388",
+  "udp_enabled": true,
+  "uot_enabled": false,
+  "transport_key": "REPLACE_WITH_64_HEX_CHARACTERS",
+  "max_sessions": 4,
+  "scheduler_mode": "auto"
+}
+```
+
+`max_sessions` must be 1–16. The private configuration must be a regular `0600`/`0400` file unless it is supplied through the managed systemd credential path.
+
+Install and start:
+
+```sh
+sudo ./mptcp-landing install --config ./landing.json --yes --start
+sudo /usr/local/bin/mptcp-landing status
+sudo /usr/local/bin/mptcp-landing doctor
+```
+
+Do not expose the backend port as the MPX listener. The Landing listener and backend must be separate endpoints.
+
+## 4. Set Landing to CUBIC
+
+The recommended production baseline is **CUBIC on Landing**:
+
+```sh
+sudo sysctl -w net.ipv4.tcp_congestion_control=cubic
+sysctl net.ipv4.tcp_congestion_control
+```
+
+Persist it using the host's sysctl configuration, for example:
+
+```text
+# /etc/sysctl.d/90-mptcp-userspace-landing.conf
+net.ipv4.tcp_congestion_control = cubic
+```
+
+See [Network tuning](NETWORK-TUNING.md) before changing any additional TCP settings.
+
+## 5. Prepare each Relay and set it to BBR
+
+Configure the Relay software or forwarding service so each public Carrier endpoint forwards opaque TCP bytes to the Landing TCP listener.
+
+The recommended Relay baseline is **BBR + `fq`**:
+
+```sh
+sudo modprobe tcp_bbr
+sudo sysctl -w net.core.default_qdisc=fq
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
+sysctl net.ipv4.tcp_available_congestion_control
+sysctl net.ipv4.tcp_congestion_control
+sysctl net.core.default_qdisc
+```
+
+Do not put the MPX Transport Key on Relay nodes.
+
+## 6. Create a Client Profile
+
+A local userspace Profile is schema version 3. Example:
+
+```json
+{
+  "schema_version": 3,
+  "mode": "userspace_multipath",
+  "listen_port": 1081,
+  "tcp_enabled": true,
+  "udp_enabled": true,
+  "transport_key": "SAME_64_HEX_KEY_AS_LANDING",
+  "relays": [
+    {
+      "host": "192.0.2.10",
+      "port": 24001,
+      "download_mbps": 50.0,
+      "upload_mbps": 20.0
+    },
+    {
+      "host": "198.51.100.20",
+      "port": 24001,
+      "download_mbps": 50.0
+    }
+  ],
+  "scheduler_mode": "weighted"
+}
+```
+
+The current implementation supports 1–8 active Carrier addresses. For Weighted mode, directional capacities are priors used with live path feedback; they are not fixed traffic shares.
 
 ### macOS
 
-Open the Universal DMG and install MPTCP Desk. The current release is ad-hoc signed and not Developer ID notarized.
-
-The home page lets you choose:
-
-- **Local configuration** — enter the runtime configuration directly;
-- **Remote configuration** — save a secret Provisioning Profile/Bundle URL.
+Install `MPTCP-Desk-1.1.1-universal.dmg`, add a local Profile or managed Provisioning URL, and start it from the app.
 
 ### Linux
 
-~~~sh
-chmod 755 ./mptcp-client-linux-amd64
+Validate first:
+
+```sh
 ./mptcp-client-linux-amd64 version
 ./mptcp-client-linux-amd64 doctor-userspace
-~~~
+./mptcp-client-linux-amd64 validate < profile.json
+```
 
-Linux supports Userspace MPX/4 only; Native MPTCP fallback is macOS-only.
+Run:
 
-## 4. Local configuration
+```sh
+./mptcp-client-linux-amd64 run < profile.json
+```
 
-A current Userspace Profile includes:
+The local application listener is `127.0.0.1:<listen_port>`.
 
-- listen_port, normally a loopback entry such as 1081;
-- TCP/UDP switches;
-- Auto / Aggregate / Protect / Weighted scheduler;
-- 2–8 Relay IPv4/port entries;
-- 64-hex-character Transport Key;
-- Weighted capacity values when Weighted is selected.
+## 7. Verify the full path
 
-The local listener is a transparent TCP entry, not a SOCKS5 server.
+Before throughput testing, confirm:
 
-## 5. Managed Provisioning
+1. Landing is active and listening on the intended TCP port.
+2. Landing reports CUBIC.
+3. Each Relay can reach Landing.
+4. Each Relay reports BBR and preferably `fq`.
+5. The Client can reach each Relay public endpoint.
+6. Client and Landing use the same Transport Key.
+7. Multiple Carrier entries become connected in diagnostics.
+8. The backend is reachable from Landing.
 
-Provisioning can issue either one Profile or a Bundle containing 1–32 Profiles.
+For Linux host evidence:
 
-For macOS, paste the secret URL under **Remote configuration**, save it and perform the first sync. That first successful sync creates a persistent Last Known Good cache. Later starts, app/system restarts and sleep/wake recovery launch immediately from the matching cache while the API refreshes in the background; the client does not wait for the API timeout.
+```sh
+ss -s
+ss -ti
+```
 
-For Linux, keep the URL out of process arguments:
+For Landing logs:
 
-~~~json
-{"url":"https://config.example.com/v1/bundle/<secret>","profile_ids":["profile-a","profile-b"]}
-~~~
+```sh
+sudo /usr/local/bin/mptcp-landing logs
+```
 
-~~~sh
-mptcp-client-linux-amd64 validate-managed < managed.json
-mptcp-client-linux-amd64 run-managed < managed.json
-~~~
+## 8. Choose a scheduler
 
-Remote URLs require HTTPS. Public responses from 0.10.2+ Provisioning are opaque encrypted envelopes; the 0.10.7 client decrypts them automatically.
+Use **Auto** as the default starting point. Use Aggregate when you explicitly want multiple healthy Carriers used aggressively, Protect when the deployment prioritizes isolating bad paths, and Weighted when you know the directional capacity of the paths.
 
-## 6. Parallel Bundles
+For production, keeping the Client and Landing on the same scheduler mode is usually easier to reason about, although MPX/4 does not require the modes to match.
 
-Parallel startup first validates that all selected local listen ports are unique and available. That preflight is atomic.
+## 9. UDP choice
 
-After preflight, Profile runtimes are independent. If one Profile cannot reach/authenticate its Landing, that Profile reports an error while healthy Profile listeners continue running. The Bundle stops only when every selected Profile is unavailable or the user stops it.
+Native UDP and UoT are separate product paths:
 
-## 7. Verify operation
+- enable native UDP when the relay/deployment supports the UDP path;
+- enable UoT when UDP should be carried inside the authenticated TCP Carrier Session.
 
-In MPTCP Desk, open **Path Diagnostics** and check:
+Do not expect Linux TCP congestion-control changes to affect native UDP.
 
-- Profile runtime status;
-- configured/effective scheduler;
-- connected paths;
-- RTT / Goodput / queue / outstanding;
-- retransmits and reorder/pending counters.
+## 10. Next steps
 
-For remote Profiles, Relay endpoints are intentionally hidden from the customer UI.
-
-See [Troubleshooting](TROUBLESHOOTING.zh-CN.md) and [Deployment / rollback](../userspace/DEPLOYMENT.zh-CN.md) for more detail.
+- [Network tuning](NETWORK-TUNING.md)
+- [Architecture](ARCHITECTURE.zh-CN.md)
+- [Deployment and rollback](../userspace/DEPLOYMENT.zh-CN.md)
+- [Troubleshooting](TROUBLESHOOTING.zh-CN.md)
+- [Scheduler modes](../userspace/SCHEDULER-MODES.md)

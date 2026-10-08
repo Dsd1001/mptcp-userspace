@@ -1,35 +1,42 @@
-# 文档索引
+# MPTCP Userspace 文档 — v1.1.1
 
-[English](README.md)
+本目录面向当前 **MPTCP Userspace v1.1.1 / MPX/4 Protocol Version 4 Stable**。
 
-这里是 MPTCP Userspace 的公开文档入口。
+## 推荐阅读顺序
 
-## 新用户先看
+1. [快速开始](guides/QUICKSTART.zh-CN.md)
+2. [网络与拥塞控制调优：Landing CUBIC / Relay BBR](guides/NETWORK-TUNING.zh-CN.md)
+3. [系统架构](guides/ARCHITECTURE.zh-CN.md)
+4. [部署、升级与回滚](userspace/DEPLOYMENT.zh-CN.md)
+5. [故障排查](guides/TROUBLESHOOTING.zh-CN.md)
 
-- [快速开始](guides/QUICKSTART.zh-CN.md)：下载安装 macOS/Linux Client 与 Linux Landing。
-- [从源码构建](guides/BUILDING.zh-CN.md)：工具链、Source-ID 与构建产物。
-- [架构说明](guides/ARCHITECTURE.zh-CN.md)：Mac、Relay、Landing、Backend 之间的数据流。
-- [部署与回滚](userspace/DEPLOYMENT.zh-CN.md)：托管 Landing 的升级、校验与 rollback。
-- [Linux Headless Client](userspace/LINUX-CLIENT.md)：amd64/arm64 Userspace MPX/4 CLI。
-- [故障排查](guides/TROUBLESHOOTING.zh-CN.md)：无速度、路径摸鱼、Weighted 不均匀、RTT 上升、版本不兼容等常见问题。
+## 组件与运维
 
-## 调度与协议
+- [Linux Client](userspace/LINUX-CLIENT.md)
+- [Provisioning / Managed Device](userspace/PROVISIONING.md)
+- [构建说明](guides/BUILDING.zh-CN.md)
+- [English build guide](guides/BUILDING.md)
 
-- [MPX/4 Draft 04 协议](userspace/PROTOCOL.md)：握手、Secure Record、Generation、Error Scope 与 Scheduler 语义。
-- [调度策略](userspace/SCHEDULER-MODES.md)：Auto / Aggregate / Protect / Weighted 的详细行为。
-- [MPX/3 Credit](userspace/MPX3-CREDIT.md)：会话/单流信用、WINDOW 与资源上限。
-- [Adaptive Flow Control](userspace/ADAPTIVE-FLOW-CONTROL.md)
-- [Delivery](userspace/DELIVERY.md)
-- [Rev2 Shared Credit 历史设计](userspace/REV2-SHARED-CREDIT.md)
-- [0.7.1 Credit Admission 历史设计](userspace/CREDIT-ADMISSION-0.7.1.md)
+## 协议、调度与验证
 
-## 验证与 Release
-
+- [MPX/4 实现说明](userspace/PROTOCOL.md)
+- [Scheduler 模式](userspace/SCHEDULER-MODES.md)
+- [v1.1.1 Flow Control](userspace/ADAPTIVE-FLOW-CONTROL.md)
+- [发布交付](userspace/DELIVERY.md)
 - [验证边界](userspace/VALIDATION.md)
-- [0.10.0 Release Notes](userspace/RELEASE.zh-CN.md)
+- [v1.1.1 Release Notes](userspace/RELEASE.zh-CN.md)
 
-Release 中的 ACCEPTANCE.md、TESTS.json、SCHEDULER-MODES.json、PROVENANCE.json 等是对应二进制的冻结验收证据，不在 main 重复维护副本。
+## 历史文档
 
-v0.10.0 Tag 对应当前正式发布源码。
+下列文档只用于实现考古，不再代表 v1.1.1 当前行为：
 
-- [客户端集中配置 / Provisioning](userspace/PROVISIONING.md) — 网页管理完整 Mac 配置并生成独立 API URL。
+- `CREDIT-ADMISSION-0.7.1.md`
+- `MPX3-CREDIT.md`
+- `REV2-SHARED-CREDIT.md`
+- `RELEASE-0.10.1.zh-CN.md`
+
+历史文档与当前源码/当前文档冲突时，以 v1.1.1 源码与本索引中的当前文档为准。
+
+## 生产网络基线
+
+当前架构推荐先固定：**Landing 使用 CUBIC，Relay 使用 BBR**。这是 Linux 主机调优建议，不属于 MPX/4 wire requirement；Native UDP 也不受 TCP congestion control 影响。
