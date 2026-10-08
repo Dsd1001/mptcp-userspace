@@ -32,6 +32,20 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def canonical_source_bytes(path: pathlib.Path, data: bytes) -> bytes:
+    """Return checkout-independent bytes for source identity and source archives.
+
+    Git for Windows may materialise text files with CRLF while macOS/Linux use
+    LF.  Source-ID identifies reviewed source content, not the host checkout's
+    newline convention, so UTF-8 text is canonicalised to LF. Binary assets are
+    hashed byte-for-byte.
+    """
+    if path.suffix.lower() in {'.png'}:
+        return data
+    text = data.decode('utf-8')
+    return text.replace('\r\n', '\n').replace('\r', '\n').encode('utf-8')
+
+
 def collect(root: pathlib.Path = ROOT) -> dict[str, bytes]:
     names = set(FIXED)
     for directory, pattern in [('macos/engine', '*.go'), ('windows', '*.go'), ('macos/engine/multipath/testdata', '*.json'), ('docs/userspace', '*.md'),
@@ -44,9 +58,7 @@ def collect(root: pathlib.Path = ROOT) -> dict[str, bytes]:
         path = root/name
         if path.is_symlink() or not path.is_file():
             raise ValueError('Missing or linked source: ' + name)
-        data = path.read_bytes()
-        if path.suffix.lower() not in {'.png'}:
-            data.decode('utf-8')
+        data = canonical_source_bytes(path, path.read_bytes())
         if re.search(rb'/(?:Users|var/folders)/[A-Za-z0-9_.-]+/', data):
             raise ValueError('Private workstation path in source: ' + name)
         if re.search(rb'-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----', data):
@@ -110,7 +122,7 @@ def main() -> None:
     (out/'SOURCE_ID').write_text(identity+'\n')
     print(json.dumps({'version':version, 'source_id':identity, 'source_files':len(files),
                       'archive':name, 'archive_sha256':sha((out/name).read_bytes()),
-                      'scope':'Exact allowlisted bytes including untracked source, not a Git commit or authorship assertion'},indent=2))
+                      'scope':'Canonical LF-normalized UTF-8 source bytes plus exact binary assets, including untracked allowlisted source; not a Git commit or authorship assertion'},indent=2))
 
 
 if __name__ == '__main__':

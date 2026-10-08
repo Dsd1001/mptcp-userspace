@@ -50,6 +50,10 @@ jobs:
         shell: powershell
         run: go test . -count=1
 
+      - name: Test cross-platform Source-ID canonicalization
+        shell: powershell
+        run: python -m unittest tests/userspace/source_manifest_test.py
+
       - name: Check frontend JavaScript syntax
         shell: powershell
         run: node --check windows/frontend/dist/app.js
