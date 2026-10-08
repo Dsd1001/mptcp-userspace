@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -238,9 +239,21 @@ func TestSchedulerModesThroughActualStdin(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			cmd.Process.Signal(os.Interrupt)
-			if err := cmd.Wait(); err != nil {
-				t.Fatal("child did not stop cleanly", err)
+			if runtime.GOOS == "windows" {
+				// The desktop client stops the Windows engine through CommandContext,
+				// which terminates the child process. Windows does not implement the
+				// Unix-style os.Interrupt delivery used by this integration test.
+				if err := cmd.Process.Kill(); err != nil {
+					t.Fatal("kill Windows child", err)
+				}
+				_ = cmd.Wait()
+			} else {
+				if err := cmd.Process.Signal(os.Interrupt); err != nil {
+					t.Fatal("interrupt child", err)
+				}
+				if err := cmd.Wait(); err != nil {
+					t.Fatal("child did not stop cleanly", err)
+				}
 			}
 			t.Logf("REAL_STDIN mode=%s paths=%d bytes=%d client_effective=%s landing_effective=%s exit=0", mode, e.Paths, len(got), e.EffectiveSchedulerMode, snapshots[0].EffectiveSchedulerMode)
 		})
