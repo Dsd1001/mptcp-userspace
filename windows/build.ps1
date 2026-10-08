@@ -72,7 +72,7 @@ Mode: userspace_multipath only
 GUI-SHA256: $GuiHash
 Engine-SHA256: $EngineHash
 Updater: SHA256 + Ed25519 (same public key as macOS Sparkle channel)
-"@ | Set-Content -Path $BuildInfo -Encoding utf8NoBOM
+"@ | Set-Content -Path $BuildInfo -Encoding UTF8
 
 $Portable = Join-Path $Bin "MPTCP-Desk-$Version-Windows-Portable.zip"
 if (Test-Path $Portable) { Remove-Item $Portable -Force }
