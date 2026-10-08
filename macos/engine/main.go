@@ -25,7 +25,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"mptcp-desktop/engine/multipath"
@@ -197,7 +196,7 @@ func (c Config) validateForOS(goos string) error {
 		return errors.New("支持 schema 2/tcp_forward（保持 Native）或 schema 3/userspace_multipath、native_mptcp；不支持旧 SOCKS5 配置")
 	}
 	if goos != "darwin" && !c.userspace() {
-		return errors.New("Linux client 仅支持 userspace_multipath；Native MPTCP fallback 仅供 macOS 使用")
+		return errors.New("Windows/Linux client 仅支持 userspace_multipath；Native MPTCP fallback 仅供 macOS 使用")
 	}
 	if c.userspace() {
 		mode, err := c.schedulerMode()
@@ -521,7 +520,7 @@ func (b BundlePayload) validate() error {
 		if len([]byte(p.DisplayName)) > 128 || len([]byte(p.Revision)) > 128 {
 			return errors.New("Bundle Profile 名称或 revision 过长")
 		}
-		if err := p.config().validateForOS("darwin"); err != nil {
+		if err := p.config().validateForOS(runtime.GOOS); err != nil {
 			return fmt.Errorf("Profile %s: %w", p.DisplayName, err)
 		}
 		if b.Mode == "parallel" {
@@ -1487,7 +1486,7 @@ func runClient(ctx context.Context, c Config) error {
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
 	var err error
 	switch {
@@ -1499,14 +1498,18 @@ func main() {
 	case len(os.Args) == 2 && os.Args[1] == "doctor-userspace":
 		err = ensureUserspaceFileLimit()
 		if err == nil {
-			emit(Event{Kind: "ready", Mode: "userspace_multipath", Message: fmt.Sprintf("Userspace 引擎可用；RLIMIT_NOFILE 已提升/满足 %d，可承载 %d 业务流；尚未检查 Relay、Landing 密钥和端口", userspaceDesiredNOFILE, multipath.MaxStreams)})
+			emit(Event{Kind: "ready", Mode: "userspace_multipath", Message: userspaceEnvironmentMessage()})
 		}
 	case len(os.Args) == 2 && os.Args[1] == "version":
 		name := "mptcp-desktop-engine"
 		message := name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") + Native fallback"
-		if runtime.GOOS == "linux" {
+		switch runtime.GOOS {
+		case "linux":
 			name = "mptcp-client"
 			message = name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") userspace client"
+		case "windows":
+			name = "mptcp-client-windows"
+			message = name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") userspace-only client"
 		}
 		emit(Event{Kind: "ready", Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Message: message})
 	case len(os.Args) == 2 && (os.Args[1] == "run-managed" || os.Args[1] == "validate-managed"):

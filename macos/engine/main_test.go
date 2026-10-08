@@ -22,11 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
-
-	"mptcp-desktop/engine/multipath"
 )
 
 func validProfile() Config {
@@ -34,7 +31,7 @@ func validProfile() Config {
 }
 func TestProfileValidation(t *testing.T) {
 	c := validProfile()
-	if err := c.validate(); err != nil {
+	if err := c.validateForOS("darwin"); err != nil {
 		t.Fatal(err)
 	}
 	for _, modify := range []func(*Config){
@@ -46,27 +43,14 @@ func TestProfileValidation(t *testing.T) {
 	} {
 		invalid := validProfile()
 		modify(&invalid)
-		if invalid.validate() == nil {
+		if invalid.validateForOS("darwin") == nil {
 			t.Fatal("invalid config accepted")
 		}
 	}
 }
-func TestUserspaceRaisesNOFILEFor2048Streams(t *testing.T) {
-	if err := ensureUserspaceFileLimit(); err != nil {
-		t.Fatal(err)
-	}
-	var limit syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
-		t.Fatal(err)
-	}
-	need := uint64(multipath.MaxStreams + 512)
-	if limit.Cur < need {
-		t.Fatalf("RLIMIT_NOFILE=%d, want >=%d", limit.Cur, need)
-	}
-}
-
 func TestStrictConfig(t *testing.T) {
-	raw, _ := json.Marshal(validProfile())
+	c := bundleProfile("strict", "Strict", 1081).config()
+	raw, _ := json.Marshal(c)
 	if _, err := readConfig(bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}

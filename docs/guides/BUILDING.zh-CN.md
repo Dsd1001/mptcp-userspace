@@ -17,7 +17,8 @@ Capability Rev：8
 ## 工具链
 
 - Go：Userspace Engine、Linux Client、Landing、Provisioning；
-- Swift / Xcode Command Line Tools：MPTCP Desk；
+- Swift / Xcode Command Line Tools：macOS MPTCP Desk；
+- Go 1.25 + Wails v2 + WebView2 + NSIS：Windows MPTCP Desk；
 - Python 3：source manifest、打包与验证；
 - macOS 原生工具：`codesign`、`hdiutil`、`lipo`、`plutil`。
 
@@ -67,6 +68,16 @@ mpx-provision-linux-arm64
 ```
 
 默认 suite scope 要求 Provisioning 版本与主套件版本一致。
+
+## Windows MPTCP Desk
+
+Windows 与 macOS 共用同一套 MPX/4 Userspace Engine，但明确不提供 Native/内核 MPTCP fallback。请在 Windows PowerShell 中构建：
+
+```powershell
+.\windows\build.ps1
+```
+
+脚本会在 `windows/build/bin/` 生成当前用户级 NSIS 安装器和 Portable ZIP。Windows 的代理串联方式与实现说明见 `windows/README.zh-CN.md`。
 
 ## MPTCP Desk
 

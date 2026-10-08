@@ -1,0 +1,6 @@
+build/bin/*.exe
+build/bin/*.zip
+build/bin/*.sha256
+frontend/wailsjs/
+build/bin/*.BUILDINFO
+build/bin/*.json

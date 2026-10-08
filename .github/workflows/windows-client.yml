@@ -1,0 +1,84 @@
+name: Windows Client
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "windows/**"
+      - "macos/engine/**"
+      - "scripts/source-manifest.py"
+      - ".github/workflows/windows-client.yml"
+  push:
+    paths:
+      - "windows/**"
+      - "macos/engine/**"
+      - "scripts/source-manifest.py"
+      - ".github/workflows/windows-client.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-client:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: |
+            windows/go.sum
+            macos/engine/go.sum
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install NSIS
+        shell: powershell
+        run: choco install nsis -y --no-progress
+
+      - name: Test shared MPX engine on Windows
+        working-directory: macos/engine
+        shell: powershell
+        run: go test . -count=1
+
+      - name: Test Windows Desk
+        working-directory: windows
+        shell: powershell
+        run: go test . -count=1
+
+      - name: Check frontend JavaScript syntax
+        shell: powershell
+        run: node --check windows/frontend/dist/app.js
+
+      - name: Build Windows Desk, engine, portable ZIP and installer
+        shell: powershell
+        run: ./windows/build.ps1
+
+      - name: Silent-install smoke test
+        shell: powershell
+        run: |
+          $version = (Get-Content ./macos/VERSION -Raw).Trim()
+          $installer = "./windows/build/bin/MPTCP-Desk-$version-Windows-Setup.exe"
+          & $installer /S
+          Start-Sleep -Seconds 2
+          $installDir = Join-Path $env:LOCALAPPDATA "Programs\MPTCP Desk"
+          if (-not (Test-Path (Join-Path $installDir "MPTCP-Desk-Windows.exe"))) { throw "GUI was not installed" }
+          if (-not (Test-Path (Join-Path $installDir "mptcp-engine.exe"))) { throw "Engine was not installed" }
+          & (Join-Path $installDir "mptcp-engine.exe") version
+          if ($LASTEXITCODE -ne 0) { throw "Installed engine version command failed" }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mptcp-desk-windows
+          if-no-files-found: error
+          path: |
+            windows/build/bin/MPTCP-Desk-Windows.exe
+            windows/build/bin/mptcp-engine.exe
+            windows/build/bin/MPTCP-Desk-Windows.BUILDINFO
+            windows/build/bin/MPTCP-Desk-*-Windows-Portable.zip
+            windows/build/bin/MPTCP-Desk-*-Windows-Setup.exe

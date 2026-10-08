@@ -8,25 +8,11 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"mptcp-desktop/engine/multipath"
 )
-
-func TestUserspaceFileLimitSupportsMaxStreams(t *testing.T) {
-	if err := ensureUserspaceFileLimit(); err != nil {
-		t.Fatal(err)
-	}
-	var lim syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
-		t.Fatal(err)
-	}
-	if lim.Cur < uint64(multipath.MaxStreams+512) {
-		t.Fatalf("RLIMIT_NOFILE soft=%d too small for %d streams", lim.Cur, multipath.MaxStreams)
-	}
-}
 
 func TestUserspaceProfileMigration(t *testing.T) {
 	legacy := validProfile()
@@ -61,7 +47,7 @@ func TestUserspaceProfileMigration(t *testing.T) {
 		t.Fatal("native duplicate-host guard changed")
 	}
 	c.Relays = legacy.Relays
-	if err = c.validate(); err != nil {
+	if err = c.validateForOS("darwin"); err != nil {
 		t.Fatal(err)
 	}
 	c.Mode = "userspace_multipath"

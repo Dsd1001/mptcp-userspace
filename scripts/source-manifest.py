@@ -18,10 +18,13 @@ FIXED = (
     'macos/keychain-broker/KeychainBroker.swift', 'macos/keychain-broker/MPTCPKeychainBroker.v1.b64',
     'macos/Info.plist', 'macos/build.sh', 'macos/README.zh-CN.md',
     'macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt',
-    'macos/VALIDATION.md', 'macos/tcp-profile.example.json',
+    'macos/VALIDATION.md', 'macos/tcp-profile.example.json', 'docs/README.md',
     'macos/userspace-profile.example.json', 'macos/engine/go.mod',
     'scripts/build-linux-client.sh', 'scripts/build-userspace-landing.sh', 'scripts/build-provisioning.sh', 'scripts/provisioning-source-manifest.py', 'scripts/package-userspace.py',
-    'scripts/source-manifest.py', 'scripts/verify-userspace.py', 'scripts/build-appcast.sh', 'scripts/release-gates.py', 'scripts/scheduler-gates.py',
+    'scripts/source-manifest.py', 'scripts/verify-userspace.py', 'scripts/build-appcast.sh', 'scripts/build-windows-update.sh', 'scripts/release-gates.py', 'scripts/scheduler-gates.py',
+    'windows/go.mod', 'windows/go.sum', 'windows/wails.json', 'windows/build.ps1', 'windows/installer.nsi', 'windows/README.zh-CN.md',
+    'windows/frontend/dist/index.html', 'windows/frontend/dist/app.css', 'windows/frontend/dist/app.js',
+    'windows/build/appicon.png', 'windows/build/windows/info.json',
 )
 
 
@@ -31,7 +34,7 @@ def sha(data: bytes) -> str:
 
 def collect(root: pathlib.Path = ROOT) -> dict[str, bytes]:
     names = set(FIXED)
-    for directory, pattern in [('macos/engine', '*.go'), ('macos/engine/multipath/testdata', '*.json'), ('docs/userspace', '*.md'),
+    for directory, pattern in [('macos/engine', '*.go'), ('windows', '*.go'), ('macos/engine/multipath/testdata', '*.json'), ('docs/userspace', '*.md'),
                                ('tests/userspace', '*.py'), ('tests/userspace', '*.swift'), ('tests/userspace', '*.go'), ('tests/userspace', '*.pl'),
                                ('provisioning', '*.go'), ('provisioning/web', '*.html')]:
         names.update(p.relative_to(root).as_posix() for p in (root/directory).rglob(pattern))
@@ -42,7 +45,8 @@ def collect(root: pathlib.Path = ROOT) -> dict[str, bytes]:
         if path.is_symlink() or not path.is_file():
             raise ValueError('Missing or linked source: ' + name)
         data = path.read_bytes()
-        data.decode('utf-8')
+        if path.suffix.lower() not in {'.png'}:
+            data.decode('utf-8')
         if re.search(rb'/(?:Users|var/folders)/[A-Za-z0-9_.-]+/', data):
             raise ValueError('Private workstation path in source: ' + name)
         if re.search(rb'-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----', data):

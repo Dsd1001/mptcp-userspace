@@ -25,7 +25,7 @@ func TestUOTConfigTransportSelection(t *testing.T) {
 			p := bundleProfile("uot", "UoT", 1081)
 			p.TCPEnabled, p.UDPEnabled, p.UOTEnabled = tc.tcp, tc.udp, tc.uot
 			c := p.config()
-			for _, goos := range []string{"darwin", "linux"} {
+			for _, goos := range []string{"darwin", "linux", "windows"} {
 				if err := c.validateForOS(goos); (err == nil) != tc.valid {
 					t.Fatalf("%s validate=%v; want valid=%t", goos, err, tc.valid)
 				}
@@ -50,6 +50,20 @@ func TestUOTConfigTransportSelection(t *testing.T) {
 	c.SchemaVersion, c.Mode = 2, "tcp_forward"
 	if err := c.validateForOS("darwin"); err == nil {
 		t.Fatal("legacy Native mode accepted UoT")
+	}
+}
+
+func TestNativeMPTCPIsMacOSOnly(t *testing.T) {
+	p := bundleProfile("native", "Native", 1081)
+	p.Mode = "native_mptcp"
+	c := p.config()
+	if err := c.validateForOS("darwin"); err != nil {
+		t.Fatalf("darwin rejected native_mptcp: %v", err)
+	}
+	for _, goos := range []string{"linux", "windows"} {
+		if err := c.validateForOS(goos); err == nil {
+			t.Fatalf("%s accepted native_mptcp", goos)
+		}
 	}
 }
 

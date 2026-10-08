@@ -15,7 +15,7 @@ It is **not kernel MPTCP** and it is **not QUIC**. Relay nodes forward opaque Ca
 Application
     |
     v
-MPTCP Desk / Linux Client
+MPTCP Desk (macOS / Windows) / Linux Client
     |
     |  multiple ordinary TCP Carriers
     +--------> Relay A --+
@@ -36,7 +36,7 @@ Do not blindly apply the same congestion controller to every host. See [Network 
 
 | Component | Purpose |
 | --- | --- |
-| **MPTCP Desk** | macOS GUI client, local/managed profiles, diagnostics, background recovery, Sparkle updates and optional remote device control. |
+| **MPTCP Desk** | macOS and Windows GUI clients sharing the MPX/4 Userspace engine. Windows is userspace-only; both provide local/managed profiles, diagnostics, background recovery, updates and optional remote device control. |
 | **Linux Client** | Headless client using the same MPX/4 engine as MPTCP Desk. |
 | **Relay** | Opaque TCP forwarder between Client and Landing. It is not an MPX endpoint and does not need the Transport Key. |
 | **Landing** | MPX/4 server endpoint. Terminates Carrier Sessions and forwards Streams to the configured backend. |
@@ -87,7 +87,7 @@ TCP congestion-control recommendations affect TCP Carrier/UoT transport and ordi
 2. Install Landing and configure the backend, Transport Key, scheduler and session limit.
 3. Set **Landing to CUBIC**.
 4. Configure each Relay to forward its Carrier port to Landing and set **Relay to BBR**.
-5. Create a local Profile or managed Provisioning URL in MPTCP Desk / Linux Client.
+5. Create a local Profile or managed Provisioning URL in MPTCP Desk (macOS / Windows) / Linux Client.
 6. Start the client and verify that multiple Carriers become connected.
 
 Detailed instructions: [Quick Start](docs/guides/QUICKSTART.md).

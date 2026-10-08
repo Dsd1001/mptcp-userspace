@@ -21,7 +21,8 @@ Capability rev:    8
 The repository uses:
 
 - Go for the userspace engine, Linux Client, Landing and Provisioning;
-- Swift + Xcode Command Line Tools for MPTCP Desk;
+- Swift + Xcode Command Line Tools for macOS MPTCP Desk;
+- Go 1.25 + Wails v2 + WebView2 + NSIS for Windows MPTCP Desk;
 - Python 3 for source manifests, packaging and verification;
 - standard macOS tools (`codesign`, `hdiutil`, `lipo`, `plutil`) for the Mac artifact.
 
@@ -73,6 +74,16 @@ mpx-provision-linux-arm64
 ```
 
 The default suite scope requires Provisioning and MPTCP Desk/engine versions to match.
+
+## Windows MPTCP Desk
+
+Windows uses the same MPX/4 Userspace engine but intentionally has no Native/kernel MPTCP fallback. Build it on Windows with:
+
+```powershell
+.\windows\build.ps1
+```
+
+The script produces a per-user NSIS installer and a portable ZIP under `windows/build/bin/`. See `windows/README.zh-CN.md` for the Windows architecture and proxy-chaining model.
 
 ## MPTCP Desk
 

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "MPTCP Desk",
+  "outputfilename": "MPTCP-Desk-Windows",
+  "frontend:install": "echo frontend-ready",
+  "frontend:build": "echo frontend-ready",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "MPTCP Userspace"
+  },
+  "info": {
+    "companyName": "MPTCP Userspace",
+    "productName": "MPTCP Desk",
+    "productVersion": "1.1.1",
+    "copyright": "MPTCP Userspace",
+    "comments": "MPX/4 userspace multipath client for Windows"
+  }
+}

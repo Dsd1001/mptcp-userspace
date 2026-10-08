@@ -40,8 +40,7 @@ func TestSchedulerConfigCompatibility(t *testing.T) {
 			t.Fatal("scheduler validation", value, err)
 		}
 		c.Mode = "native_mptcp"
-		raw, _ = json.Marshal(c)
-		if _, err := readConfig(bytes.NewReader(raw)); err != nil {
+		if err := c.validateForOS("darwin"); err != nil {
 			t.Fatal("Native must ignore scheduler string", value, err)
 		}
 	}

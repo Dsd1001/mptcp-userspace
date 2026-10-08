@@ -14,6 +14,7 @@ This directory documents the current **MPTCP Userspace v1.1.1 / MPX/4 Protocol V
 
 - [Linux Client](userspace/LINUX-CLIENT.md)
 - [Provisioning and managed devices](userspace/PROVISIONING.md)
+- [Windows MPTCP Desk](../windows/README.zh-CN.md)
 - [macOS build guide](guides/BUILDING.md)
 - [中文构建说明](guides/BUILDING.zh-CN.md)
 

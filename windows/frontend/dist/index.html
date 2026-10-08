@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MPTCP Desk</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">M</div>
+        <div>
+          <div class="brand-title">MPTCP Desk</div>
+          <div class="brand-subtitle">Windows · MPX/4 Userspace</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="doctorBtn" class="button secondary compact">环境检查</button>
+        <span id="versionBadge" class="badge neutral">v—</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero card">
+        <div class="hero-left">
+          <div class="eyebrow">应用层多路径转发</div>
+          <div class="hero-status-row">
+            <span id="statusDot" class="status-dot idle"></span>
+            <h1 id="statusText">读取状态…</h1>
+          </div>
+          <p id="problemText" class="problem hidden"></p>
+          <div id="localEndpoint" class="endpoint-pill">127.0.0.1:—</div>
+          <p class="muted hero-help">将 Windows 上的其它代理 App / 转发工具的上游指向这个本地 TCP/UDP 入口。Windows 版本只使用应用层 MPX/4，不包含内核 MPTCP fallback。</p>
+        </div>
+        <div class="hero-right">
+          <button id="copyEndpointBtn" class="button secondary">复制本地入口</button>
+          <button id="startStopBtn" class="button primary large">启动转发</button>
+        </div>
+      </section>
+
+      <section class="stats-grid">
+        <div class="metric card"><span>逻辑连接</span><strong id="connectionsValue">0</strong></div>
+        <div class="metric card"><span>已发送</span><strong id="sentValue">0 B</strong></div>
+        <div class="metric card"><span>已接收</span><strong id="receivedValue">0 B</strong></div>
+        <div class="metric card"><span>重传 / 丢弃</span><strong id="lossValue">0 / 0</strong></div>
+      </section>
+
+      <section class="card section-card">
+        <div class="section-heading">
+          <div>
+            <h2>配置</h2>
+            <p>和 macOS Desk 一样支持本地 Profile 与 Provisioning；Windows 仅接受 Userspace Profile。</p>
+          </div>
+          <div class="segmented" id="sourceSegment">
+            <button data-source="local" class="segment active">本地配置</button>
+            <button data-source="managed" class="segment">远端 Provisioning</button>
+          </div>
+        </div>
+
+        <div id="localConfigPane">
+          <div class="form-grid two">
+            <label class="field">
+              <span>本地监听端口</span>
+              <input id="listenPort" type="number" min="1024" max="65535" />
+              <small>其它代理 App 使用 <code>127.0.0.1:端口</code></small>
+            </label>
+            <label class="field">
+              <span>Scheduler</span>
+              <select id="schedulerMode">
+                <option value="auto">Auto</option>
+                <option value="aggregate">Aggregate</option>
+                <option value="protect">Protect</option>
+                <option value="weighted">Weighted</option>
+              </select>
+              <small id="schedulerHint">通用自适应策略</small>
+            </label>
+          </div>
+
+          <div class="switch-row">
+            <label class="switch-line"><input id="tcpEnabled" type="checkbox" /><span>TCP</span><small>通过 MPX/4 Stream 转发</small></label>
+            <label class="switch-line"><input id="udpEnabled" type="checkbox" /><span>Native UDP</span><small>使用独立认证 UDP 数据面</small></label>
+            <label class="switch-line"><input id="uotEnabled" type="checkbox" /><span>UoT</span><small>UDP 复用 TCP Carrier Session</small></label>
+          </div>
+
+          <label class="field full">
+            <span>Transport Key</span>
+            <input id="transportKey" type="password" autocomplete="off" placeholder="已保存时可留空；输入新值会替换" />
+            <small id="transportKeyState">由 Windows DPAPI 加密保存，仅当前 Windows 用户可解密。</small>
+          </label>
+
+          <div class="subsection-heading">
+            <div><h3>Relay</h3><p>2–8 条 Carrier。Weighted 模式下填写每条路径的方向容量。</p></div>
+            <button id="addRelayBtn" class="button secondary compact">＋ 添加 Relay</button>
+          </div>
+          <div id="relayList" class="relay-list"></div>
+          <div class="form-actions"><button id="saveLocalBtn" class="button primary">保存本地配置</button></div>
+        </div>
+
+        <div id="managedConfigPane" class="hidden">
+          <div class="managed-url-row">
+            <label class="field grow">
+              <span>Provisioning API URL</span>
+              <input id="provisioningURL" type="password" autocomplete="off" placeholder="粘贴完整 secret URL" />
+              <small id="managedEndpointLabel">尚未配置</small>
+            </label>
+            <button id="saveProvisioningBtn" class="button secondary">保存</button>
+            <button id="syncProvisioningBtn" class="button primary">同步</button>
+          </div>
+          <div id="managedSummary" class="managed-summary empty">保存 Provisioning URL 后同步 Profile / Bundle。</div>
+          <div id="managedProfiles" class="managed-profiles"></div>
+          <div class="form-actions split">
+            <button id="clearProvisioningBtn" class="button danger-ghost">清除远端配置</button>
+            <button id="saveManagedSelectionBtn" class="button secondary">保存 Profile 选择</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card section-card">
+        <div class="section-heading">
+          <div><h2>路径与运行状态</h2><p>实时查看 Scheduler、Carrier RTT、Goodput、队列、在途数据与路径角色。</p></div>
+          <span id="schedulerStatus" class="badge neutral">Scheduler —</span>
+        </div>
+        <div id="bundleStatus" class="bundle-status hidden"></div>
+        <div id="pathGroups"></div>
+        <div id="emptyPaths" class="empty-state">启动后会显示路径诊断。</div>
+      </section>
+
+      <section class="detail-grid">
+        <details class="card detail-card" open>
+          <summary>Stream / Lifecycle 资源</summary>
+          <div id="streamResources" class="resource-grid"></div>
+        </details>
+        <details class="card detail-card">
+          <summary>Window / Credit 资源</summary>
+          <div id="windowResources" class="resource-grid"></div>
+        </details>
+      </section>
+
+      <section class="card section-card">
+        <div class="section-heading">
+          <div><h2>日志</h2><p>仅显示本机诊断消息，不输出 Transport Key 或完整 Provisioning Secret。</p></div>
+          <div class="row-actions">
+            <button id="copyLogsBtn" class="button secondary compact">复制</button>
+            <button id="clearLogsBtn" class="button secondary compact">清空</button>
+          </div>
+        </div>
+        <pre id="logView" class="log-view">尚无日志</pre>
+      </section>
+
+      <section class="card section-card settings-section">
+        <div class="section-heading"><div><h2>设置</h2><p>后台常驻、远程管理、更新与运行环境诊断。</p></div></div>
+
+        <div class="settings-row">
+          <div><h3>后台常驻</h3><p>登录 Windows 后后台启动；异常退出按 1s → 2s → 5s → 10s → 30s 自动恢复。</p></div>
+          <label class="toggle"><input id="backgroundResident" type="checkbox" /><span></span></label>
+        </div>
+
+        <div class="settings-row stack-on-small">
+          <div><h3>远程管理</h3><p>默认关闭。只允许远端控制运行状态、配置同步、重启和签名更新，不提供远程 Shell。</p></div>
+          <div class="remote-controls">
+            <label class="toggle"><input id="remoteEnabled" type="checkbox" /><span></span></label>
+          </div>
+        </div>
+        <div class="remote-panel">
+          <div class="form-grid remote-grid">
+            <label class="field"><span>控制服务器</span><input id="remoteServer" type="url" placeholder="https://control.example.com" /></label>
+            <label class="field"><span>一次性配对码</span><input id="pairCode" type="password" autocomplete="off" placeholder="配对时填写" /></label>
+          </div>
+          <div class="row-actions align-left">
+            <button id="saveRemoteBtn" class="button secondary">保存远程管理设置</button>
+            <button id="pairRemoteBtn" class="button primary">配对</button>
+            <button id="unpairRemoteBtn" class="button danger-ghost">解除配对</button>
+            <span id="remoteStatus" class="inline-status">关闭</span>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div><h3>应用更新</h3><p>Windows 使用与 Mac 更新通道同一枚 Ed25519 公钥验证安装器，再交给静默安装器更新。</p></div>
+          <div class="row-actions">
+            <label class="toggle"><input id="automaticUpdates" type="checkbox" /><span></span></label>
+            <button id="checkUpdatesBtn" class="button secondary">检查更新</button>
+            <button id="installUpdateBtn" class="button primary hidden">安装更新</button>
+          </div>
+        </div>
+        <div id="updateStatus" class="inline-note">自动检查已启用</div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
