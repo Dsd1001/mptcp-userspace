@@ -62,6 +62,11 @@ func (c *carrier) releaseQueued(p *outbound) {
 // without creating another payload copy or waiting to assemble a batch.
 func (s *Session) writeCarrier(c *carrier) {
 	streak, turn := 0, 0
+	// Reuse the batch backing array across writes. writeFrames consumes the
+	// slice synchronously while holding the connection's transmit lock, so the
+	// carrier writer can safely retain this capacity without another allocation
+	// per batch.
+	frames := make([]frame, 0, carrierBatchFrames)
 	next := func(block bool) (frame, sendTask, bool, bool) {
 		if streak >= controlBurstLimit {
 			select {
@@ -129,7 +134,7 @@ func (s *Session) writeCarrier(c *carrier) {
 		if !ok {
 			return
 		}
-		frames := make([]frame, 0, 16)
+		frames = frames[:0]
 		wire, payload := 0, 0
 		for {
 			valid := true
@@ -198,6 +203,9 @@ func (s *Session) writeCarrier(c *carrier) {
 			s.carrierFailure(c, err)
 			return
 		}
+		// Pending DATA owns retransmission payloads. The reusable batch should
+		// not keep acknowledged payloads alive while the carrier is idle.
+		clear(frames)
 		s.mu.Lock()
 		c.sent += uint64(payload)
 		s.mu.Unlock()

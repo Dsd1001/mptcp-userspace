@@ -490,6 +490,9 @@ func decodeV4Frame(typ uint64, body []byte) (frame, error) {
 }
 
 func parseV4Frames(plain []byte) ([]frame, error) {
+	if len(plain) == 0 {
+		return nil, ErrProtocol
+	}
 	var out []frame
 	for len(plain) > 0 {
 		typ, n1, err := readV4VarInt(plain)
@@ -519,7 +522,10 @@ func parseV4Frames(plain []byte) ([]frame, error) {
 		out = append(out, f)
 	}
 	if len(out) == 0 {
-		return nil, ErrProtocol
+		// PADDING and extension Frames may legally occupy a whole Secure
+		// Record. The record nonce has already advanced; readFrame will
+		// continue with the next record until it finds a semantic Frame.
+		return nil, nil
 	}
 	return out, nil
 }
@@ -536,6 +542,11 @@ type secureConn struct {
 	generation                                  uint64
 	peerMaxFrame, peerMaxRecord, peerMaxStreams uint64
 	localMaxCarriers, peerMaxCarriers           uint64
+	// These scratch buffers are protected by txMu together with the write
+	// operation. Keeping them on the connection avoids allocating the encoded
+	// frame list and record accumulator for every carrier batch.
+	encodedScratch [][]byte
+	recordScratch  []byte
 }
 
 func xorV4Nonce(iv [12]byte, seq uint64) []byte {
@@ -582,9 +593,21 @@ func (c *secureConn) writeFrames(frames []frame) error {
 	if limit <= 0 || limit > MaxRecordSize {
 		limit = MaxRecordSize
 	}
-	encoded := make([][]byte, 0, len(frames))
+	encoded := c.encodedScratch[:0]
+	if cap(encoded) < len(frames) {
+		encoded = make([][]byte, 0, len(frames))
+	}
+	defer func() {
+		// The backing array is reusable, but per-frame encodings should be
+		// collected once this batch has been written.
+		clear(encoded)
+		c.encodedScratch = encoded[:0]
+	}()
 	total := 0
 	for _, f := range frames {
+		if f.kind == kindData && c.peerMaxFrame > 0 && uint64(len(f.data)) > c.peerMaxFrame {
+			return ErrProtocol
+		}
 		wire, err := encodeV4Frame(f)
 		if err != nil {
 			return err
@@ -598,7 +621,8 @@ func (c *secureConn) writeFrames(frames []frame) error {
 		}
 		encoded = append(encoded, wire)
 	}
-	var record []byte
+	record := c.recordScratch[:0]
+	defer func() { c.recordScratch = record[:0] }()
 	for _, wire := range encoded {
 		if len(record) > 0 && len(record)+len(wire) > limit {
 			if err := c.writeRecord(record); err != nil {
@@ -620,36 +644,41 @@ func (c *secureConn) readFrame() (frame, error) {
 		c.pendingFrames = c.pendingFrames[1:]
 		return f, nil
 	}
-	if c.rxCounter >= mpx4RecordLimit {
-		return frame{}, ErrProtocol
+	for {
+		if c.rxCounter >= mpx4RecordLimit {
+			return frame{}, ErrProtocol
+		}
+		flags, err := c.reader.ReadByte()
+		if err != nil {
+			return frame{}, err
+		}
+		if flags != 0 {
+			return frame{}, ErrProtocol
+		}
+		ln, rawLen, err := readV4VarIntReader(c.reader)
+		if err != nil || ln == 0 || ln > MaxRecordSize {
+			return frame{}, ErrProtocol
+		}
+		enc := make([]byte, int(ln)+16)
+		if _, err := io.ReadFull(c.reader, enc); err != nil {
+			return frame{}, err
+		}
+		header := append([]byte{flags}, rawLen...)
+		plain, err := c.receive.Open(nil, xorV4Nonce(c.rxIV, c.rxCounter), enc, header)
+		if err != nil {
+			return frame{}, ErrAuthentication
+		}
+		c.rxCounter++
+		frames, err := parseV4Frames(plain)
+		if err != nil {
+			return frame{}, err
+		}
+		if len(frames) == 0 {
+			continue
+		}
+		c.pendingFrames = frames[1:]
+		return frames[0], nil
 	}
-	flags, err := c.reader.ReadByte()
-	if err != nil {
-		return frame{}, err
-	}
-	if flags != 0 {
-		return frame{}, ErrProtocol
-	}
-	ln, rawLen, err := readV4VarIntReader(c.reader)
-	if err != nil || ln == 0 || ln > MaxRecordSize {
-		return frame{}, ErrProtocol
-	}
-	enc := make([]byte, int(ln)+16)
-	if _, err := io.ReadFull(c.reader, enc); err != nil {
-		return frame{}, err
-	}
-	header := append([]byte{flags}, rawLen...)
-	plain, err := c.receive.Open(nil, xorV4Nonce(c.rxIV, c.rxCounter), enc, header)
-	if err != nil {
-		return frame{}, ErrAuthentication
-	}
-	c.rxCounter++
-	frames, err := parseV4Frames(plain)
-	if err != nil {
-		return frame{}, err
-	}
-	c.pendingFrames = frames[1:]
-	return frames[0], nil
 }
 
 func hkdfExtract(salt, ikm []byte) []byte {

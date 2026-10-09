@@ -72,6 +72,10 @@ type Stream struct {
 	productReplyErr                              error
 	bulkActive                                   bool
 	warmSeedUsed, warmHistoryUsed                bool
+	// pendingData tracks reliable DATA transmissions for this Stream.  It is
+	// maintained while the Session mutex is held so CloseWrite and the FIN
+	// acknowledgement path do not need to scan the session-wide ledger.
+	pendingData int
 }
 
 var _ net.Conn = (*Stream)(nil)
@@ -582,12 +586,7 @@ func (st *Stream) Write(p []byte) (int, error) {
 // The session mutex must be held. A FIN receipt does not cumulatively ACK
 // DATA: another carrier may still have preceding payload queued or in flight.
 func (st *Stream) hasPendingDataLocked() bool {
-	for _, p := range st.s.pending {
-		if p.f.stream == st.id && p.f.kind == kindData {
-			return true
-		}
-	}
-	return false
+	return st.pendingData > 0
 }
 
 func (st *Stream) CloseWrite() error {

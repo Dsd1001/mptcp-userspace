@@ -258,7 +258,7 @@ func (st *Stream) writeAllowanceLocked() (int, int) {
 	// flow-control authority on the send side. Do not add a second local
 	// txUsed/growth ceiling: per-Stream consumed reports can lag the aggregate
 	// SESSION_WINDOW and otherwise create a false 128 MiB head-of-line stall.
-	n := min(st.writeRemaining, MaxPayload,
+	n := min(st.writeRemaining, s.maxDataPayloadLocked(),
 		int(min(uint64(MaxStreamWindow), st.peerLimit-st.txNext)),
 		int(min(uint64(MaxPayload), fc.peerLimit-fc.txCommitted)))
 	// Delay commitment of new DATA when unscheduled work is already deep.

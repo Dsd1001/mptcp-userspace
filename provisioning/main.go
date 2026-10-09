@@ -1454,8 +1454,8 @@ func validatePublicBase(raw string) error {
 		return nil
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
-		return errors.New("MPX_PROVISION_PUBLIC_BASE_URL must be an absolute URL without userinfo or fragment")
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || u.ForceQuery {
+		return errors.New("MPX_PROVISION_PUBLIC_BASE_URL must be an absolute URL without userinfo, query or fragment")
 	}
 	host := u.Hostname()
 	ip := net.ParseIP(host)

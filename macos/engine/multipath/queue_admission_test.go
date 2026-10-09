@@ -165,3 +165,33 @@ func TestQueueAdmissionDoesNotBypassPeerSessionCredit(t *testing.T) {
 		t.Fatalf("Session WINDOW bypassed by queue admission: n=%d reason=%d", n, why)
 	}
 }
+
+func TestPendingDataCounterTracksReliableDataLifecycle(t *testing.T) {
+	s := schedulerFixture()
+	st := s.newStreamLocked(1)
+	first := s.queueLocked(frame{kind: kindData, stream: st.id, data: []byte("first")})
+	second := s.queueLocked(frame{kind: kindData, stream: st.id, data: []byte("second")})
+	if first == nil || second == nil {
+		t.Fatal("failed to queue DATA")
+	}
+	if st.pendingData != 2 || !st.hasPendingDataLocked() {
+		t.Fatalf("pending DATA counter after queue = %d", st.pendingData)
+	}
+	s.removePendingLocked(first)
+	if st.pendingData != 1 || !st.hasPendingDataLocked() {
+		t.Fatalf("pending DATA counter after first removal = %d", st.pendingData)
+	}
+	// Duplicate removal and scheduling/reinjection do not change reliable
+	// ownership. A closing Stream retains its queued DATA until settlement.
+	s.removePendingLocked(first)
+	s.unreadyLocked(second)
+	s.readyLocked(second, true)
+	s.resetLocked(st, mpx4ErrNoError, true)
+	if s.closing[st.id] != st || st.pendingData != 1 {
+		t.Fatalf("closing Stream lost pending DATA: count=%d", st.pendingData)
+	}
+	s.removePendingLocked(second)
+	if st.pendingData != 0 || st.hasPendingDataLocked() {
+		t.Fatalf("pending DATA counter after final removal = %d", st.pendingData)
+	}
+}

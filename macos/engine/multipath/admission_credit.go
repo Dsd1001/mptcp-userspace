@@ -11,6 +11,9 @@ func (s *Session) openBlockReasonLocked() string {
 	if len(s.streams)+len(s.closing) >= MaxStreams {
 		return LimitStreams
 	}
+	if s.peerMaxStreams > 0 && uint64(len(s.streams)+len(s.closing)) >= s.peerMaxStreams {
+		return LimitStreams
+	}
 	if s.controlPendingFrames >= MaxControlPending {
 		return LimitControlFrames
 	}
