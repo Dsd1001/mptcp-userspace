@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Version             = "1.1.2"
+	Version             = "1.1.3"
 	CapabilityRevision  = 8 // MPX/4 Protocol Version 4 Stable; RC8 product fast-start/UoT capability
 	ProtocolRelease     = "protocol-v4.0.0"
 	ProtocolReleaseSHA  = "44f587fd279ed2238b070dd68114c76822353f4d"
@@ -622,7 +622,12 @@ func (c *secureConn) writeFrames(frames []frame) error {
 		encoded = append(encoded, wire)
 	}
 	record := c.recordScratch[:0]
-	defer func() { c.recordScratch = record[:0] }()
+	defer func() {
+		// The record plaintext persists in the reusable backing array even
+		// after reslicing. Wipe it before making the allocation reusable.
+		clear(record[:cap(record)])
+		c.recordScratch = record[:0]
+	}()
 	for _, wire := range encoded {
 		if len(record) > 0 && len(record)+len(wire) > limit {
 			if err := c.writeRecord(record); err != nil {

@@ -1,11 +1,11 @@
-# MPTCP Desk v1.1.2 validation
+# MPTCP Desk v1.1.3 validation
 
 This file summarizes the Mac-specific validation boundary for the current release.
 
 ## Identity
 
 ```text
-MPTCP Desk:         1.1.2
+MPTCP Desk:         1.1.3
 MPX wire version:   4
 Protocol release:   protocol-v4.0.0
 Protocol source:    44f587fd279ed2238b070dd68114c76822353f4d

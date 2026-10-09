@@ -1,9 +1,9 @@
-# MPTCP Desk v1.1.2
+# MPTCP Desk v1.1.3
 
 MPTCP Desk 是 MPTCP Userspace 的 macOS GUI Client，当前使用 **MPX/4 Protocol Version 4 Stable**。
 
 ```text
-App Version:       1.1.2
+App Version:       1.1.3
 Protocol Release:  protocol-v4.0.0
 Protocol Source:   44f587fd279ed2238b070dd68114c76822353f4d
 Capability Rev:    8
