@@ -261,14 +261,19 @@ def main() -> None:
             for name in ['DEPLOYMENT.zh-CN.md','PROTOCOL.md','PROVISIONING.md','VALIDATION.md','ADAPTIVE-FLOW-CONTROL.md','MPX3-CREDIT.md','SCHEDULER-MODES.md','REV2-SHARED-CREDIT.md']:
                 if (resources/'docs/userspace'/name).read_bytes()!=files['docs/userspace/'+name]:
                     raise ValueError('Packaged protocol/deployment documentation differs')
-            run([str(engine),'validate'],input=files['macos/tcp-profile.example.json'])
+            # v1.1.2 intentionally removes the macOS Native MPTCP fallback.
+            # Keep the legacy schema2 example as a negative compatibility test:
+            # accepting it would silently re-enable an unavailable transport.
+            legacy=subprocess.run([str(engine),'validate'],input=files['macos/tcp-profile.example.json'],capture_output=True)
+            if legacy.returncode==0:
+                raise ValueError('Removed schema2 Native MPTCP example was accepted')
             invalid=subprocess.run([str(engine),'validate'],input=files['macos/userspace-profile.example.json'],capture_output=True)
             if invalid.returncode==0:
                 raise ValueError('Placeholder transport key accepted')
             profile=json.loads(files['macos/userspace-profile.example.json']);profile['transport_key']='0a'*32
             run([str(engine),'validate'],input=json.dumps(profile).encode())
             checks.extend(['read-only DMG and strict code signature with BUILDINFO-matched designated requirement','embedded Sparkle framework and pinned public update key',
-                'ARM and x86_64 packaged engine execution','App and engine section-identical rebuilds from frozen source','schema2/3 compatibility and placeholder rejection',
+                'ARM and x86_64 packaged engine execution','App and engine section-identical rebuilds from frozen source','schema2 Native rejection, userspace schema3 acceptance, and placeholder rejection',
                 'packaged documentation equals frozen source','frozen Keychain Broker hash/signature/universal architecture'])
         finally:
             run(['hdiutil','detach',str(mount)])
