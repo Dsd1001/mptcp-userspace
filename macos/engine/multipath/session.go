@@ -214,6 +214,24 @@ type Session struct {
 	localConnections                                 int
 }
 
+// maxDataPayloadLocked is the effective payload size for locally generated
+// DATA. A zero peer limit is retained for pre-handshake/unit-test Sessions and
+// means the local default. frameHeader conservatively bounds DATA's encoded
+// type, length, and stream fields so each chunk fits in one Secure Record.
+func (s *Session) maxDataPayloadLocked() int {
+	limit := uint64(MaxPayload)
+	if s.peerMaxFrame > 0 {
+		limit = min(limit, s.peerMaxFrame)
+	}
+	if s.peerMaxRecord > 0 {
+		if s.peerMaxRecord <= uint64(frameHeader) {
+			return 1
+		}
+		limit = min(limit, s.peerMaxRecord-uint64(frameHeader))
+	}
+	return max(1, int(limit))
+}
+
 func newSession(parent context.Context, id sessionID, server bool, onOpen func(*Stream), modes ...SchedulerMode) *Session {
 	ctx, cancel := context.WithCancel(parent)
 	s := &Session{clockStart: time.Now(), ctx: ctx, cancel: cancel, id: id, server: server, changed: make(chan struct{}), kick: make(chan struct{}, 1), done: make(chan struct{}), streams: make(map[uint64]*Stream), ready: make(map[uint64]*dataReadyQueue), pending: make(map[uint64]*outbound), paths: make(map[uint64]*carrier), carrierUsed: make(map[uint64]bool), highestGeneration: make(map[uint64]uint64), nextCandidateGeneration: make(map[uint64]uint64), generationExhausted: make(map[uint64]bool), pathCapacities: make(map[uint64]PathCapacity), settled: make(map[uint64]bool), peerProcessed: make(map[uint64]bool), peerTransmissionFingerprint: make(map[uint64][32]byte), confirmationReplay: make(map[uint64]frame), seen: make(map[uint64]bool), nextStream: 1, noPathsSince: time.Now(), localMaxCarriers: MaxCarriers, onOpen: onOpen}
