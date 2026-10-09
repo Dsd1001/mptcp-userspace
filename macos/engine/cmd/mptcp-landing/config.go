@@ -31,7 +31,7 @@ type Config struct {
 
 func defaultConfig() (Config, error) {
 	key, err := multipath.NewKey()
-	return Config{SchemaVersion: 1, ListenTCP: "0.0.0.0:24001", ListenUDP: "0.0.0.0:24001", BackendTCP: "127.0.0.1:8388", BackendUDP: "127.0.0.1:8388", UDPEnabled: true, TransportKey: key, MaxSessions: 4, SchedulerMode: string(multipath.SchedulerAuto)}, err
+	return Config{SchemaVersion: 1, ListenTCP: "0.0.0.0:24001", ListenUDP: "0.0.0.0:24001", BackendTCP: "127.0.0.1:8388", BackendUDP: "127.0.0.1:8388", UDPEnabled: true, TransportKey: key, MaxSessions: 8, SchedulerMode: string(multipath.SchedulerAuto)}, err
 }
 
 func endpoint(address string, listen bool) error {

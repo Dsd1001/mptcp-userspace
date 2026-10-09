@@ -2,12 +2,12 @@
 
 MPTCP Userspace 是一套运行在 macOS / Linux 上的**应用层多路径传输系统**。它把多条普通 TCP 连接组织成一个经过认证的 **MPX/4 Protocol Version 4 Stable** Session，在 Session 内承载多个应用 Stream，并在路径变慢、丢包或断开时支持跨 Carrier 重传与 reinjection。
 
-当前正式版：**v1.1.3**
+当前正式版：**v1.1.4**
 协议源：**MPX/4 `protocol-v4.0.0`**（`44f587fd279ed2238b070dd68114c76822353f4d`）
 
 它**不是内核 MPTCP**，也**不是 QUIC**。Relay 只负责透明转发 Carrier 字节，不需要 MPX Transport Key；认证、加密、Stream 状态、Flow Control、Scheduler 与可靠数据重注入都发生在 Client 与 Landing 两个 MPX 端点之间。
 
-[English](README.md) · [文档索引](docs/README.zh-CN.md) · [v1.1.3 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v1.1.3) · [MPX/4 协议仓库](https://github.com/Dsd1001/MPX-4)
+[English](README.md) · [文档索引](docs/README.zh-CN.md) · [v1.1.4 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v1.1.4) · [MPX/4 协议仓库](https://github.com/Dsd1001/MPX-4)
 
 ## 推荐生产拓扑
 

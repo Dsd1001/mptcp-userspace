@@ -2,12 +2,12 @@
 
 MPTCP Userspace is an application-layer multipath transport for macOS and Linux. It combines multiple ordinary TCP Carrier connections into one authenticated **MPX/4 Protocol Version 4 Stable** Session, multiplexes many application Streams over those Carriers, and can retransmit or reinject reliable data when a path slows down or disappears.
 
-Current release: **v1.1.3**
+Current release: **v1.1.4**
 Protocol source: **MPX/4 `protocol-v4.0.0`** (`44f587fd279ed2238b070dd68114c76822353f4d`)
 
 It is **not kernel MPTCP** and it is **not QUIC**. Relay nodes forward opaque Carrier bytes and do not need the MPX Transport Key. MPX authentication, encryption, Stream state, flow control, scheduling and reinjection are end-to-end between the Client and Landing.
 
-[中文说明](README.zh-CN.md) · [Documentation](docs/README.md) · [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v1.1.3) · [MPX/4 specification](https://github.com/Dsd1001/MPX-4)
+[中文说明](README.zh-CN.md) · [Documentation](docs/README.md) · [Latest release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v1.1.4) · [MPX/4 specification](https://github.com/Dsd1001/MPX-4)
 
 ## Recommended production topology
 

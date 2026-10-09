@@ -41,83 +41,99 @@ func ResourceReason(err error) string {
 	return ""
 }
 
+// PathSelectionStats counts DATA dispatch path-selection outcomes. Each
+// attempt increments exactly one of Selected or the mutually exclusive block
+// reasons. Values are cumulative from Session creation, not interval rates.
+type PathSelectionStats struct {
+	Attempts       uint64 `json:"attempts"`
+	Selected       uint64 `json:"selected"`
+	FlightBudget   uint64 `json:"flight_budget"`
+	CarrierQueue   uint64 `json:"carrier_queue"`
+	RoleRestricted uint64 `json:"role_restricted"`
+	Penalty        uint64 `json:"path_penalty"`
+	NoActive       uint64 `json:"no_active_carrier"`
+	CostDeferral   uint64 `json:"cost_deferral"`
+	Other          uint64 `json:"other"`
+}
+
 type ResourceStats struct {
 	SharedCreditStats
-	BootstrapCredit         int               `json:"bootstrap_credit_bytes"`
-	BootstrapLimit          int               `json:"bootstrap_credit_limit_bytes"`
-	GrowthCredit            int               `json:"growth_credit_bytes"`
-	GrowthBaseLimit         int               `json:"growth_credit_base_share_bytes"`
-	GrowthLimit             int               `json:"growth_credit_limit_bytes"`
-	DataPendingFrames       int               `json:"data_pending_frames"`
-	DataPendingLimit        int               `json:"data_pending_frame_limit"`
-	DataPendingBytes        int               `json:"data_pending_bytes"`
-	DataPendingByteLimit    int               `json:"data_pending_byte_limit"`
-	ReadyDataBytes          int               `json:"ready_data_bytes"`
-	QueueAdmissionLimit     int               `json:"queue_admission_limit_bytes"`
-	QueueAdmissionWaiters   int               `json:"queue_admission_waiters"`
-	PendingReserveFrames    int               `json:"pending_bootstrap_reserve_frames"`
-	PendingReserveBytes     int               `json:"pending_bootstrap_reserve_bytes"`
-	PendingWaiters          int               `json:"pending_waiters"`
-	CreditWaiters           int               `json:"credit_waiters"`
-	WriterTurnWaiters       int               `json:"writer_turn_waiters"`
-	ReadyStreams            int               `json:"ready_streams"`
-	BootstrapWriters        int               `json:"bootstrap_writers"`
-	SessionLockCount        uint64            `json:"session_lock_count"`
-	SessionLockWaitNS       uint64            `json:"session_lock_wait_ns"`
-	SessionLockWaitMaxNS    uint64            `json:"session_lock_wait_max_ns"`
-	SessionLockHoldNS       uint64            `json:"session_lock_hold_ns"`
-	SessionLockHoldMaxNS    uint64            `json:"session_lock_hold_max_ns"`
-	DispatchRuns            uint64            `json:"dispatch_runs"`
-	DispatchFrames          uint64            `json:"dispatch_frames"`
-	DispatchNS              uint64            `json:"dispatch_ns"`
-	DispatchMaxNS           uint64            `json:"dispatch_max_ns"`
-	WriterTurnScanSteps     uint64            `json:"writer_turn_scan_steps"`
-	ControlPendingFrames    int               `json:"control_pending_frames"`
-	ControlPendingLimit     int               `json:"control_pending_frame_limit"`
-	ControlPendingBytes     int               `json:"control_pending_bytes"`
-	ControlPendingByteLimit int               `json:"control_pending_byte_limit"`
-	WindowBlockedWriters    int               `json:"window_blocked_writers"`
-	ControlQueuedFrames     int               `json:"control_queued_frames"`
-	ControlDrops            uint64            `json:"control_regeneration_drops"`
-	OpenReceiveCreditWaits  uint64            `json:"open_receive_credit_waits"`
-	OpenedStreams           uint64            `json:"opened_streams"`
-	ClosedStreams           uint64            `json:"closed_streams"`
-	LocalConnections        int               `json:"local_connections"`
-	LifecycleOpening        int               `json:"lifecycle_opening"`
-	LifecycleOpen           int               `json:"lifecycle_open_bidirectional"`
-	LifecycleHalfClosed     int               `json:"lifecycle_half_closed"`
-	LifecycleWaitFinalACK   int               `json:"lifecycle_wait_local_final_ack"`
-	LifecycleWaitPeerFinal  int               `json:"lifecycle_wait_peer_final"`
-	LifecycleBothFinal      int               `json:"lifecycle_both_final_wait_close"`
-	LifecycleWaitConsumed   int               `json:"lifecycle_wait_final_consumed"`
-	LifecycleClosingOther   int               `json:"lifecycle_closing_other"`
-	DataIdleOver30s         int               `json:"data_idle_over_30s"`
-	DataIdleOver1m          int               `json:"data_idle_over_1m"`
-	DataIdleOver5m          int               `json:"data_idle_over_5m"`
-	DataIdleOver10m         int               `json:"data_idle_over_10m"`
-	OldestStreamAgeSeconds  int64             `json:"oldest_stream_age_seconds"`
-	OldestDataIdleSeconds   int64             `json:"oldest_data_idle_seconds"`
-	IdleStreams             int               `json:"idle_streams"`
-	SmallStreams            int               `json:"small_streams"`
-	BulkStreams             int               `json:"bulk_streams"`
-	IdleGrowthHeld          int               `json:"idle_irrevocable_growth_bytes"`
-	ActiveStreams           int               `json:"active_streams"`
-	StreamLimit             int               `json:"stream_limit"`
-	PendingFrames           int               `json:"pending_frames"`
-	PendingFrameLimit       int               `json:"pending_frame_limit"`
-	PendingBytes            int               `json:"pending_bytes"`
-	PendingByteLimit        int               `json:"pending_byte_limit"`
-	ReceiveCredit           int               `json:"receive_credit_bytes"`
-	ReceiveCreditLimit      int               `json:"receive_credit_limit_bytes"`
-	ReceiveAllocated        int               `json:"receive_allocated_bytes"`
-	ReceiveAllocatedLimit   int               `json:"receive_allocated_limit_bytes"`
-	AdmissionReserve        int               `json:"admission_reserve_bytes"`
-	WaitingOpens            int               `json:"waiting_opens"`
-	Waits                   map[string]uint64 `json:"waits"`
-	Rejections              map[string]uint64 `json:"rejections"`
-	FirstLimitAt            string            `json:"first_limit_at,omitempty"`
-	LastLimitAt             string            `json:"last_limit_at,omitempty"`
-	LastReason              string            `json:"last_reason,omitempty"`
+	PathSelection           PathSelectionStats `json:"path_selection"`
+	BootstrapCredit         int                `json:"bootstrap_credit_bytes"`
+	BootstrapLimit          int                `json:"bootstrap_credit_limit_bytes"`
+	GrowthCredit            int                `json:"growth_credit_bytes"`
+	GrowthBaseLimit         int                `json:"growth_credit_base_share_bytes"`
+	GrowthLimit             int                `json:"growth_credit_limit_bytes"`
+	DataPendingFrames       int                `json:"data_pending_frames"`
+	DataPendingLimit        int                `json:"data_pending_frame_limit"`
+	DataPendingBytes        int                `json:"data_pending_bytes"`
+	DataPendingByteLimit    int                `json:"data_pending_byte_limit"`
+	ReadyDataBytes          int                `json:"ready_data_bytes"`
+	QueueAdmissionLimit     int                `json:"queue_admission_limit_bytes"`
+	QueueAdmissionWaiters   int                `json:"queue_admission_waiters"`
+	PendingReserveFrames    int                `json:"pending_bootstrap_reserve_frames"`
+	PendingReserveBytes     int                `json:"pending_bootstrap_reserve_bytes"`
+	PendingWaiters          int                `json:"pending_waiters"`
+	CreditWaiters           int                `json:"credit_waiters"`
+	WriterTurnWaiters       int                `json:"writer_turn_waiters"`
+	ReadyStreams            int                `json:"ready_streams"`
+	BootstrapWriters        int                `json:"bootstrap_writers"`
+	SessionLockCount        uint64             `json:"session_lock_count"`
+	SessionLockWaitNS       uint64             `json:"session_lock_wait_ns"`
+	SessionLockWaitMaxNS    uint64             `json:"session_lock_wait_max_ns"`
+	SessionLockHoldNS       uint64             `json:"session_lock_hold_ns"`
+	SessionLockHoldMaxNS    uint64             `json:"session_lock_hold_max_ns"`
+	DispatchRuns            uint64             `json:"dispatch_runs"`
+	DispatchFrames          uint64             `json:"dispatch_frames"`
+	DispatchNS              uint64             `json:"dispatch_ns"`
+	DispatchMaxNS           uint64             `json:"dispatch_max_ns"`
+	WriterTurnScanSteps     uint64             `json:"writer_turn_scan_steps"`
+	ControlPendingFrames    int                `json:"control_pending_frames"`
+	ControlPendingLimit     int                `json:"control_pending_frame_limit"`
+	ControlPendingBytes     int                `json:"control_pending_bytes"`
+	ControlPendingByteLimit int                `json:"control_pending_byte_limit"`
+	WindowBlockedWriters    int                `json:"window_blocked_writers"`
+	ControlQueuedFrames     int                `json:"control_queued_frames"`
+	ControlDrops            uint64             `json:"control_regeneration_drops"`
+	OpenReceiveCreditWaits  uint64             `json:"open_receive_credit_waits"`
+	OpenedStreams           uint64             `json:"opened_streams"`
+	ClosedStreams           uint64             `json:"closed_streams"`
+	LocalConnections        int                `json:"local_connections"`
+	LifecycleOpening        int                `json:"lifecycle_opening"`
+	LifecycleOpen           int                `json:"lifecycle_open_bidirectional"`
+	LifecycleHalfClosed     int                `json:"lifecycle_half_closed"`
+	LifecycleWaitFinalACK   int                `json:"lifecycle_wait_local_final_ack"`
+	LifecycleWaitPeerFinal  int                `json:"lifecycle_wait_peer_final"`
+	LifecycleBothFinal      int                `json:"lifecycle_both_final_wait_close"`
+	LifecycleWaitConsumed   int                `json:"lifecycle_wait_final_consumed"`
+	LifecycleClosingOther   int                `json:"lifecycle_closing_other"`
+	DataIdleOver30s         int                `json:"data_idle_over_30s"`
+	DataIdleOver1m          int                `json:"data_idle_over_1m"`
+	DataIdleOver5m          int                `json:"data_idle_over_5m"`
+	DataIdleOver10m         int                `json:"data_idle_over_10m"`
+	OldestStreamAgeSeconds  int64              `json:"oldest_stream_age_seconds"`
+	OldestDataIdleSeconds   int64              `json:"oldest_data_idle_seconds"`
+	IdleStreams             int                `json:"idle_streams"`
+	SmallStreams            int                `json:"small_streams"`
+	BulkStreams             int                `json:"bulk_streams"`
+	IdleGrowthHeld          int                `json:"idle_irrevocable_growth_bytes"`
+	ActiveStreams           int                `json:"active_streams"`
+	StreamLimit             int                `json:"stream_limit"`
+	PendingFrames           int                `json:"pending_frames"`
+	PendingFrameLimit       int                `json:"pending_frame_limit"`
+	PendingBytes            int                `json:"pending_bytes"`
+	PendingByteLimit        int                `json:"pending_byte_limit"`
+	ReceiveCredit           int                `json:"receive_credit_bytes"`
+	ReceiveCreditLimit      int                `json:"receive_credit_limit_bytes"`
+	ReceiveAllocated        int                `json:"receive_allocated_bytes"`
+	ReceiveAllocatedLimit   int                `json:"receive_allocated_limit_bytes"`
+	AdmissionReserve        int                `json:"admission_reserve_bytes"`
+	WaitingOpens            int                `json:"waiting_opens"`
+	Waits                   map[string]uint64  `json:"waits"`
+	Rejections              map[string]uint64  `json:"rejections"`
+	FirstLimitAt            string             `json:"first_limit_at,omitempty"`
+	LastLimitAt             string             `json:"last_limit_at,omitempty"`
+	LastReason              string             `json:"last_reason,omitempty"`
 }
 
 type TransportEvent struct {
@@ -199,6 +215,7 @@ func copyCounts(m map[string]uint64) map[string]uint64 {
 func (s *Session) resourceSnapshotLocked() ResourceStats {
 	r := s.resources
 	r.SharedCreditStats = s.sharedCreditSnapshotLocked()
+	r.PathSelection = s.pathSelection
 	r.ActiveStreams = len(s.streams)
 	r.StreamLimit = MaxStreams
 	r.PendingFrames = len(s.pending)

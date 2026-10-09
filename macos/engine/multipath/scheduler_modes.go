@@ -471,8 +471,9 @@ func (s *Session) schedulerPathEligibleLocked(c *carrier) bool {
 }
 
 func (s *Session) pathLocked(now time.Time) *carrier {
+	s.pathSelection.Attempts++
 	if !s.scheduler.restricted {
-		return s.aggregatePathLocked(now, false)
+		return s.recordSelectedPathLocked(s.aggregatePathLocked(now, false))
 	}
 	if s.scheduler.effective == SchedulerProtect {
 		var probe *carrier
@@ -493,10 +494,18 @@ func (s *Session) pathLocked(now time.Time) *carrier {
 			}
 		}
 		if probe != nil {
-			return probe
+			return s.recordSelectedPathLocked(probe)
 		}
 	}
-	return s.aggregatePathLocked(now, true)
+	return s.recordSelectedPathLocked(s.aggregatePathLocked(now, true))
+}
+
+// recordSelectedPathLocked is only called after one attempted DATA selection.
+func (s *Session) recordSelectedPathLocked(c *carrier) *carrier {
+	if c != nil {
+		s.pathSelection.Selected++
+	}
+	return c
 }
 
 func (s *Session) schedulerAllocatedLocked(c *carrier, p *outbound, now time.Time) {

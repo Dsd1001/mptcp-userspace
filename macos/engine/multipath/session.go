@@ -139,6 +139,7 @@ type carrier struct {
 // All stream, ledger and carrier accounting lives under one mutex. Network I/O
 // and backend I/O never hold it. Readers cannot block unrelated logical flows.
 type Session struct {
+	pathSelection                                    PathSelectionStats
 	credit                                           connectionCredit
 	closing                                          map[uint64]*Stream
 	terminal                                         map[uint64]terminalStream
@@ -1299,6 +1300,7 @@ func (s *Session) accept(st *Stream) bool {
 func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 	var best *carrier
 	bestScore, earliest := 1e30, 1e30
+	var roleBlocked, penaltyBlocked, budgetBlocked, queueBlocked, activeCount int
 	healthy := false
 	for _, c := range s.paths {
 		if restricted && !s.schedulerPathEligibleLocked(c) {
@@ -1310,10 +1312,16 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		}
 	}
 	for _, c := range s.paths {
-		if restricted && !s.schedulerPathEligibleLocked(c) {
+		if !c.active {
 			continue
 		}
-		if !c.active || (healthy && now.Before(c.penaltyUntil)) {
+		activeCount++
+		if restricted && !s.schedulerPathEligibleLocked(c) {
+			roleBlocked++
+			continue
+		}
+		if healthy && now.Before(c.penaltyUntil) {
+			penaltyBlocked++
 			continue
 		}
 		rate := max(c.goodput, 65536)
@@ -1337,6 +1345,10 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		if c.outstanding >= budget {
 			c.budgetLimited = true
 			c.sampleBudgetLimited = true
+			budgetBlocked++
+		}
+		if len(c.queue) >= carrierQueue {
+			queueBlocked++
 		}
 		if len(c.queue) >= carrierQueue || c.outstanding >= budget {
 			continue
@@ -1349,9 +1361,29 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 	// Waiting briefly for the earliest route can beat sending immediately over
 	// a high-delay path merely because another writer's tiny queue is full.
 	if best != nil && bestScore > earliest+.025 {
+		s.pathSelection.CostDeferral++
 		return nil
 	}
-	return best
+	if best != nil {
+		return best
+	}
+	// Attribute one dominant reason to each failed selection. This avoids
+	// counting multiple unavailable Carriers as multiple dispatch stalls.
+	switch {
+	case budgetBlocked > 0:
+		s.pathSelection.FlightBudget++
+	case queueBlocked > 0:
+		s.pathSelection.CarrierQueue++
+	case roleBlocked > 0:
+		s.pathSelection.RoleRestricted++
+	case penaltyBlocked > 0:
+		s.pathSelection.Penalty++
+	case activeCount == 0:
+		s.pathSelection.NoActive++
+	default:
+		s.pathSelection.Other++
+	}
+	return nil
 }
 
 func (s *Session) sweepLocked(now time.Time) {

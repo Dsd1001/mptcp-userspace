@@ -54,17 +54,24 @@ func (s *Session) signalQueueAdmissionLocked(freedBytes int) {
 	if s.queueAdmissionWaiters == 0 || freedBytes <= 0 {
 		return
 	}
-	permits := min(queueAdmissionWakeBatch, writerPermits(freedBytes))
+	// Reserve a virtual place in the freed queue for each notified writer.
+	// This allows a single 32 KiB dispatch to wake multiple 1 KiB writers,
+	// without stampeding more full-sized writers than the available room.
+	virtualReady := s.readyDataBytes
 	signaled := 0
-	for e := s.writerReady.Front(); e != nil && signaled < permits; e = e.Next() {
+	for e := s.writerReady.Front(); e != nil && signaled < queueAdmissionWakeBatch; e = e.Next() {
 		st, _ := e.Value.(*Stream)
 		if st == nil || !st.writeWaiting || st.writeWaitReason != waitQueueAdmission {
 			continue
 		}
-		if s.queueAdmissionRoomLocked(st) < min(MaxPayload, st.writeRemaining) {
+		// Match the next DATA chunk, including Stream/Session WINDOWs and
+		// negotiated Frame/Record size. A full MaxPayload is not required.
+		n, reason := st.writePeerAllowanceLocked()
+		if reason != waitNone || n <= 0 || s.queueAdmissionCeilingLocked(st)-virtualReady-64 < n {
 			continue
 		}
 		if s.signalStreamWriterLocked(st) {
+			virtualReady += n + 64
 			signaled++
 		}
 	}

@@ -189,7 +189,7 @@ func (c Config) validate() error { return c.validateForOS(runtime.GOOS) }
 
 func (c Config) validateForOS(_ string) error {
 	if !c.userspace() {
-		return errors.New("v1.1.3 客户端只支持 schema_version=3、mode=userspace_multipath；请重新配置已移除的 Native MPTCP")
+		return errors.New("v1.1.4 客户端只支持 schema_version=3、mode=userspace_multipath；请重新配置已移除的 Native MPTCP")
 	}
 	{
 		mode, err := c.schedulerMode()

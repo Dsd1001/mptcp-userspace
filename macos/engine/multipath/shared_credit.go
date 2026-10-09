@@ -11,7 +11,7 @@ type connectionCredit struct {
 	windowAt                             time.Time
 	windowConsumed                       uint64
 	peakTX, peakRX, peakGrowth           int
-	waits                                [9]creditWait
+	waits                                [10]creditWait
 }
 
 type creditWait struct {
@@ -29,9 +29,10 @@ const (
 	waitPendingBytes
 	waitWriterTurn
 	waitQueueAdmission
+	waitStreamOpen
 )
 
-var creditWaitNames = [...]string{"none", "stream_window_or_open", "session_window", "bootstrap", "growth", "pending_frames", "pending_bytes", "writer_turn", "queue_admission"}
+var creditWaitNames = [...]string{"none", "stream_window", "session_window", "bootstrap", "growth", "pending_frames", "pending_bytes", "writer_turn", "queue_admission", "stream_open"}
 
 const (
 	sharedWindowBatch          = 128 << 10
@@ -245,22 +246,38 @@ func (st *Stream) commitSendCreditLocked(n int) {
 	s.syncBootstrapReserveLocked(st)
 }
 
-func (st *Stream) writeAllowanceLocked() (int, int) {
+// writePeerAllowanceLocked computes the same next-DATA size for admission and
+// for targeted writer wakes. A writer with only 8 KiB peer credit (or a peer
+// negotiating 1 KiB frames) must not be left asleep until 32 KiB is free.
+// All callers hold Session.mu; this helper never commits protocol credit.
+func (st *Stream) writePeerAllowanceLocked() (int, int) {
 	s := st.s
-	if st.closed || st.writeFIN || st.sendReset || !st.open || st.peerLimit <= st.txNext {
+	if st.closed || st.writeFIN || st.sendReset {
+		return 0, waitStreamWindow
+	}
+	if !st.open {
+		return 0, waitStreamOpen
+	}
+	if st.peerLimit <= st.txNext {
 		return 0, waitStreamWindow
 	}
 	fc := &s.credit
 	if fc.peerLimit <= fc.txCommitted {
 		return 0, waitSessionWindow
 	}
-	// MPX/4 peer-advertised Stream and Session WINDOWs are the only
-	// flow-control authority on the send side. Do not add a second local
-	// txUsed/growth ceiling: per-Stream consumed reports can lag the aggregate
-	// SESSION_WINDOW and otherwise create a false 128 MiB head-of-line stall.
+	// Protocol Stream/Session WINDOWs remain the sole credit authority.
 	n := min(st.writeRemaining, s.maxDataPayloadLocked(),
 		int(min(uint64(MaxStreamWindow), st.peerLimit-st.txNext)),
 		int(min(uint64(MaxPayload), fc.peerLimit-fc.txCommitted)))
+	return n, waitNone
+}
+
+func (st *Stream) writeAllowanceLocked() (int, int) {
+	s := st.s
+	n, reason := st.writePeerAllowanceLocked()
+	if reason != waitNone || n <= 0 {
+		return 0, reason
+	}
 	// Delay commitment of new DATA when unscheduled work is already deep.
 	// MPX/4 Stream/Session WINDOWs remain the authoritative credit limits.
 	if s.queueAdmissionLimit > 0 && s.queueAdmissionRoomLocked(st) < n {
