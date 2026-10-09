@@ -536,6 +536,11 @@ type secureConn struct {
 	generation                                  uint64
 	peerMaxFrame, peerMaxRecord, peerMaxStreams uint64
 	localMaxCarriers, peerMaxCarriers           uint64
+	// These scratch buffers are protected by txMu together with the write
+	// operation. Keeping them on the connection avoids allocating the encoded
+	// frame list and record accumulator for every carrier batch.
+	encodedScratch [][]byte
+	recordScratch  []byte
 }
 
 func xorV4Nonce(iv [12]byte, seq uint64) []byte {
@@ -582,7 +587,16 @@ func (c *secureConn) writeFrames(frames []frame) error {
 	if limit <= 0 || limit > MaxRecordSize {
 		limit = MaxRecordSize
 	}
-	encoded := make([][]byte, 0, len(frames))
+	encoded := c.encodedScratch[:0]
+	if cap(encoded) < len(frames) {
+		encoded = make([][]byte, 0, len(frames))
+	}
+	defer func() {
+		// The backing array is reusable, but per-frame encodings should be
+		// collected once this batch has been written.
+		clear(encoded)
+		c.encodedScratch = encoded[:0]
+	}()
 	total := 0
 	for _, f := range frames {
 		wire, err := encodeV4Frame(f)
@@ -598,7 +612,8 @@ func (c *secureConn) writeFrames(frames []frame) error {
 		}
 		encoded = append(encoded, wire)
 	}
-	var record []byte
+	record := c.recordScratch[:0]
+	defer func() { c.recordScratch = record[:0] }()
 	for _, wire := range encoded {
 		if len(record) > 0 && len(record)+len(wire) > limit {
 			if err := c.writeRecord(record); err != nil {

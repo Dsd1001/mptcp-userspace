@@ -394,12 +394,14 @@ func (s *Session) stop(err error) {
 	}
 	for _, st := range s.streams {
 		st.closed = true
+		st.pendingData = 0
 		s.closedStreams++
 		st.err = err
 		st.releaseReceiveLocked()
 	}
 	for _, st := range s.closing {
 		st.closed = true
+		st.pendingData = 0
 		st.err = err
 		st.releaseReceiveLocked()
 	}
@@ -882,6 +884,9 @@ func (s *Session) queueLocked(f frame) *outbound {
 	if f.kind == kindData {
 		s.dataPendingFrames++
 		s.dataPendingBytes += cost
+		if st := s.streamForCreditLocked(f.stream); st != nil {
+			st.pendingData++
+		}
 	} else {
 		s.controlPendingFrames++
 		s.controlPendingBytes += cost
@@ -909,6 +914,9 @@ func (s *Session) removePendingLocked(p *outbound) {
 	if p.f.kind == kindData {
 		s.dataPendingFrames--
 		s.dataPendingBytes -= p.cost
+		if st := s.streamForCreditLocked(p.f.stream); st != nil && st.pendingData > 0 {
+			st.pendingData--
+		}
 		s.signalPendingWriterLocked()
 	} else {
 		s.controlPendingFrames--
