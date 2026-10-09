@@ -16,6 +16,7 @@ import (
 
 func TestUserspaceProfileMigration(t *testing.T) {
 	legacy := validProfile()
+	legacy.SchemaVersion, legacy.Mode = 2, "tcp_forward"
 	if legacy.userspace() {
 		t.Fatal("legacy silently switched protocol")
 	}
@@ -47,8 +48,8 @@ func TestUserspaceProfileMigration(t *testing.T) {
 		t.Fatal("native duplicate-host guard changed")
 	}
 	c.Relays = legacy.Relays
-	if err = c.validateForOS("darwin"); err != nil {
-		t.Fatal(err)
+	if err = c.validateForOS("darwin"); err == nil {
+		t.Fatal("macOS still accepted legacy Native profile")
 	}
 	c.Mode = "userspace_multipath"
 	c.TransportKey = "short"

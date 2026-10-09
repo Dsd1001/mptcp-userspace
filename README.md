@@ -42,7 +42,14 @@ Do not blindly apply the same congestion controller to every host. See [Network 
 | **Landing** | MPX/4 server endpoint. Terminates Carrier Sessions and forwards Streams to the configured backend. |
 | **Provisioning** | Optional HTTPS configuration and remote-control service for Profiles, Bundles and managed devices. |
 
-## What v1.1.1 changes
+## What's new in v1.1.2
+
+- Sender-side Queue-aware DATA Admission defaults to 32 MiB of not-yet-scheduled DATA per Session, with 4 MiB extra new-Stream room. The environment override MPX_QUEUE_ADMISSION_MIB=0 disables it for A/B or rollback. Stream and Session peer WINDOWs remain authoritative.
+- macOS now supports Userspace only, like Windows and Linux. Native/kernel MPTCP options, privileged sysctl actions and the native socket implementation have been removed; old Native profiles must be deliberately reconfigured with a valid MPX/4 Transport Key.
+- macOS, Windows, Linux Client, Landing and Provisioning versions are aligned at v1.1.2.
+- The controlled six-path/150-Stream shaped-loopback A/B passed; this is not proof of WAN throughput improvement.
+
+## v1.1.1 flow-control changes
 
 v1.1.1 keeps the v1.1.0 concurrent data-plane refactor and simplifies send-side flow control. The peer's MPX/4 Stream and Session WINDOWs are now the authoritative send-credit gates. Legacy local `txUsed` / `txGrowth` accounting remains for diagnostics but no longer adds a second 128 MiB send-admission barrier.
 

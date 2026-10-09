@@ -1,13 +1,13 @@
-# Validation — MPTCP Userspace v1.1.1
+# Validation — MPTCP Userspace v1.1.2
 
-This document defines how to interpret validation for the current v1.1.1 suite.
+This document defines how to interpret validation for the current v1.1.2 suite.
 
 ## Release identity
 
 The current source declares:
 
 ```text
-Version:             1.1.1
+Version:             1.1.2
 Wire protocol:       4
 Capability revision: 8
 Protocol release:    protocol-v4.0.0
@@ -18,7 +18,7 @@ Validation records must match the source identity they claim to validate.
 
 ## Correctness gates
 
-The v1.1.1 release regression scope includes, at minimum:
+The v1.1.2 release regression scope includes, at minimum:
 
 - engine package tests;
 - Landing/multipath tests;
@@ -36,6 +36,14 @@ The v1.1.1 release regression scope includes, at minimum:
 - UoT/product fast-start cases;
 - Linux amd64/arm64 build verification;
 - macOS Universal build, signing/update and frozen Broker verification.
+
+## v1.1.2 Queue-aware Admission acceptance
+
+- Default unscheduled DATA admission target = 32 MiB per Session. MPX_QUEUE_ADMISSION_MIB=0 disables it, restoring v1.1.1 admission.
+- The local DATA admission does not change protocol Stream/Session WINDOWs or the reliable pending/ACK ledger.
+- New Streams have extra bootstrap room, and writers wake without global broadcasting when Carrier dispatch makes room.
+- Native/kernel-MPTCP config is rejected on macOS, Linux and Windows, with a specific migration prompt.
+- Tested WAN performance has not yet been established.
 
 ## v1.1.1 flow-control acceptance
 

@@ -12,7 +12,7 @@
   "info": {
     "companyName": "MPTCP Userspace",
     "productName": "MPTCP Desk",
-    "productVersion": "1.1.1",
+    "productVersion": "1.1.2",
     "copyright": "MPTCP Userspace",
     "comments": "MPX/4 userspace multipath client for Windows"
   }

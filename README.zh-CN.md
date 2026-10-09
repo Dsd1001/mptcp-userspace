@@ -2,12 +2,12 @@
 
 MPTCP Userspace 是一套运行在 macOS / Linux 上的**应用层多路径传输系统**。它把多条普通 TCP 连接组织成一个经过认证的 **MPX/4 Protocol Version 4 Stable** Session，在 Session 内承载多个应用 Stream，并在路径变慢、丢包或断开时支持跨 Carrier 重传与 reinjection。
 
-当前正式版：**v1.1.1**
+当前正式版：**v1.1.2**
 协议源：**MPX/4 `protocol-v4.0.0`**（`44f587fd279ed2238b070dd68114c76822353f4d`）
 
 它**不是内核 MPTCP**，也**不是 QUIC**。Relay 只负责透明转发 Carrier 字节，不需要 MPX Transport Key；认证、加密、Stream 状态、Flow Control、Scheduler 与可靠数据重注入都发生在 Client 与 Landing 两个 MPX 端点之间。
 
-[English](README.md) · [文档索引](docs/README.zh-CN.md) · [v1.1.1 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v1.1.1) · [MPX/4 协议仓库](https://github.com/Dsd1001/MPX-4)
+[English](README.md) · [文档索引](docs/README.zh-CN.md) · [v1.1.2 Release](https://github.com/Dsd1001/mptcp-userspace/releases/tag/v1.1.2) · [MPX/4 协议仓库](https://github.com/Dsd1001/MPX-4)
 
 ## 推荐生产拓扑
 
@@ -38,13 +38,21 @@ MPTCP Desk / Linux Client
 
 | 组件 | 作用 |
 | --- | --- |
-| **MPTCP Desk** | macOS GUI Client，支持本地/远端配置、诊断、后台恢复、Sparkle 更新和可选远程设备管理。 |
+| **MPTCP Desk** | macOS / Windows Userspace GUI Client，支持本地/远端配置、诊断、后台恢复、Sparkle 更新和可选远程设备管理。 |
 | **Linux Client** | 无 GUI Client，与 MPTCP Desk 共用同一套 MPX/4 Go Engine。 |
 | **Relay** | Client 与 Landing 之间的普通 TCP 转发节点，不是 MPX 端点，不持有 Transport Key。 |
 | **Landing** | MPX/4 Server 端点，终止 Carrier Session，并把 Stream 转发给 backend。 |
 | **Provisioning** | 可选的 HTTPS 配置和远程管理服务，管理 Profile、Bundle 与设备。 |
 
-## v1.1.1 的核心变化
+## v1.1.2 的核心变化
+
+- **Queue-aware Admission**：发送端默认限制每个 Session 的未调度 DATA，32 MiB 软目标，大流约 28 MiB 后等待，给新 Stream 留出首包容量。
+- **可回退**：环境变量 MPX_QUEUE_ADMISSION_MIB=0 关闭新版队列控制；16/32/64 可用于对照测试。保留原来的 Peer WINDOW、128 MiB Session Credit、重传账本。
+- **macOS 只有 Userspace**：删除内核 MPTCP 切换、系统聚合开关及系统授权操作；旧 Native 配置不会被悄悄转换，必须手动配置 MPX/4 Transport Key。
+- **版本统一**：macOS、Windows、Linux Client、Landing、Provisioning 均为 v1.1.2；Keychain Broker v1 仍冻结。
+- 六条 92 Mbps 模拟 Relay、150 Stream 的对照测试通过，但暂未完成生产 WAN A/B，不承诺提升带宽。
+
+## v1.1.1 的流控变化
 
 v1.1.1 保留 v1.1.0 的多 Stream 并发数据面重构，同时简化发送侧 Flow Control：
 

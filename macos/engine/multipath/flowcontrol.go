@@ -669,6 +669,7 @@ func (s *Session) readyLocked(p *outbound, front bool) {
 		p.ready = rq.frames.PushBack(p)
 	}
 	s.readyFrames++
+	s.readyDataBytes += p.cost
 	if wasEmpty {
 		if front {
 			rq.entry = s.readyStreams.PushFront(rq)
@@ -700,6 +701,7 @@ func (s *Session) unreadyLocked(p *outbound) {
 	if s.readyFrames > 0 {
 		s.readyFrames--
 	}
+	s.readyDataBytes = max(0, s.readyDataBytes-p.cost)
 	if rq.frames.Len() == 0 {
 		if rq.entry != nil {
 			s.readyStreams.Remove(rq.entry)
@@ -718,6 +720,7 @@ func (s *Session) unreadyLocked(p *outbound) {
 // work remains, the Session self-kicks so dispatch resumes immediately.
 func (s *Session) dispatchLocked(now time.Time) {
 	started := time.Now()
+	readyBefore := s.readyDataBytes
 	s.dispatchRuns++
 	dispatched := 0
 	defer func() {
@@ -727,6 +730,9 @@ func (s *Session) dispatchLocked(now time.Time) {
 			s.dispatchMaxNS = elapsed
 		}
 		s.dispatchFrames += uint64(dispatched)
+		if s.readyDataBytes < readyBefore {
+			s.signalQueueAdmissionLocked(readyBefore - s.readyDataBytes)
+		}
 		if dispatched >= dataDispatchBatch && s.readyStreams.Len() != 0 {
 			s.kickLocked()
 		}

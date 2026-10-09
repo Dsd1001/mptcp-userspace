@@ -53,14 +53,11 @@ func TestUOTConfigTransportSelection(t *testing.T) {
 	}
 }
 
-func TestNativeMPTCPIsMacOSOnly(t *testing.T) {
+func TestNativeMPTCPRemovedOnAllPlatforms(t *testing.T) {
 	p := bundleProfile("native", "Native", 1081)
 	p.Mode = "native_mptcp"
 	c := p.config()
-	if err := c.validateForOS("darwin"); err != nil {
-		t.Fatalf("darwin rejected native_mptcp: %v", err)
-	}
-	for _, goos := range []string{"linux", "windows"} {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
 		if err := c.validateForOS(goos); err == nil {
 			t.Fatalf("%s accepted native_mptcp", goos)
 		}

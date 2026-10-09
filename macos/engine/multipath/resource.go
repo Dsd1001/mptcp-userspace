@@ -52,6 +52,9 @@ type ResourceStats struct {
 	DataPendingLimit        int               `json:"data_pending_frame_limit"`
 	DataPendingBytes        int               `json:"data_pending_bytes"`
 	DataPendingByteLimit    int               `json:"data_pending_byte_limit"`
+	ReadyDataBytes          int               `json:"ready_data_bytes"`
+	QueueAdmissionLimit     int               `json:"queue_admission_limit_bytes"`
+	QueueAdmissionWaiters   int               `json:"queue_admission_waiters"`
 	PendingReserveFrames    int               `json:"pending_bootstrap_reserve_frames"`
 	PendingReserveBytes     int               `json:"pending_bootstrap_reserve_bytes"`
 	PendingWaiters          int               `json:"pending_waiters"`
@@ -216,6 +219,9 @@ func (s *Session) resourceSnapshotLocked() ResourceStats {
 	r.DataPendingLimit = MaxDataPending
 	r.DataPendingBytes = s.dataPendingBytes
 	r.DataPendingByteLimit = MaxDataPendingBytes
+	r.ReadyDataBytes = s.readyDataBytes
+	r.QueueAdmissionLimit = s.queueAdmissionLimit
+	r.QueueAdmissionWaiters = s.queueAdmissionWaiters
 	r.PendingReserveFrames, r.PendingReserveBytes = s.pendingBootstrapReserveLocked(nil)
 	r.PendingWaiters = s.pendingWaiters
 	r.CreditWaiters = s.creditWaiters

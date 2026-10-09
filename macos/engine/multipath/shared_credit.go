@@ -11,7 +11,7 @@ type connectionCredit struct {
 	windowAt                             time.Time
 	windowConsumed                       uint64
 	peakTX, peakRX, peakGrowth           int
-	waits                                [8]creditWait
+	waits                                [9]creditWait
 }
 
 type creditWait struct {
@@ -28,9 +28,10 @@ const (
 	waitPendingFrames
 	waitPendingBytes
 	waitWriterTurn
+	waitQueueAdmission
 )
 
-var creditWaitNames = [...]string{"none", "stream_window_or_open", "session_window", "bootstrap", "growth", "pending_frames", "pending_bytes", "writer_turn"}
+var creditWaitNames = [...]string{"none", "stream_window_or_open", "session_window", "bootstrap", "growth", "pending_frames", "pending_bytes", "writer_turn", "queue_admission"}
 
 const (
 	sharedWindowBatch          = 128 << 10
@@ -260,6 +261,11 @@ func (st *Stream) writeAllowanceLocked() (int, int) {
 	n := min(st.writeRemaining, MaxPayload,
 		int(min(uint64(MaxStreamWindow), st.peerLimit-st.txNext)),
 		int(min(uint64(MaxPayload), fc.peerLimit-fc.txCommitted)))
+	// Delay commitment of new DATA when unscheduled work is already deep.
+	// MPX/4 Stream/Session WINDOWs remain the authoritative credit limits.
+	if s.queueAdmissionLimit > 0 && s.queueAdmissionRoomLocked(st) < n {
+		return 0, waitQueueAdmission
+	}
 	if s.dataPendingFrames >= MaxDataPending {
 		return 0, waitPendingFrames
 	}

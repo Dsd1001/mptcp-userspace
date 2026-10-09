@@ -1,11 +1,11 @@
-# MPTCP Desk v1.1.1 validation
+# MPTCP Desk v1.1.2 validation
 
 This file summarizes the Mac-specific validation boundary for the current release.
 
 ## Identity
 
 ```text
-MPTCP Desk:         1.1.1
+MPTCP Desk:         1.1.2
 MPX wire version:   4
 Protocol release:   protocol-v4.0.0
 Protocol source:    44f587fd279ed2238b070dd68114c76822353f4d
@@ -48,7 +48,7 @@ MPTCP Desk uses the same userspace engine that is validated for:
 
 ## Performance boundary
 
-Mac correctness/UI/build validation is not a physical-WAN throughput claim. v1.1.1 did not run a new WAN/capacity performance promotion before release.
+Mac correctness/UI/build validation is not a physical-WAN throughput claim. v1.1.2 adds local Queue-aware Admission; the shaped-loopback A/B does not establish WAN improvement. Native MPTCP transport and its UI/sysctl operation are removed.
 
 For production path comparisons, document the Linux host baseline separately:
 

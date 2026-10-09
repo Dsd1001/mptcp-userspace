@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"mptcp-desktop/engine/multipath"
@@ -86,13 +85,11 @@ type managedDocument struct {
 
 func (p BundleProfile) config() Config {
 	var scheduler *string
-	if p.Mode == "userspace_multipath" {
-		value := p.SchedulerMode
-		if value == "" {
-			value = string(multipath.SchedulerAuto)
-		}
-		scheduler = &value
+	value := p.SchedulerMode
+	if value == "" {
+		value = string(multipath.SchedulerAuto)
 	}
+	scheduler = &value
 	tcp := p.TCPEnabled
 	return Config{SchemaVersion: 3, Mode: p.Mode, ListenPort: p.ListenPort, Relays: p.Relays, UDPEnabled: p.UDPEnabled, UOTEnabled: p.UOTEnabled, TCPEnabled: &tcp, TransportKey: p.TransportKey, SchedulerMode: scheduler}
 }
@@ -190,15 +187,11 @@ func emit(e Event) {
 
 func (c Config) validate() error { return c.validateForOS(runtime.GOOS) }
 
-func (c Config) validateForOS(goos string) error {
-	legacy := c.SchemaVersion == 2 && c.Mode == "tcp_forward"
-	if !legacy && !(c.SchemaVersion == 3 && (c.Mode == "native_mptcp" || c.Mode == "userspace_multipath")) {
-		return errors.New("支持 schema 2/tcp_forward（保持 Native）或 schema 3/userspace_multipath、native_mptcp；不支持旧 SOCKS5 配置")
+func (c Config) validateForOS(_ string) error {
+	if !c.userspace() {
+		return errors.New("v1.1.2 客户端只支持 schema_version=3、mode=userspace_multipath；请重新配置已移除的 Native MPTCP")
 	}
-	if goos != "darwin" && !c.userspace() {
-		return errors.New("Windows/Linux client 仅支持 userspace_multipath；Native MPTCP fallback 仅供 macOS 使用")
-	}
-	if c.userspace() {
+	{
 		mode, err := c.schedulerMode()
 		if err != nil {
 			return err
@@ -224,12 +217,6 @@ func (c Config) validateForOS(goos string) error {
 	if !c.tcpEnabled() && !c.UDPEnabled && !c.UOTEnabled {
 		return errors.New("TCP、原生 UDP 和 UoT 至少启用一个")
 	}
-	if !c.userspace() && c.UOTEnabled {
-		return errors.New("UoT 仅支持 Userspace 模式")
-	}
-	if !c.userspace() && !c.tcpEnabled() {
-		return errors.New("Native 兼容模式需保留 TCP；仅 UDP 可使用 Userspace 模式")
-	}
 	if c.ListenPort < 1024 || c.ListenPort > 65535 {
 		return errors.New("本地端口必须为 1024-65535")
 	}
@@ -239,10 +226,7 @@ func (c Config) validateForOS(goos string) error {
 	seen := map[string]bool{}
 	for _, r := range c.Relays {
 		ip := net.ParseIP(r.Host)
-		identity := r.Host
-		if c.userspace() {
-			identity = net.JoinHostPort(r.Host, strconv.Itoa(r.Port))
-		}
+		identity := net.JoinHostPort(r.Host, strconv.Itoa(r.Port))
 		if ip == nil || ip.To4() == nil || ip.IsUnspecified() || ip.IsMulticast() || r.Port < 1 || r.Port > 65535 || seen[identity] {
 			return errors.New("Relay 需要有效且不重复的 IPv4 和端口")
 		}
@@ -1246,243 +1230,13 @@ func runBundleWithLauncher(ctx context.Context, b BundlePayload, ids []string, l
 	}
 }
 
-type streamConn interface {
-	net.Conn
-	CloseWrite() error
-}
-type forwardConn interface {
-	streamConn
-	paths() int
-}
-type tunnelDialer func(context.Context) (forwardConn, error)
-type counters struct{ sent, received atomic.Int64 }
-type activityWriter struct {
-	conn        net.Conn
-	count, last *atomic.Int64
-}
-
-func (w activityWriter) Write(data []byte) (int, error) {
-	if err := w.conn.SetWriteDeadline(time.Now().Add(45 * time.Second)); err != nil {
-		return 0, err
-	}
-	n, err := w.conn.Write(data)
-	if n > 0 {
-		w.count.Add(int64(n))
-		w.last.Store(time.Now().UnixNano())
-	}
-	return n, err
-}
-
-// Each accepted byte is copied unchanged. No TLS, SOCKS greeting or framing is added.
-func bridge(ctx context.Context, a, b streamConn, totals *counters, idle time.Duration) {
-	defer a.Close()
-	defer b.Close()
-	var activity atomic.Int64
-	activity.Store(time.Now().UnixNano())
-	done := make(chan error, 2)
-	copyDirection := func(dst, src streamConn, count *atomic.Int64) {
-		_, err := io.CopyBuffer(activityWriter{conn: dst, count: count, last: &activity}, src, make([]byte, 32*1024))
-		if err == nil {
-			err = dst.CloseWrite()
-		}
-		done <- err
-	}
-	go copyDirection(b, a, &totals.sent)
-	go copyDirection(a, b, &totals.received)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	cancelled := ctx.Done()
-	completed := 0
-	for completed < 2 {
-		select {
-		case err := <-done:
-			completed++
-			if err != nil {
-				a.Close()
-				b.Close()
-			}
-		case <-cancelled:
-			a.Close()
-			b.Close()
-			cancelled = nil
-		case now := <-ticker.C:
-			if idle > 0 && now.Sub(time.Unix(0, activity.Load())) >= idle {
-				a.Close()
-				b.Close()
-			}
-		}
-	}
-}
-
-func serveForward(ctx context.Context, listener net.Listener, dial tunnelDialer) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	var workers sync.WaitGroup
-	var mu sync.Mutex
-	locals := map[net.Conn]bool{}
-	active := map[forwardConn]bool{}
-	var totals counters
-	closeConnections := func() {
-		listener.Close()
-		mu.Lock()
-		connections := make([]net.Conn, 0, len(locals)+len(active))
-		for c := range locals {
-			connections = append(connections, c)
-		}
-		for c := range active {
-			connections = append(connections, c)
-		}
-		mu.Unlock()
-		for _, c := range connections {
-			c.Close()
-		}
-	}
-	monitorDone := make(chan struct{})
-	go func() {
-		defer close(monitorDone)
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		var retryStatsAt time.Time
-		lastDiagnostic := ""
-		for {
-			select {
-			case <-ctx.Done():
-				closeConnections()
-				return
-			case <-ticker.C:
-				mu.Lock()
-				count := len(active)
-				connections := make([]forwardConn, 0, count)
-				for c := range active {
-					connections = append(connections, c)
-				}
-				mu.Unlock()
-				paths := 0
-				if count > 0 {
-					paths = 8
-				}
-				if count > 0 {
-					if time.Now().Before(retryStatsAt) {
-						paths = -1
-					} else {
-						counts, diagnostic := nativePathCounts(connections)
-						paths = minimumPathCount(counts)
-						if diagnostic != nil {
-							if errors.Is(diagnostic, errPCBRead) {
-								retryStatsAt = time.Now().Add(30 * time.Second)
-							}
-							if diagnostic.Error() != lastDiagnostic {
-								emit(Event{Kind: "warning", Message: fmt.Sprintf("子流统计暂不可用（不影响转发，将自动重试）: %v", diagnostic)})
-							}
-							lastDiagnostic = diagnostic.Error()
-						} else {
-							lastDiagnostic = ""
-						}
-					}
-				}
-				emit(Event{Kind: "stats", Paths: paths, Connections: int64(count), Sent: totals.sent.Load(), Received: totals.received.Load()})
-			}
-		}
-	}()
-	defer func() { cancel(); <-monitorDone; workers.Wait() }()
-	slots := make(chan struct{}, 128)
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		select {
-		case slots <- struct{}{}:
-		default:
-			conn.Close()
-			continue
-		}
-		mu.Lock()
-		if ctx.Err() != nil {
-			mu.Unlock()
-			conn.Close()
-			<-slots
-			return nil
-		}
-		locals[conn] = true
-		mu.Unlock()
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			defer func() { <-slots }()
-			defer func() { conn.Close(); mu.Lock(); delete(locals, conn); mu.Unlock() }()
-			local, ok := conn.(streamConn)
-			if !ok {
-				return
-			}
-			remote, err := dial(ctx)
-			if err != nil {
-				if ctx.Err() == nil {
-					emit(Event{Kind: "warning", Message: err.Error()})
-				}
-				return
-			}
-			defer remote.Close()
-			mu.Lock()
-			if ctx.Err() != nil {
-				mu.Unlock()
-				return
-			}
-			active[remote] = true
-			mu.Unlock()
-			defer func() { mu.Lock(); delete(active, remote); mu.Unlock() }()
-			bridge(ctx, local, remote, &totals, 15*time.Minute)
-		}()
-	}
-}
-
+// All desktop, Linux and Windows clients use the same MPX/4 Userspace engine.
+// Pre-v1.1.2 Native MPTCP transport is intentionally no longer available.
 func runClient(ctx context.Context, c Config) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	if err := c.validate(); err != nil {
 		return err
 	}
-	if c.userspace() {
-		return runUserspace(ctx, c)
-	}
-	if err := nativePreflight(); err != nil {
-		return err
-	}
-	listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(c.ListenPort)))
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	emit(Event{Kind: "connecting", Message: "正在检查原生 MPTCP v1 握手"})
-	probe, err := nativeDial(ctx, c.Relays)
-	if err != nil {
-		return err
-	}
-	// nativeDial already verifies this socket's MPTCP v1 handshake. The global
-	// PCB list is optional telemetry and must never gate forwarding startup.
-	probe.Close()
-	emit(Event{Kind: "ready", Message: "MPTCP v1 握手通过；多路径聚合尚未验证"})
-	if c.UDPEnabled {
-		udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: c.ListenPort})
-		if err != nil {
-			return fmt.Errorf("UDP 入口启动失败: %w", err)
-		}
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			if err := serveUDP(ctx, udp, c.Relays, 60*time.Second, 512); err != nil && ctx.Err() == nil {
-				emit(Event{Kind: "error", Message: fmt.Sprintf("UDP 转发已停止: %v", err)})
-				cancel()
-			}
-		}()
-		defer func() { cancel(); udp.Close(); <-done }()
-		emit(Event{Kind: "udp_listening", Message: "UDP 轮询入口 " + udp.LocalAddr().String()})
-	}
-	emit(Event{Kind: "listening", Message: listener.Addr().String()})
-	return serveForward(ctx, listener, func(ctx context.Context) (forwardConn, error) { return nativeDial(ctx, c.Relays) })
+	return runUserspace(ctx, c)
 }
 
 func main() {
@@ -1490,19 +1244,15 @@ func main() {
 	defer stop()
 	var err error
 	switch {
-	case len(os.Args) == 2 && os.Args[1] == "doctor":
-		err = nativePreflight()
-		if err == nil {
-			emit(Event{Kind: "ready", Message: "原生 MPTCP 聚合接口可用"})
-		}
-	case len(os.Args) == 2 && os.Args[1] == "doctor-userspace":
+	case len(os.Args) == 2 && (os.Args[1] == "doctor-userspace" || os.Args[1] == "doctor"):
+
 		err = ensureUserspaceFileLimit()
 		if err == nil {
 			emit(Event{Kind: "ready", Mode: "userspace_multipath", Message: userspaceEnvironmentMessage()})
 		}
 	case len(os.Args) == 2 && os.Args[1] == "version":
 		name := "mptcp-desktop-engine"
-		message := name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") + Native fallback"
+		message := name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") userspace-only client"
 		switch runtime.GOOS {
 		case "linux":
 			name = "mptcp-client"
@@ -1549,7 +1299,7 @@ func main() {
 			emit(Event{Kind: "ready", Message: "TCP 转发配置有效"})
 		}
 	default:
-		err = fmt.Errorf("usage: mptcp-client doctor-userspace | version | run | validate | run-managed | validate-managed | run-bundle [profile-id...] | validate-bundle [profile-id...] (JSON stdin); Native doctor is macOS-only")
+		err = fmt.Errorf("usage: mptcp-client doctor-userspace | version | run | validate | run-managed | validate-managed | run-bundle [profile-id...] | validate-bundle [profile-id...] (JSON stdin)")
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		emit(Event{Kind: "error", Message: err.Error()})

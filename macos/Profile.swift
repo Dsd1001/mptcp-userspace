@@ -45,9 +45,8 @@ struct Profile: Codable {
     var schedulerMode: String { scheduler_mode ?? SchedulerPolicy.auto.rawValue }
     var userspace: Bool { schema_version == 3 && mode == "userspace_multipath" }
     func validate() throws {
-        let legacy = schema_version == 2 && mode == "tcp_forward"
-        guard legacy || (schema_version == 3 && ["userspace_multipath", "native_mptcp"].contains(mode)) else {
-            throw ProfileError("需要 schema 2 Native 配置或 schema 3 双模式配置，不支持旧 SOCKS5 配置")
+        guard userspace else {
+            throw ProfileError("v1.1.2 只支持 MPX/4 Userspace；旧 Native MPTCP 配置不能自动转换，请配置 Landing 的 Transport Key 和 Relay")
         }
         guard (1024...65535).contains(listen_port), (2...8).contains(relays.count) else {
             throw ProfileError("检查本地端口和 Relay 数量（2–8 条）")
@@ -60,18 +59,16 @@ struct Profile: Codable {
             }
         }
         guard !((udp_enabled ?? false) && (uot_enabled ?? false)) else { throw ProfileError("原生 UDP 与 UoT 只能启用一个") }
-        guard userspace || !(uot_enabled ?? false) else { throw ProfileError("UoT 仅支持 Userspace 模式") }
         guard (tcp_enabled ?? true) || (udp_enabled ?? false) || (uot_enabled ?? false) else { throw ProfileError("TCP、原生 UDP 和 UoT 至少启用一个") }
-        guard userspace || (tcp_enabled ?? true) else { throw ProfileError("Native 兼容模式需保留 TCP") }
         var identities = Set<String>()
         for (index, relay) in relays.enumerated() {
             let parts = relay.host.split(separator: ".", omittingEmptySubsequences: false)
-            let identity = userspace ? "\(relay.host):\(relay.port)" : relay.host
+            let identity = "\(relay.host):\(relay.port)"
             guard parts.count == 4,
                   parts.allSatisfy({UInt8($0) != nil && ($0 == "0" || !$0.hasPrefix("0"))}),
                   let first = parts.first.flatMap({UInt8($0)}), first < 224,
                   relay.host != "0.0.0.0", (1...65535).contains(relay.port), identities.insert(identity).inserted else {
-                throw ProfileError("Relay 需要有效且不重复的单播 IPv4:端口；Native 模式还要求 IP 不重复")
+                throw ProfileError("Relay 需要有效且不重复的单播 IPv4:端口")
             }
             guard !(relay.host.hasPrefix("127.") && relay.port == listen_port) else { throw ProfileError("Relay 不能指向本地转发入口") }
             if let down = relay.download_mbps {
@@ -147,6 +144,9 @@ struct ResourceMetric: Decodable {
     var data_pending_frames: Int?
     var data_pending_frame_limit: Int?
     var data_pending_bytes: Int?
+    var ready_data_bytes: Int?
+    var queue_admission_limit_bytes: Int?
+    var queue_admission_waiters: Int?
     var control_pending_frames: Int?
     var control_pending_frame_limit: Int?
     var control_pending_bytes: Int?
@@ -291,7 +291,7 @@ struct RelayProvisioningPayload: Codable {
         guard schema_version == 1 else { throw ProfileError("Provisioning API schema_version 仅支持 1") }
         if let revision, revision.utf8.count > 128 { throw ProfileError("Provisioning revision 过长") }
         if let display_name, display_name.utf8.count > 128 { throw ProfileError("Provisioning display_name 过长") }
-        guard ["userspace_multipath", "native_mptcp"].contains(mode) else { throw ProfileError("Provisioning mode 仅支持 userspace_multipath 或 native_mptcp") }
+        guard mode == "userspace_multipath" else { throw ProfileError("Provisioning 配置的 Native MPTCP 模式已移除，请在服务器上改为 userspace_multipath") }
         let p = Profile(
             schema_version: 3,
             mode: mode,
@@ -299,8 +299,8 @@ struct RelayProvisioningPayload: Codable {
             relays: relays,
             udp_enabled: udp_enabled,
             tcp_enabled: tcp_enabled,
-            transport_key: mode == "userspace_multipath" ? transport_key : nil,
-            scheduler_mode: mode == "userspace_multipath" ? (scheduler_mode ?? SchedulerPolicy.auto.rawValue) : nil,
+            transport_key: transport_key,
+            scheduler_mode: scheduler_mode ?? SchedulerPolicy.auto.rawValue,
             uot_enabled: uot_enabled
         )
         try p.validate()

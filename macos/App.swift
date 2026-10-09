@@ -41,7 +41,6 @@ final class Model: ObservableObject {
     static let shared = Model()
     @Published var relays = [RelayRow(host: "", port: 21001), RelayRow(host: "", port: 21002)]
     @Published var listenPort = "1081"
-    @Published var mode = "userspace_multipath"
     @Published var schedulerMode = "auto"
     @Published var configuredSchedulerMode = ""
     @Published var effectiveSchedulerMode = ""
@@ -101,7 +100,7 @@ final class Model: ObservableObject {
         return uotEnabled ? "UoT" : "UDP"
     }
     var listeningStatus: String {
-        userspace ? (tcpEnabled ? "Userspace 入口已启动" : "Userspace \(datagramLabel) 入口已启动") : "Native 入口已启动"
+        tcpEnabled ? "Userspace 入口已启动" : "Userspace \(datagramLabel) 入口已启动"
     }
     func setNativeUDPEnabled(_ enabled: Bool) {
         guard !configurationLocked else { return }
@@ -109,12 +108,9 @@ final class Model: ObservableObject {
         if enabled { uotEnabled = false }
     }
     func setUOTEnabled(_ enabled: Bool) {
-        guard !configurationLocked, userspace || !enabled else { return }
+        guard !configurationLocked else { return }
         uotEnabled = enabled
         if enabled { udpEnabled = false }
-    }
-    func applyModeSelection(_ value: String) {
-        if value == "native_mptcp" { tcpEnabled = true; uotEnabled = false }
     }
     @Published var tcpPaths: [PathMetric] = []
     @Published var udpPaths: [PathMetric] = []
@@ -131,7 +127,7 @@ final class Model: ObservableObject {
     @Published var profileStreamResourceExpanded = Set<String>()
     @Published var profileWindowResourceExpanded = Set<String>()
     private var lastTransportEvent: UInt64 = 0
-    var userspace: Bool { mode == "userspace_multipath" }
+    var userspace: Bool { true } // v1.1.2: MPX/4 Userspace is the only mode.
     @Published var udpConnections = 0
     @Published var udpSent: Int64 = 0
     @Published var udpReceived: Int64 = 0
@@ -335,16 +331,20 @@ final class Model: ObservableObject {
         provisioningStatus = provisioningManaged ? "远端配置 · 本地缓存优先" : (remoteConfigurationSelected ? "请填写 API 地址" : "本地配置")
         if let data = UserDefaults.standard.data(forKey: "multipath-profile-v2"),
            var profile = try? JSONDecoder().decode(Profile.self, from: data) {
-            apply(profile)
             do {
-                if profile.userspace { profile.transport_key = try TransportKeyStore.load() }
-                apply(profile)
+                guard profile.userspace else {
+                    throw Message("检测到旧 Native MPTCP 配置。v1.1.2 只支持 Userspace，请重新填写 Transport Key 与 Relay 后保存")
+                }
+                profile.transport_key = try TransportKeyStore.load()
                 try profile.validate()
-            } catch { problem = error.localizedDescription }
-        } else if let data = UserDefaults.standard.data(forKey: "tcp-forward-profile-v1"),
-                  let profile = try? JSONDecoder().decode(Profile.self, from: data), (try? profile.validate()) != nil {
-            apply(profile)
-            append("已载入 0.5.1 配置并保持 Native MPTCP；切换 Userspace 必须改用新版 Landing/Relay 入口")
+                apply(profile)
+            } catch {
+                problem = error.localizedDescription
+                UserDefaults.standard.set(false, forKey: Self.wantsForwardingKey)
+            }
+        } else if UserDefaults.standard.data(forKey: "tcp-forward-profile-v1") != nil {
+            problem = "检测到旧 Native MPTCP 配置。请创建 MPX/4 Userspace 配置；不会尝试使用旧 Native 隧道启动"
+            UserDefaults.standard.set(false, forKey: Self.wantsForwardingKey)
         }
         backgroundResident = UserDefaults.standard.bool(forKey: Self.residentKey)
         wantsForwarding = UserDefaults.standard.bool(forKey: Self.wantsForwardingKey)
@@ -375,13 +375,12 @@ final class Model: ObservableObject {
         initializeRemoteManagement()
     }
     func apply(_ p: Profile) {
-        guard !configurationLocked else { return }
+        guard !configurationLocked, p.userspace else { return }
         relays = p.relays; listenPort = String(p.listen_port)
         udpEnabled = p.udp_enabled ?? false
         uotEnabled = p.uot_enabled ?? false
         tcpEnabled = p.tcp_enabled ?? true
-        mode = p.userspace ? "userspace_multipath" : "native_mptcp"
-        schedulerMode = p.userspace ? p.schedulerMode : "auto"
+        schedulerMode = p.schedulerMode
         transportKey = p.transport_key ?? ""
     }
     private func resetProvisioningBundleState() {
@@ -428,8 +427,7 @@ final class Model: ObservableObject {
         udpEnabled = provisioned.udp_enabled ?? false
         uotEnabled = provisioned.uot_enabled ?? false
         tcpEnabled = provisioned.tcp_enabled ?? true
-        mode = provisioned.userspace ? "userspace_multipath" : "native_mptcp"
-        schedulerMode = provisioned.userspace ? provisioned.schedulerMode : "auto"
+        schedulerMode = provisioned.schedulerMode
         transportKey = provisioned.transport_key ?? ""
     }
     private func applyBundleSelection(_ bundle: RelayProvisioningBundlePayload, ids: Set<String>, updateResident: Bool = true) throws {
@@ -872,7 +870,7 @@ final class Model: ObservableObject {
     func profile() throws -> Profile {
         guard let port = Int(listenPort) else {throw Message("请输入本地入口端口")}
         let cleaned = relays.map {RelayRow(host:$0.host.trimmingCharacters(in:.whitespacesAndNewlines),port:$0.port,download_mbps:$0.download_mbps,upload_mbps:$0.upload_mbps)}
-        let p = Profile(schema_version:3,mode:mode,listen_port:port,relays:cleaned,udp_enabled:udpEnabled,tcp_enabled:tcpEnabled,transport_key:userspace ? transportKey.trimmingCharacters(in:.whitespacesAndNewlines) : nil,scheduler_mode:userspace ? schedulerMode : nil,uot_enabled:uotEnabled)
+        let p = Profile(schema_version:3,mode:"userspace_multipath",listen_port:port,relays:cleaned,udp_enabled:udpEnabled,tcp_enabled:tcpEnabled,transport_key:transportKey.trimmingCharacters(in:.whitespacesAndNewlines),scheduler_mode:schedulerMode,uot_enabled:uotEnabled)
         try p.validate()
         return p
     }
@@ -881,10 +879,10 @@ final class Model: ObservableObject {
         guard !configurationLocked else { return }
         do {
             let p = try profile()
-            if p.userspace { try TransportKeyStore.save(p.transport_key ?? "") }
+            try TransportKeyStore.save(p.transport_key ?? "")
             UserDefaults.standard.set(try p.preferenceData(), forKey: "multipath-profile-v2")
             problem = nil
-            append(userspace ? "Userspace 配置已保存；传输密钥保存在本机钥匙串" : "Native 配置已保存；旧 0.5.1 偏好记录未覆盖")
+            append("Userspace 配置已保存；传输密钥保存在本机钥匙串")
         } catch { problem = error.localizedDescription }
     }
     func loadProfileData(_ data: Data) throws {
@@ -950,7 +948,7 @@ final class Model: ObservableObject {
     }
     func launch(_ requestedAction: String, automatic: Bool = false, stdinData: Data? = nil, extraArguments: [String] = []) {
         guard !busy && !running else {return}
-        let action = requestedAction == "doctor" && userspace ? "doctor-userspace" : requestedAction
+        let action = requestedAction == "doctor" ? "doctor-userspace" : requestedAction
         let checking = action.hasPrefix("doctor")
         let forwarding = action == "run" || action == "run-bundle"
         guard let engine = Bundle.main.url(forResource: "mptcp-desktop-engine", withExtension: nil) else {problem = "安装包缺少传输引擎";return}
@@ -1201,19 +1199,7 @@ final class Model: ObservableObject {
         for _ in 0..<20 {if !child.isRunning {return};usleep(50000)}
         kill(child.processIdentifier, SIGKILL)
     }
-    func changeAggregation(enabled: Bool) {
-        let alert = NSAlert()
-        alert.messageText = enabled ? "开启 macOS 开发者聚合开关？" : "关闭 macOS 开发者聚合开关？"
-        alert.informativeText = "将修改系统级 net.inet.mptcp.allow_aggregate，影响本机其他 MPTCP 程序，需要管理员授权。不会修改系统代理或创建 TUN。"
-        alert.addButton(withTitle: "继续");alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else {return}
-        let value = enabled ? "1" : "0"
-        let script = NSAppleScript(source: "do shell script \"/usr/sbin/sysctl -w net.inet.mptcp.allow_aggregate=\(value)\" with administrator privileges")
-        var error: NSDictionary?
-        script?.executeAndReturnError(&error)
-        if error != nil {problem = "系统设置未更改，可能取消了授权"}
-        else {problem = nil;append(enabled ? "系统聚合开关已开启" : "系统聚合开关已关闭");launch("doctor")}
-    }
+
 }
 
 private struct DeskCard<Content: View>: View {
@@ -1447,19 +1433,16 @@ struct DesktopView: View {
                         Button { model.importProfile() } label: { Label("导入", systemImage: "square.and.arrow.down") }.buttonStyle(.borderless).disabled(locked)
                         Button { model.save() } label: { Label("保存", systemImage: "square.and.arrow.down.on.square") }.buttonStyle(.bordered).disabled(locked)
                     }
-                    Picker("传输模式", selection: $model.mode) {
-                        Text("Userspace Multipath").tag("userspace_multipath")
-                        Text("Native MPTCP（兼容）").tag("native_mptcp")
-                    }.pickerStyle(.segmented).onChange(of: model.mode) { model.applyModeSelection($0) }.disabled(locked)
+                    Label("MPX/4 Userspace", systemImage: "point.3.connected.trianglepath.dotted").font(.system(size: 12, weight: .medium)).foregroundColor(.secondary)
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 5) { Text("本地入口").font(.system(size: 10)).foregroundColor(.secondary); HStack { Text("127.0.0.1").foregroundColor(.secondary); TextField("端口", text: $model.listenPort).frame(width: 76); Button { copy("127.0.0.1:\(model.listenPort)") } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless) } }
                         if model.userspace { VStack(alignment: .leading, spacing: 5) { Text("Scheduler").font(.system(size: 10)).foregroundColor(.secondary); Picker("Scheduler", selection: $model.schedulerMode) { ForEach(SchedulerPolicy.allCases) { Text($0.title).tag($0.rawValue) } }.labelsHidden().frame(width: 140).accessibilityIdentifier("scheduler-policy") } }
                         Spacer()
                     }
                     HStack(spacing: 18) {
-                        Toggle("TCP", isOn: $model.tcpEnabled).toggleStyle(.switch).disabled(!model.userspace || locked)
-                        Toggle(model.userspace ? "原生 UDP" : "UDP 逐包轮询", isOn: Binding(get: { model.udpEnabled }, set: { model.setNativeUDPEnabled($0) })).toggleStyle(.switch).disabled(locked)
-                        Toggle("UoT", isOn: Binding(get: { model.uotEnabled }, set: { model.setUOTEnabled($0) })).toggleStyle(.switch).disabled(!model.userspace || locked)
+                        Toggle("TCP", isOn: $model.tcpEnabled).toggleStyle(.switch).disabled(locked)
+                        Toggle("原生 UDP", isOn: Binding(get: { model.udpEnabled }, set: { model.setNativeUDPEnabled($0) })).toggleStyle(.switch).disabled(locked)
+                        Toggle("UoT", isOn: Binding(get: { model.uotEnabled }, set: { model.setUOTEnabled($0) })).toggleStyle(.switch).disabled(locked)
                     }
                     if model.userspace {
                         Text(model.uotEnabled ? "UoT 经 TCP 多路径转发 UDP；需 Landing 支持，与原生 UDP 互斥。" : "原生 UDP 与 UoT 二选一；TCP 可独立开启。")
@@ -1506,7 +1489,7 @@ struct DesktopView: View {
                     ForEach(model.provisioningProfiles) { choice in remoteProfileRow(choice) }
                     if model.provisioningBundleMode == "parallel" { Text("各 Profile 独立重连；本地端口冲突会在启动前阻止整组。\n").font(.system(size: 10)).foregroundColor(.secondary) }
                 } else {
-                    Text("\(model.userspace ? "MPX/4 Userspace" : "Native MPTCP") · 127.0.0.1:\(model.listenPort) · \(model.relays.count) 条 Relay").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+                    Text("MPX/4 Userspace · 127.0.0.1:\(model.listenPort) · \(model.relays.count) 条 Relay").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
                 }
             }
         }
@@ -1520,7 +1503,7 @@ struct DesktopView: View {
             HStack(spacing: 10) {
                 Image(systemName: model.provisioningBundleMode == "parallel" ? (selected ? "checkmark.square.fill" : "square") : (selected ? "circle.inset.filled" : "circle"))
                     .foregroundColor(selected ? .indigo : .secondary)
-                VStack(alignment: .leading, spacing: 3) { Text(choice.name).font(.system(size: 12, weight: .semibold)).foregroundColor(.primary); Text("127.0.0.1:\(String(choice.listenPort)) · \(choice.relayCount) Relays · \(choice.mode == "userspace_multipath" ? "MPX/4" : "Native")").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary); if let error = model.provisioningRuntimeError[choice.id] { Text(error).font(.system(size: 10)).foregroundColor(.red).lineLimit(1) } }
+                VStack(alignment: .leading, spacing: 3) { Text(choice.name).font(.system(size: 12, weight: .semibold)).foregroundColor(.primary); Text("127.0.0.1:\(String(choice.listenPort)) · \(choice.relayCount) Relays · MPX/4").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary); if let error = model.provisioningRuntimeError[choice.id] { Text(error).font(.system(size: 10)).foregroundColor(.red).lineLimit(1) } }
                 Spacer(); Text(state).font(.system(size: 10, weight: .medium)).foregroundColor(bad ? .red : .secondary)
             }.padding(10).background(selected ? Color.indigo.opacity(0.07) : Color.black.opacity(0.025)).clipShape(RoundedRectangle(cornerRadius: 10))
         }.buttonStyle(.plain).disabled(model.running || model.busy || model.provisioningSyncing)
@@ -1530,7 +1513,7 @@ struct DesktopView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("实时状态").font(.system(size: 13, weight: .semibold))
             HStack(spacing: 9) {
-                DeskMetricTile(label: model.userspace ? "TCP Carrier" : "Native 子流", value: model.paths < 0 ? "—" : String(model.paths), detail: model.userspace ? "可用路径" : "系统状态")
+                DeskMetricTile(label: "TCP Carrier", value: model.paths < 0 ? "—" : String(model.paths), detail: "可用路径")
                 DeskMetricTile(label: "连接", value: String(model.connections), detail: "逻辑连接")
                 DeskMetricTile(label: "上传", value: Self.bytes(model.sent), detail: "累计发送")
                 DeskMetricTile(label: "下载", value: Self.bytes(model.received), detail: "累计接收")
@@ -1562,8 +1545,6 @@ struct DesktopView: View {
                 resourcePanels(model.resources, streamExpanded: $model.localStreamResourceExpanded, windowExpanded: $model.localWindowResourceExpanded)
                 pathSection(model.uotEnabled ? "TCP / UoT 共用路径" : "TCP 路径", model.tcpPaths, hideEndpoint: model.remoteConfigurationSelected)
                 if model.udpEnabled { pathSection("UDP 路径", model.udpPaths, hideEndpoint: model.remoteConfigurationSelected) }
-            } else {
-                DeskCard { Label("Native MPTCP 路径统计由系统提供。", systemImage: "info.circle").font(.system(size: 12)).foregroundColor(.secondary) }
             }
         }
     }
@@ -1625,7 +1606,7 @@ struct DesktopView: View {
                 if let resource { VStack(alignment: .leading, spacing: 5) { Text("活跃 Stream \(resource.active_streams) · Closing \(resource.closing_streams ?? 0) · 本地连接 \(resource.local_connections ?? 0)"); Text("Opening \(resource.lifecycle_opening ?? 0) · 双向开放 \(resource.lifecycle_open_bidirectional ?? 0) · 半关闭 \(resource.lifecycle_half_closed ?? 0)").foregroundColor(.secondary); Text("空闲 DATA >30s / >1m / >5m：\(resource.data_idle_over_30s ?? 0) / \(resource.data_idle_over_1m ?? 0) / \(resource.data_idle_over_5m ?? 0)").foregroundColor(.secondary) }.font(.system(size: 10, design: .monospaced)).padding(.top, 8) } else { Text("暂无 Stream / 生命周期资源数据").font(.system(size: 10)).foregroundColor(.secondary).padding(.top, 7) }
             } label: { HStack { Label("Stream / 生命周期", systemImage: "arrow.triangle.branch"); Spacer(); Text(resource.map { "活跃 \($0.active_streams)" } ?? "等待数据").font(.system(size: 10)).foregroundColor(.secondary) } }.padding(11).background(Color.black.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 10)).accessibilityIdentifier("stream-resource-disclosure")
             DisclosureGroup(isExpanded: windowExpanded) {
-                if let resource { VStack(alignment: .leading, spacing: 5) { Text("待确认帧 \(resource.pending_frames)/\(resource.pending_frame_limit)"); Text("接收未消费 \(Self.bytes(resource.receive_credit_bytes))/\(Self.bytes(resource.receive_credit_limit_bytes)) · 实际分页 \(Self.bytes(resource.receive_allocated_bytes))/\(Self.bytes(resource.receive_allocated_limit_bytes))").foregroundColor(.secondary); Text("DATA 队列 \(resource.data_pending_frames ?? 0) · 控制队列 \(resource.control_pending_frames ?? 0) · 窗口等待 \(resource.window_blocked_writers ?? 0)").foregroundColor(.secondary) }.font(.system(size: 10, design: .monospaced)).padding(.top, 8) } else { Text("暂无 Window / Credit 资源数据").font(.system(size: 10)).foregroundColor(.secondary).padding(.top, 7) }
+                if let resource { VStack(alignment: .leading, spacing: 5) { Text("待确认帧 \(resource.pending_frames)/\(resource.pending_frame_limit)"); Text("接收未消费 \(Self.bytes(resource.receive_credit_bytes))/\(Self.bytes(resource.receive_credit_limit_bytes)) · 实际分页 \(Self.bytes(resource.receive_allocated_bytes))/\(Self.bytes(resource.receive_allocated_limit_bytes))").foregroundColor(.secondary); Text("DATA 队列 \(resource.data_pending_frames ?? 0) · 控制队列 \(resource.control_pending_frames ?? 0) · 窗口等待 \(resource.window_blocked_writers ?? 0)").foregroundColor(.secondary); Text("待调度 \(Self.bytes(resource.ready_data_bytes ?? 0)) · 软目标 \(Self.bytes(resource.queue_admission_limit_bytes ?? 0)) · 排队等待 \(resource.queue_admission_waiters ?? 0)").foregroundColor(.secondary) }.font(.system(size: 10, design: .monospaced)).padding(.top, 8) } else { Text("暂无 Window / Credit 资源数据").font(.system(size: 10)).foregroundColor(.secondary).padding(.top, 7) }
             } label: { HStack { Label("Window / Credit", systemImage: "rectangle.split.3x1"); Spacer(); Text(resource.map { "待确认 \($0.pending_frames)" } ?? "等待数据").font(.system(size: 10)).foregroundColor(.secondary) } }.padding(11).background(Color.black.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 10)).accessibilityIdentifier("window-resource-disclosure")
         }
     }
@@ -1659,9 +1640,6 @@ struct DesktopView: View {
                 HStack { Toggle("自动检查", isOn: Binding(get: { updater.automaticChecks }, set: { updater.setAutomaticChecks($0) })).toggleStyle(.switch); Spacer(); Text(updater.status).font(.system(size: 10)).foregroundColor(.secondary) }
                 Divider()
                 HStack { VStack(alignment: .leading, spacing: 3) { Text("运行环境诊断").font(.system(size: 13, weight: .semibold)); Text("检查引擎、文件描述符和本地运行条件").font(.system(size: 10)).foregroundColor(.secondary) }; Spacer(); Button("检查环境") { model.launch("doctor") }.buttonStyle(.bordered).disabled(locked) }
-            }
-            if !model.userspace {
-                DeskCard { HStack { VStack(alignment: .leading, spacing: 4) { Text("Native MPTCP 系统开关").font(.system(size: 15, weight: .semibold)); Text("只影响 macOS 的 net.inet.mptcp.allow_aggregate").font(.system(size: 10)).foregroundColor(.secondary) }; Spacer(); Menu { Button("开启系统聚合…") { model.changeAggregation(enabled: true) }; Button("关闭系统聚合…") { model.changeAggregation(enabled: false) } } label: { Label("管理", systemImage: "gearshape") }.buttonStyle(.bordered) }.disabled(locked) }
             }
         }
     }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"net"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -120,15 +119,12 @@ func TestUDPMappingLimitAndIdleExpiry(t *testing.T) {
 }
 
 func TestUDPConfigBackwardCompatibility(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("legacy tcp_forward config compatibility is macOS-only")
-	}
-	c, err := readConfig(bytes.NewBufferString(`{"schema_version":2,"mode":"tcp_forward","listen_port":1081,"relays":[{"host":"192.0.2.1","port":20000},{"host":"192.0.2.2","port":20000}]}`))
-	if err != nil || c.UDPEnabled {
-		t.Fatalf("old profile: UDP=%v err=%v", c.UDPEnabled, err)
-	}
-	c, err = readConfig(bytes.NewBufferString(`{"schema_version":2,"mode":"tcp_forward","listen_port":1081,"udp_enabled":true,"relays":[{"host":"192.0.2.1","port":20000},{"host":"192.0.2.2","port":20000}]}`))
-	if err != nil || !c.UDPEnabled {
-		t.Fatalf("UDP profile: UDP=%v err=%v", c.UDPEnabled, err)
+	for _, raw := range []string{
+		`{"schema_version":2,"mode":"tcp_forward","listen_port":1081,"relays":[{"host":"192.0.2.1","port":20000},{"host":"192.0.2.2","port":20000}]}`,
+		`{"schema_version":2,"mode":"tcp_forward","listen_port":1081,"udp_enabled":true,"relays":[{"host":"192.0.2.1","port":20000},{"host":"192.0.2.2","port":20000}]}`,
+	} {
+		if _, err := readConfig(bytes.NewBufferString(raw)); err == nil {
+			t.Fatal("legacy Native config must not be accepted")
+		}
 	}
 }

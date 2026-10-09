@@ -166,7 +166,8 @@ type Session struct {
 	ready                                            map[uint64]*dataReadyQueue
 	readyStreams                                     list.List
 	bulkReady                                        *dataReadyQueue
-	readyFrames                                      int
+	readyFrames, readyDataBytes, queueAdmissionLimit int
+	queueAdmissionWaiters                            int
 	receiveCredit, windowSeed                        int
 	windowSeedAt                                     time.Time
 	clockStart                                       time.Time
@@ -221,6 +222,7 @@ func newSession(parent context.Context, id sessionID, server bool, onOpen func(*
 		mode = modes[0]
 	}
 	s.initScheduler(mode)
+	s.queueAdmissionLimit = queueAdmissionLimitFromEnv()
 	s.initCreditLocked()
 	go s.run()
 	return s
@@ -255,6 +257,8 @@ func (s *Session) beginWriterWaitLocked(st *Stream, reason int) <-chan struct{} 
 	switch reason {
 	case waitPendingFrames, waitPendingBytes:
 		s.pendingWaiters++
+	case waitQueueAdmission:
+		s.queueAdmissionWaiters++
 	case waitSessionWindow, waitBootstrap, waitGrowth:
 		s.creditWaiters++
 	case waitWriterTurn:
@@ -271,6 +275,10 @@ func (s *Session) endWriterWaitLocked(st *Stream) {
 	case waitPendingFrames, waitPendingBytes:
 		if s.pendingWaiters > 0 {
 			s.pendingWaiters--
+		}
+	case waitQueueAdmission:
+		if s.queueAdmissionWaiters > 0 {
+			s.queueAdmissionWaiters--
 		}
 	case waitSessionWindow, waitBootstrap, waitGrowth:
 		if s.creditWaiters > 0 {
@@ -414,6 +422,7 @@ func (s *Session) stop(err error) {
 	s.controlPendingBytes = 0
 	s.pendingBytes = 0
 	s.bufferedBytes = 0
+	s.readyDataBytes = 0
 	s.wakeLocked()
 }
 
@@ -891,7 +900,11 @@ func (s *Session) removePendingLocked(p *outbound) {
 		return
 	}
 	delete(s.pending, p.f.id)
+	readyBefore := s.readyDataBytes
 	s.unreadyLocked(p)
+	if s.readyDataBytes < readyBefore {
+		s.signalQueueAdmissionLocked(readyBefore - s.readyDataBytes)
+	}
 	s.pendingBytes -= p.cost
 	if p.f.kind == kindData {
 		s.dataPendingFrames--

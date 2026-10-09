@@ -18,8 +18,8 @@ import Foundation
         let cacheEndpoint = "https://config.example.test/v1/bundle/" + String(repeating:"a",count:64)
         let cacheA = RelayProvisioningPayload(
             schema_version:1, profile_id:"cache-a", revision:"r1", display_name:"Cache A",
-            mode:"native_mptcp", listen_port:1181, scheduler_mode:nil,
-            tcp_enabled:true, udp_enabled:false, background_resident:false, transport_key:nil, relays:relays
+            mode:"userspace_multipath", listen_port:1181, scheduler_mode:"auto",
+            tcp_enabled:true, udp_enabled:false, background_resident:false, transport_key:String(repeating:"a",count:64), relays:relays
         )
         var cacheB = cacheA
         cacheB.profile_id = "cache-b"; cacheB.display_name = "Cache B"; cacheB.listen_port = 1182
@@ -73,7 +73,7 @@ import Foundation
         do { _ = try RemoteControlEndpoint.baseURL("https://control.example.test/path"); fatalError("remote-control subpath accepted") } catch is ProfileError {}
 
         let legacy = Profile(schema_version:2,mode:"tcp_forward",listen_port:1081,relays:relays,udp_enabled:nil,tcp_enabled:nil,transport_key:nil)
-        try legacy.validate();precondition(!legacy.userspace)
+        do { try legacy.validate(); fatalError("Native MPTCP config was accepted") } catch is ProfileError {}
         var modern = Profile(schema_version:3,mode:"userspace_multipath",listen_port:1081,relays:relays,udp_enabled:true,tcp_enabled:true,transport_key:String(repeating:"a",count:64))
         try modern.validate()
         let encoded = try JSONEncoder().encode(modern)
@@ -154,8 +154,9 @@ import Foundation
         model.append("Userspace 认证通过；实际带宽叠加取决于链路容量，不作为测速结论")
         precondition(model.logs.last?.contains("认证通过") == true)
         precondition(model.logs.last?.contains("测速") == false)
-        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("userspace-bundle","userspace_multipath",0,true),("native-connect","native_mptcp",0,false),("userspace-paths","userspace_multipath",2,false),("userspace-paths-expanded","userspace_multipath",2,false),("userspace-bundle-paths","userspace_multipath",2,true),("userspace-bundle-paths-expanded","userspace_multipath",2,true),("settings","userspace_multipath",3,false)] {
-            model.mode=mode;model.tab=tab;model.problem=nil;model.running=false;model.busy=false
+        for (name,mode,tab,api) in [("userspace-connect","userspace_multipath",0,false),("userspace-api","userspace_multipath",0,true),("userspace-bundle","userspace_multipath",0,true),("userspace-paths","userspace_multipath",2,false),("userspace-paths-expanded","userspace_multipath",2,false),("userspace-bundle-paths","userspace_multipath",2,true),("userspace-bundle-paths-expanded","userspace_multipath",2,true),("settings","userspace_multipath",3,false)] {
+            precondition(mode == "userspace_multipath")
+            model.tab=tab;model.problem=nil;model.running=false;model.busy=false
             model.configurationSource=api ? "remote" : "local"
             model.provisioningURL=api ? "https://config.example.test/v1/bundle/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" : ""
             model.provisioningStatus=api ? "Synthetic Profile · 已同步 · 1" : "手动配置"

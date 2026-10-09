@@ -41,8 +41,8 @@ func TestSchedulerConfigCompatibility(t *testing.T) {
 			t.Fatal("scheduler validation", value, err)
 		}
 		c.Mode = "native_mptcp"
-		if err := c.validateForOS("darwin"); err != nil {
-			t.Fatal("Native must ignore scheduler string", value, err)
+		if err := c.validateForOS("darwin"); err == nil {
+			t.Fatal("Native fallback must be rejected on macOS", value)
 		}
 	}
 	base.SchedulerMode = nil

@@ -1,9 +1,9 @@
-# MPTCP Desk v1.1.1
+# MPTCP Desk v1.1.2
 
 MPTCP Desk 是 MPTCP Userspace 的 macOS GUI Client，当前使用 **MPX/4 Protocol Version 4 Stable**。
 
 ```text
-App Version:       1.1.1
+App Version:       1.1.2
 Protocol Release:  protocol-v4.0.0
 Protocol Source:   44f587fd279ed2238b070dd68114c76822353f4d
 Capability Rev:    8
@@ -37,6 +37,12 @@ Transport Key、Provisioning URL 与 Remote Control credential 通过 Keychain/B
 Auto / Aggregate / Protect / Weighted 是端点本地策略，不是 MPX/4 Stable Core 的 wire Scheduler ID。
 
 Weighted 容量是 prior，不是固定百分比分流。实时 RTT、goodput、queue/outstanding、penalty 与路径健康仍会改变实际使用比例。
+
+## v1.1.2 Queue-aware Admission / Userspace only
+
+已彻底移除 Native/kernel MPTCP 传输、原生模式切换及修改系统 allow_aggregate 的管理员操作。旧 Native 配置必须手动转到 MPX/4 Userspace，不会自动透传或覆盖现有保存内容。
+
+发送端对待调度 DATA 默认使用 32 MiB 的软目标，额外保护新 Stream 的首批 DATA，MPX_QUEUE_ADMISSION_MIB=0 可关闭；MPX/4 稳定协议与冻结 Keychain Broker v1 不变。
 
 ## v1.1.1 Flow Control
 
