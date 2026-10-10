@@ -8,8 +8,24 @@ const (
 	controlBurstLimit   = 16
 )
 
+// A Carrier with a Socket write stalled past the round-trip response horizon
+// cannot promptly carry additional WINDOW/OPEN/FIN controls. Only Weighted
+// uses this backpressure hint; other modes keep their established routing.
+// Directed DATA ACK/PING/PONG never go through this generic helper.
+func (s *Session) controlWriterStalled(c *carrier, now time.Time) bool {
+	if c == nil || s.scheduler.configured != SchedulerWeighted {
+		return false
+	}
+	started := c.writeStartedNS.Load()
+	if started == 0 {
+		return false
+	}
+	return now.Sub(time.Unix(0, started)) >= max(100*time.Millisecond, 2*c.minRTT)
+}
+
 // Control packets do not borrow DATA's pending or carrier-flight budget.
 func (s *Session) dispatchControlsLocked() {
+	now := time.Now()
 	for count := 0; count < 128 && s.controlReady.Len() > 0; count++ {
 		p := s.controlReady.Front().Value.(*outbound)
 		var best *carrier
@@ -17,7 +33,11 @@ func (s *Session) dispatchControlsLocked() {
 			if !c.active || len(c.reliableControl) >= controlCarrierQueue || c.controlOutstanding+p.cost > controlPathBudget {
 				continue
 			}
-			if best == nil || c.controlOutstanding < best.controlOutstanding || (c.controlOutstanding == best.controlOutstanding && c.id < best.id) {
+			candidateStalled := s.controlWriterStalled(c, now)
+			bestStalled := s.controlWriterStalled(best, now)
+			if best == nil || (bestStalled && !candidateStalled) ||
+				(bestStalled == candidateStalled && (c.controlOutstanding < best.controlOutstanding ||
+					(c.controlOutstanding == best.controlOutstanding && c.id < best.id))) {
 				best = c
 			}
 		}
@@ -199,8 +219,11 @@ func (s *Session) writeCarrier(c *carrier) {
 			s.carrierFailure(c, err)
 			return
 		}
-		if err := c.conn.writeFrames(frames); err != nil {
-			s.carrierFailure(c, err)
+		c.writeStartedNS.Store(time.Now().UnixNano())
+		writeErr := c.conn.writeFrames(frames)
+		c.writeStartedNS.Store(0)
+		if writeErr != nil {
+			s.carrierFailure(c, writeErr)
 			return
 		}
 		// Pending DATA owns retransmission payloads. The reusable batch should

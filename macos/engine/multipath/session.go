@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"sync/atomic"
 	"time"
 )
 
@@ -134,6 +135,9 @@ type carrier struct {
 	penaltyUntil                      time.Time
 	sent, received, errors            uint64
 	lastError                         string
+	// Set only while this Carrier writer is inside writeFrames. Atomic read
+	// avoids taking Session.mu from the Socket I/O goroutine.
+	writeStartedNS atomic.Int64
 }
 
 // All stream, ledger and carrier accounting lives under one mutex. Network I/O
@@ -836,7 +840,7 @@ func (s *Session) controlLocked(c *carrier, f frame) bool {
 	// DATA backlog. Control has its own bounded queue, NOT the DATA flight gate.
 	now := time.Now()
 	var best *carrier
-	bestTier, bestScore := 4, 1e30
+	bestTier, bestScore := 8, 1e30
 	for _, p := range s.paths {
 		if p == c || !p.active || len(p.control) >= cap(p.control) {
 			continue
@@ -847,6 +851,11 @@ func (s *Session) controlLocked(c *carrier, f frame) bool {
 			if s.scheduler.effective != SchedulerProtect || p.scheduler.role == RoleActive {
 				tier = 0
 			}
+		}
+		// Only generic control may move. A directed ACK stays on the
+		// receiving Carrier for correct MPX delivery/RTT attribution.
+		if s.controlWriterStalled(p, now) {
+			tier += 4
 		}
 		rate := max(p.goodput, 65536)
 		debt := p.outstanding + p.controlOutstanding + 64*len(p.control)

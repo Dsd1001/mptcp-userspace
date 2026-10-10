@@ -58,6 +58,23 @@ A local Profile can provide `download_mbps` and optional `upload_mbps` per Relay
 
 Capacity hints are scheduling information, not MPX flow-control credit.
 
+### v1.1.5: control-frame routing around a blocked Carrier writer
+
+Weighted tracks when a Carrier's existing encrypted TCP write has been blocked
+for longer than max(100 ms, 2 times minimum measured RTT) and preferentially
+routes new path-independent control frames and reliable stream controls
+(OPEN/FIN/RESET) to another eligible, unblocked Carrier. A directed DATA ACK,
+PING or PONG retains its established Carrier affinity. If every Carrier is
+blocked, control delivery still has a fallback; nothing is dropped merely
+because every writer is busy.
+
+This is a control-plane latency improvement for partial path stalls, not a
+change to DATA scheduling, configured capacity, Flight Budget, Queue Admission,
+Stream/Session WINDOWs or MPX/4 stable wire semantics. It does not claim to
+resolve full-path congestion collapse under simultaneous 150-stream downloads.
+Auto, Aggregate and Protect retain their previous routing behavior.
+
+
 ## Which mode should I use?
 
 | Goal | Suggested mode |

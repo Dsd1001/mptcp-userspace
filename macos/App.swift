@@ -333,7 +333,7 @@ final class Model: ObservableObject {
            var profile = try? JSONDecoder().decode(Profile.self, from: data) {
             do {
                 guard profile.userspace else {
-                    throw Message("检测到旧 Native MPTCP 配置。v1.1.4 只支持 Userspace，请重新填写 Transport Key 与 Relay 后保存")
+                    throw Message("检测到旧 Native MPTCP 配置。v1.1.5 只支持 Userspace，请重新填写 Transport Key 与 Relay 后保存")
                 }
                 profile.transport_key = try TransportKeyStore.load()
                 try profile.validate()
