@@ -304,6 +304,9 @@ func TestWO01LocalAB(t *testing.T) {
 	captureDone := make(chan struct{})
 	go func() {
 		defer close(captureDone)
+		// started is written before start is closed. Waiting on this channel
+		// establishes a happens-before edge for the timing base on all goroutines.
+		<-start
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
