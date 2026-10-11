@@ -754,11 +754,19 @@ func (s *Session) dispatchLocked(now time.Time) {
 		if rq == nil || rq.frames.Len() == 0 {
 			return true
 		}
-		c := s.pathLocked(now)
+		p := rq.frames.Front().Value.(*outbound)
+		var c *carrier
+		priority := false
+		if fast {
+			c = s.firstDataCarrierLocked(p, now)
+			priority = c != nil
+		}
+		if c == nil {
+			c = s.pathLocked(now)
+		}
 		if c == nil {
 			return false
 		}
-		p := rq.frames.Front().Value.(*outbound)
 		s.unreadyLocked(p)
 		p.path = c
 		p.generation++
@@ -778,12 +786,19 @@ func (s *Session) dispatchLocked(now time.Time) {
 		}
 		c.outstanding += p.cost
 		c.queued += p.cost
+		// Only a committed priority channel slot consumes Session Tokens.
+		// Regular DATA still uses the original 4-slot Carrier queue.
+		targetQueue := c.queue
+		if priority {
+			targetQueue = c.priorityDATA
+		}
 		select {
-		case c.queue <- sendTask{p: p, generation: p.generation}:
-			if fast {
+		case targetQueue <- sendTask{p: p, generation: p.generation}:
+			if priority {
 				s.firstDataTokens -= p.cost
 				p.firstDataTokenCharged = true
 				s.firstDataPromoted++
+				s.recordSelectedPathLocked(c)
 			}
 			s.schedulerAllocatedLocked(c, p, now)
 			if advanceFair {

@@ -106,14 +106,17 @@ type sendTask struct {
 }
 
 type carrier struct {
-	generation                        uint64
-	scheduler                         schedulerPathState
-	id                                uint64
-	address                           string
-	conn                              *secureConn
-	active                            bool
-	done                              chan struct{}
-	queue                             chan sendTask
+	generation uint64
+	scheduler  schedulerPathState
+	id         uint64
+	address    string
+	conn       *secureConn
+	active     bool
+	done       chan struct{}
+	queue      chan sendTask
+	// At most two 32KiB first-DATA frames bypass the ordinary Carrier
+	// DATA queue. This is still owned by the existing single Socket writer.
+	priorityDATA                      chan sendTask
 	control                           chan frame
 	reliableControl                   chan sendTask
 	controlOutstanding, controlQueued int
@@ -560,7 +563,7 @@ func (s *Session) addCarrier(id uint64, address string, conn *secureConn) error 
 		}
 		s.effectiveCarrierLimit = min(s.localMaxCarriers, s.peerMaxCarriers)
 	}
-	c := &carrier{id: id, generation: conn.generation, address: address, conn: conn, active: true, done: make(chan struct{}), queue: make(chan sendTask, carrierQueue), control: make(chan frame, 512), reliableControl: make(chan sendTask, controlCarrierQueue), rtt: 50 * time.Millisecond, goodput: 4 << 20, configuredRateBPS: conn.configuredRateBPS, sampleAt: time.Now()}
+	c := &carrier{id: id, generation: conn.generation, address: address, conn: conn, active: true, done: make(chan struct{}), queue: make(chan sendTask, carrierQueue), priorityDATA: make(chan sendTask, 2), control: make(chan frame, 512), reliableControl: make(chan sendTask, controlCarrierQueue), rtt: 50 * time.Millisecond, goodput: 4 << 20, configuredRateBPS: conn.configuredRateBPS, sampleAt: time.Now()}
 	c.scheduler.role = RoleLearning
 	c.scheduler.lastRoleReason = "awaiting_3_delivery_samples"
 	// Fill the bounded capacity history with the explicit startup prior, not

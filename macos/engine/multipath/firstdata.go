@@ -1,5 +1,7 @@
 package multipath
 
+import "time"
+
 // Weighted-only, DATA-only fast lane. It never redirects or reprioritizes
 // reliable controls, ACK, OPEN, WINDOW, FIN or RESET. Session.mu protects all
 // state: no timers, goroutines, configuration UI or MPX/4 wire changes.
@@ -28,7 +30,7 @@ func (s *Session) initFirstDataTokensLocked() {
 }
 
 func (s *Session) firstDataCandidateLocked() (*dataReadyQueue, int) {
-	if s.scheduler.configured != SchedulerWeighted ||
+	if !s.server || s.scheduler.configured != SchedulerWeighted ||
 		s.weightedHerdGuardLocked() || s.fastReady.Len() == 0 ||
 		s.dispatchSequence%firstDataFastTurnStride != 0 {
 		return nil, 0
@@ -57,4 +59,56 @@ func (s *Session) firstDataOnReceiptLocked(p *outbound) {
 	s.initFirstDataTokensLocked()
 	refill := max(1, p.cost/firstDataTokenRefillDiv)
 	s.firstDataTokens = min(s.firstDataTokenCapLocked(), s.firstDataTokens+refill)
+}
+
+// A first response must be able to bypass already queued Bulk DATA, not
+// merely move ahead in the Session's Ready ring. Choose a low-baseRTT
+// Carrier with two reserved DATA slots, allowing at most 64KiB extra
+// flight. Unlike legacy score selection this explicitly prefers low latency.
+// Uses the existing per-Session Token and 4:1 fairness gate. Never bypasses
+// control, penalized Carrier, stalled writer or 48MiB total flight ceiling.
+// The fallback is ordinary fair DATA and does not spend a Token.
+func (s *Session) firstDataCarrierLocked(p *outbound, now time.Time) *carrier {
+	if !s.server || s.scheduler.configured != SchedulerWeighted ||
+		s.weightedHerdGuardLocked() || p == nil || p.f.kind != kindData ||
+		p.f.offset != 0 || p.generation != 0 {
+		return nil
+	}
+	flight := 0
+	for _, c := range s.paths {
+		if c.active {
+			flight += c.outstanding
+		}
+	}
+	if flight+p.cost >= 48<<20 {
+		return nil
+	}
+	var best *carrier
+	bestScore := 1e30
+	for _, c := range s.paths {
+		if !c.active || c.configuredRateBPS <= 0 || now.Before(c.penaltyUntil) ||
+			s.controlWriterStalled(c, now) || c.priorityDATA == nil ||
+			len(c.priorityDATA) >= cap(c.priorityDATA) {
+			continue
+		}
+		budget := c.weightedAdaptiveBudget
+		if budget <= 0 {
+			budget = weightedAdaptiveTargetBudget(c, c.configuredRateBPS, now)
+		}
+		if c.outstanding+p.cost > min(maxPathBudget, budget+2*MaxPayload) {
+			continue
+		}
+		rtt := c.minRTT
+		if rtt <= 0 {
+			rtt = c.rtt
+		}
+		rtt = max(time.Millisecond, rtt)
+		rate := max(c.configuredRateBPS, float64(65536))
+		score := rtt.Seconds() + .20*float64(c.outstanding+p.cost)/rate +
+			.008*float64(len(c.priorityDATA))
+		if best == nil || score < bestScore || (score == bestScore && c.id < best.id) {
+			best, bestScore = c, score
+		}
+	}
+	return best
 }

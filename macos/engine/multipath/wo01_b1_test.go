@@ -8,7 +8,10 @@ import (
 func wo01B1Session() (*Session, *carrier) {
 	s := schedulerFixture()
 	s.initScheduler(SchedulerWeighted)
+	s.server = true
 	c := schedulerPath(1)
+	c.priorityDATA = make(chan sendTask, 2)
+	c.configuredRateBPS = configuredRateBPS(92)
 	c.budget = maxPathBudget
 	s.paths[1] = c
 	return s, c

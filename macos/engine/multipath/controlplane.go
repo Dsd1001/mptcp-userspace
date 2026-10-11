@@ -81,7 +81,7 @@ func (c *carrier) releaseQueued(p *outbound) {
 // ready DATA a turn after at most 16 controls. This bounds mutual starvation
 // without creating another payload copy or waiting to assemble a batch.
 func (s *Session) writeCarrier(c *carrier) {
-	streak, turn := 0, 0
+	streak, turn, firstDataBurst := 0, 0, 0
 	// Reuse the batch backing array across writes. writeFrames consumes the
 	// slice synchronously while holding the connection's transmit lock, so the
 	// carrier writer can safely retain this capacity without another allocation
@@ -117,9 +117,28 @@ func (s *Session) writeCarrier(c *carrier) {
 			return frame{}, task, true, true
 		default:
 		}
+		// A burst of first-DATA frames may never starve regular Bulk.
+		// Reliable controls are always checked before either DATA class.
+		if firstDataBurst >= 4 {
+			select {
+			case task := <-c.queue:
+				streak = 0
+				firstDataBurst = 0
+				return frame{}, task, true, true
+			default:
+			}
+		}
+		select {
+		case task := <-c.priorityDATA:
+			streak = 0
+			firstDataBurst++
+			return frame{}, task, true, true
+		default:
+		}
 		select {
 		case task := <-c.queue:
 			streak = 0
+			firstDataBurst = 0
 			return frame{}, task, true, true
 		default:
 		}
@@ -137,8 +156,13 @@ func (s *Session) writeCarrier(c *carrier) {
 		case task := <-c.reliableControl:
 			streak++
 			return frame{}, task, true, true
+		case task := <-c.priorityDATA:
+			streak = 0
+			firstDataBurst++
+			return frame{}, task, true, true
 		case task := <-c.queue:
 			streak = 0
+			firstDataBurst = 0
 			return frame{}, task, true, true
 		}
 	}
