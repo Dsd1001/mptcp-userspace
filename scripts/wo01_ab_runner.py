@@ -12,6 +12,7 @@ import os
 import signal
 from pathlib import Path
 import re
+import resource
 import subprocess
 import sys
 import time
@@ -33,6 +34,7 @@ def run_one(args,stage,worktree,scenario,round_id,out_dir):
     if args.go_cache:env["GOCACHE"]=args.go_cache
     command=[str(GO),"test","./multipath","-run","^TestWO01LocalAB$","-count=1","-v","-timeout=125s"]
     started=time.monotonic()
+    usage_before=resource.getrusage(resource.RUSAGE_CHILDREN)
     # Own process group: if go test hangs, kill Go AND the spawned test
     # binary, then preserve a structured FAIL rather than orphaning stress.
     timed_out=False
@@ -46,6 +48,9 @@ def run_one(args,stage,worktree,scenario,round_id,out_dir):
             os.killpg(outcome.pid,signal.SIGKILL)
             output,_=outcome.communicate()
             output += "\nWO01_RUNNER_TIMEOUT 145s; killed test process group\n"
+    usage_after=resource.getrusage(resource.RUSAGE_CHILDREN)
+    os_process_cpu_seconds=max(0.0, (usage_after.ru_utime+usage_after.ru_stime)
+                                   -(usage_before.ru_utime+usage_before.ru_stime))
     exit_code=124 if timed_out else outcome.returncode
     path=out_dir/f"{round_id:02d}-{stage}-{scenario}.log"
     path.write_text(output)
@@ -65,6 +70,7 @@ def run_one(args,stage,worktree,scenario,round_id,out_dir):
     row={"stage":stage,"scenario":scenario,"round":round_id,
          "source_sha":git("rev-parse",f"{args.refs[stage]}^{{commit}}").stdout.strip(),
          "elapsed_command_s":round(time.monotonic()-started,3),
+         "os_process_cpu_seconds":round(os_process_cpu_seconds,6),
          "exit_code":exit_code,"test_pass_marker":passed,
          "json_records":len(matches),"integrity_pass":ok,
          "log":path.name,**result}

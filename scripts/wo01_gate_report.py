@@ -61,7 +61,7 @@ def report(path):
                 "median_wait_first_byte_p95_ms":wait_first_p95,
                 "max_writer_stall_ms":max([float(r.get("writer_stall_max_ms",0)) for r in rr],default=0),
                 "sum_path_errors":sum(sum(int(v) for v in r.get("path_errors",[])) for r in rr),
-                "median_cpu_seconds":med(rr,"runtime_cpu_seconds"),
+                "median_cpu_seconds":med(rr,"os_process_cpu_seconds"),
                 "median_heap_peak_bytes":med(rr,"peak_heap_bytes"),
                 "median_tail_t99_to_t100_seconds":med(rr,"tail_t99_to_100_seconds"),
                 "gate_pass":gate,
@@ -77,7 +77,7 @@ def report(path):
                     "first_data_priority_frames":r.get("first_data_priority_frames"),
                     "client_first_data_priority_frames":r.get("client_first_data_priority_frames"),
                     "peak_heap_bytes":r.get("peak_heap_bytes"),
-                    "cpu_seconds":r.get("runtime_cpu_seconds"),
+                    "cpu_seconds":r.get("os_process_cpu_seconds"),
                     "path_errors":r.get("path_errors"),
                     "tail_t99_to_t100_s":r.get("tail_t99_to_100_seconds"),
                     "writer_stall_ms":r.get("writer_stall_max_ms"),
@@ -97,6 +97,7 @@ def report(path):
     out+=["","## 判定与统计限制","",
           "单阶段全部原始轮次无失败，且相对 Legacy 吞吐中位不少于 95%、32KiB完成 P95/P99 与真实首字节 TTFB P95/P99 中位均不超过 110%，才算此场景 PASS。",
           "本夹具每轮仅 12 个短探针，按最近秩计算 P95 与 P99 通常等于最大样本值；不能将其误认为大样本概率保证。",
+          "CPU秒指 Python Runner 用操作系统 RUSAGE_CHILDREN 统计本轮 Go 测试进程 user+system CPU；旧轮次缺失此字段显示 n/a。Go /cpu/classes/total 包含闲置 CPU 容量，严禁当作实际进程 CPU。",
           "控制帧专项、丢包、150 Stream 和高 BDP 未全部通过前，不接受整体放行。","",
           "**NO-GO**" if not summary["overall_pass"] else "本机全矩阵闸门暂 PASS（仍不能自行部署/发版）。",""]
     (path/"gate-report.md").write_text("\n".join(out))
