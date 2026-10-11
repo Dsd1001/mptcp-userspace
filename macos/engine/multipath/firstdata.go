@@ -8,7 +8,6 @@ import "time"
 const (
 	firstDataTokenCapNormal = 256 << 10
 	firstDataTokenCapBusy   = 64 << 10
-	firstDataFastTurnStride = 4 // at least three fair turns for each priority turn
 	firstDataTokenRefillDiv = 8 // gated on real DATA delivery confirmation
 )
 
@@ -31,8 +30,7 @@ func (s *Session) initFirstDataTokensLocked() {
 
 func (s *Session) firstDataCandidateLocked() (*dataReadyQueue, int) {
 	if !s.server || s.scheduler.configured != SchedulerWeighted ||
-		s.weightedHerdGuardLocked() || s.fastReady.Len() == 0 ||
-		s.dispatchSequence%firstDataFastTurnStride != 0 {
+		s.weightedHerdGuardLocked() || s.fastReady.Len() == 0 {
 		return nil, 0
 	}
 	s.initFirstDataTokensLocked()
@@ -68,6 +66,9 @@ func (s *Session) firstDataOnReceiptLocked(p *outbound) {
 // Uses the existing per-Session Token and 4:1 fairness gate. Never bypasses
 // control, penalized Carrier, stalled writer or 48MiB total flight ceiling.
 // The fallback is ordinary fair DATA and does not spend a Token.
+// The Socket writer (not the Session dispatch modulo) enforces the 4:1
+// DATA-class fairness rule. A saturated normal flight must not stop an
+// eligible short first response from claiming its bounded bypass slot.
 func (s *Session) firstDataCarrierLocked(p *outbound, now time.Time) *carrier {
 	if !s.server || s.scheduler.configured != SchedulerWeighted ||
 		s.weightedHerdGuardLocked() || p == nil || p.f.kind != kindData ||

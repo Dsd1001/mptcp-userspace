@@ -10,6 +10,9 @@ import (
 
 func TestWO01B1PriorityCarrierQueueBypassesBoundedBulk(t *testing.T) {
 	s, c := wo01B1Session()
+	// If only normal DATA can advance dispatchSequence to the fourth turn,
+	// a saturated normal path can permanently prevent a short response boost.
+	s.dispatchSequence = 1
 	s.streams[1] = &Stream{s: s, id: 1}
 	// The normal writer has four queued Bulk tasks. First DATA has a
 	// different two-slot queue, subject to one shared Session burst cap.
