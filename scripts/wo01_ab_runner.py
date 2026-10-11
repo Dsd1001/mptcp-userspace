@@ -92,7 +92,7 @@ def main():
     sha=hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
     for stage in stage_list:
         rev=git("rev-parse",f"{args.refs[stage]}^{{commit}}").stdout.strip()
-        target=WORKTREE/"validation"/"reference-worktrees"/stage
+        target=WORKTREE/"validation"/"reference-worktrees"/(stage+"-"+rev[:12])
         if target.exists():
             if git("rev-parse","--show-toplevel",check=False).returncode!=0: p.error("unexpected git status")
             actual=subprocess.run(["git","-C",str(target),"rev-parse","HEAD"],capture_output=True,text=True)
