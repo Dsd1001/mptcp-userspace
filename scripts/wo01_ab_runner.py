@@ -9,6 +9,7 @@ import csv
 import hashlib
 import json
 import os
+import signal
 from pathlib import Path
 import re
 import subprocess
@@ -32,15 +33,29 @@ def run_one(args,stage,worktree,scenario,round_id,out_dir):
     if args.go_cache:env["GOCACHE"]=args.go_cache
     command=[str(GO),"test","./multipath","-run","^TestWO01LocalAB$","-count=1","-v","-timeout=125s"]
     started=time.monotonic()
-    outcome=subprocess.run(command,cwd=worktree/"macos/engine",env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=145)
-    output=outcome.stdout
+    # Own process group: if go test hangs, kill Go AND the spawned test
+    # binary, then preserve a structured FAIL rather than orphaning stress.
+    timed_out=False
+    with subprocess.Popen(command,cwd=worktree/"macos/engine",env=env,
+                          text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
+                          start_new_session=True) as outcome:
+        try:
+            output,_=outcome.communicate(timeout=145)
+        except subprocess.TimeoutExpired:
+            timed_out=True
+            os.killpg(outcome.pid,signal.SIGKILL)
+            output,_=outcome.communicate()
+            output += "\nWO01_RUNNER_TIMEOUT 145s; killed test process group\n"
+    exit_code=124 if timed_out else outcome.returncode
     path=out_dir/f"{round_id:02d}-{stage}-{scenario}.log"
     path.write_text(output)
     matches=re.findall(r"WO01_RESULT\s+(\{[^\n]+\})",output)
     passed=re.search(r"--- PASS: TestWO01LocalAB\b",output) is not None
     complete=len(matches)==1
     result=json.loads(matches[0]) if complete else {}
-    ok=(outcome.returncode==0 and passed and complete and
+    ok=(exit_code==0 and passed and complete and
+        result.get("completion_timing_valid") is True and
+        result.get("completed_streams")==result.get("streams") and
         result.get("expected_bytes")==result.get("delivered_bytes") and
         result.get("backend_failures")==0 and
         result.get("backend_graceful")==result.get("streams",0)+12 and
@@ -50,13 +65,13 @@ def run_one(args,stage,worktree,scenario,round_id,out_dir):
     row={"stage":stage,"scenario":scenario,"round":round_id,
          "source_sha":git("rev-parse",f"{args.refs[stage]}^{{commit}}").stdout.strip(),
          "elapsed_command_s":round(time.monotonic()-started,3),
-         "exit_code":outcome.returncode,"test_pass_marker":passed,
+         "exit_code":exit_code,"test_pass_marker":passed,
          "json_records":len(matches),"integrity_pass":ok,
          "log":path.name,**result}
     (out_dir/f"{round_id:02d}-{stage}-{scenario}.json").write_text(json.dumps(row,indent=2,ensure_ascii=False)+"\n")
     print(f"{'PASS' if ok else 'FAIL'} {stage:7s} {scenario:12s} round={round_id} "
           f"Mbps={result.get('mbps')} probe_p95={result.get('probe_p95_ms')} "
-          f"exit={outcome.returncode} log={path.name}",flush=True)
+          f"exit={exit_code} log={path.name}",flush=True)
     return row
 
 def main():
@@ -64,6 +79,7 @@ def main():
     p.add_argument("--stages",default="legacy,a1,a,ab")
     p.add_argument("--scenarios",default="hetero12,uniform12,single,synch150,stagger150,high100,high300,onecarrier,eightcarriers")
     p.add_argument("--rounds",type=int,default=5)
+    p.add_argument("--cooldown",type=float,default=0.0,help="pause between tests, never during a test")
     p.add_argument("--mib",type=int,default=0)
     p.add_argument("--delays",default="")
     p.add_argument("--rates",default="")
@@ -75,6 +91,7 @@ def main():
     args=p.parse_args()
     args.refs={"legacy":"v1.1.5","a1":args.a1_ref,"a":args.a_ref,"ab":args.ab_ref}
     stage_list=args.stages.split(",")
+    if args.cooldown<0 or args.cooldown>60:p.error("invalid cooldown")
     if args.rounds<1 or any(s not in STAGES for s in stage_list) or any(not args.refs.get(s) for s in stage_list):
         p.error("invalid stages/rounds or missing --a-ref/--ab-ref")
     scenarios=args.scenarios.split(",")
@@ -110,7 +127,7 @@ def main():
           "fixture_sha256":sha,
           "refs":{s:git("rev-parse",f"{args.refs[s]}^{{commit}}").stdout.strip() for s in stage_list},
           "date_utc":datetime.now(timezone.utc).isoformat(),
-          "loopback_only":True,"mib_override":args.mib,"delays_override":args.delays,"rates_override":args.rates}
+          "loopback_only":True,"cooldown_seconds":args.cooldown,"mib_override":args.mib,"delays_override":args.delays,"rates_override":args.rates}
     (directory/"meta.json").write_text(json.dumps(meta,indent=2,ensure_ascii=False)+"\n")
     all_rows=[]
     try:
@@ -120,6 +137,7 @@ def main():
                 order=stage_list[(round_id-1)%len(stage_list):]+stage_list[:(round_id-1)%len(stage_list)]
                 if round_id%2==0:order=order[::-1]
                 for stage in order:
+                    if all_rows and args.cooldown>0:time.sleep(args.cooldown)
                     all_rows.append(run_one(args,stage,tests[stage],scenario,round_id,directory))
                     (directory/"all-rounds.json").write_text(json.dumps(all_rows,indent=2,ensure_ascii=False)+"\n")
     except (subprocess.TimeoutExpired,Exception) as e:
