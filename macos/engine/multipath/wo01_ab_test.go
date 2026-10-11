@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"reflect"
 	"runtime"
 	"runtime/metrics"
 	"sort"
@@ -122,6 +123,17 @@ func wo01ReadPayload(st *Stream, size int, streamID uint32, recv *atomic.Int64) 
 	}
 	return nil
 }
+
+// The exact same fixture compiles against frozen v1.1.5 (without B1 fields).
+// Reflective extraction prevents accidentally changing baseline production code.
+func wo01OptionalUintMetric(snap Stats, field string) uint64 {
+	v := reflect.ValueOf(snap).FieldByName(field)
+	if v.IsValid() && v.Kind() == reflect.Uint64 {
+		return v.Uint()
+	}
+	return 0
+}
+
 func wo01FloatPercentile(sorted []float64, pct float64) float64 {
 	if len(sorted) == 0 {
 		return 0
@@ -167,6 +179,8 @@ type wo01Result struct {
 	WriterStallMaxMS      int      `json:"writer_stall_max_ms"`
 	RuntimeCPUSeconds     float64  `json:"runtime_cpu_seconds"`
 	Samples               int      `json:"100ms_samples"`
+	FirstDataPriority     uint64   `json:"first_data_priority_frames"`
+	FirstDataFallbacks    uint64   `json:"first_data_fair_fallbacks"`
 	PathSentBytes         []uint64 `json:"path_sent_bytes"`
 	PathErrors            []uint64 `json:"path_errors"`
 	BackendGraceful       int64    `json:"backend_graceful"`
@@ -334,6 +348,8 @@ func TestWO01LocalAB(t *testing.T) {
 					"flight_limited":        snap.Resources.PathSelection.FlightBudget,
 					"carrier_queue_limited": snap.Resources.PathSelection.CarrierQueue,
 					"mpx_retransmits":       snap.Retransmits, "path_stats": snap.PathStats,
+					"first_data_priority_frames": wo01OptionalUintMetric(snap, "FirstDataPriorityFrames"),
+					"first_data_fair_fallbacks":  wo01OptionalUintMetric(snap, "FirstDataFairFallbacks"),
 				})
 				t.Logf("WO01_SAMPLE %s", sample)
 				var mem runtime.MemStats
@@ -467,6 +483,8 @@ func TestWO01LocalAB(t *testing.T) {
 	result.ProbeP99MS = wo01FloatPercentile(probeValues, .99)
 	result.ProbeMaxMS = wo01FloatPercentile(probeValues, 1)
 	snap := peer.Snapshot()
+	result.FirstDataPriority = wo01OptionalUintMetric(snap, "FirstDataPriorityFrames")
+	result.FirstDataFallbacks = wo01OptionalUintMetric(snap, "FirstDataFairFallbacks")
 	result.Retransmits = snap.Retransmits
 	result.CostDeferral = snap.Resources.PathSelection.CostDeferral
 	result.FlightLimited = snap.Resources.PathSelection.FlightBudget
