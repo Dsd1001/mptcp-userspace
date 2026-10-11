@@ -26,7 +26,7 @@ func TestWO01B1Synchronous150SharedBudgetAndCancellationCleanup(t *testing.T) {
 			t.Fatalf("queue %d failed", i)
 		}
 	}
-	if s.firstDataTokenCapLocked() != firstDataTokenCapBusy {
+	if s.firstDataTokenCapLocked() != firstDataTokenCapHerd {
 		t.Fatal("unbounded concurrent OPEN burst")
 	}
 	if s.fastReady.Len() != 150 {
@@ -36,7 +36,7 @@ func TestWO01B1Synchronous150SharedBudgetAndCancellationCleanup(t *testing.T) {
 	if s.firstDataPromoted > 1 {
 		t.Fatalf("first DATA storm promoted=%d", s.firstDataPromoted)
 	}
-	if s.firstDataTokens < 0 || s.firstDataTokens > firstDataTokenCapBusy {
+	if s.firstDataTokens < 0 || s.firstDataTokens > firstDataTokenCapHerd {
 		t.Fatalf("shared tokens out of bound %d", s.firstDataTokens)
 	}
 	// Cancel all unsent data; neither the normal nor fast ring retains any
@@ -48,7 +48,7 @@ func TestWO01B1Synchronous150SharedBudgetAndCancellationCleanup(t *testing.T) {
 		t.Fatalf("leaked ready queues: fast=%d fair=%d ready=%d pending=%d",
 			s.fastReady.Len(), s.readyStreams.Len(), s.readyFrames, len(s.pending))
 	}
-	if s.firstDataTokens < 0 || s.firstDataTokens > firstDataTokenCapBusy {
+	if s.firstDataTokens < 0 || s.firstDataTokens > firstDataTokenCapHerd {
 		t.Fatalf("cancellation overflowed shared tokens %d", s.firstDataTokens)
 	}
 	_ = c
