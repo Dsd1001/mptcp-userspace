@@ -29,7 +29,7 @@ func (s *Session) initFirstDataTokensLocked() {
 }
 
 func (s *Session) firstDataCandidateLocked() (*dataReadyQueue, int) {
-	if !s.server || s.scheduler.configured != SchedulerWeighted ||
+	if s.scheduler.configured != SchedulerWeighted ||
 		s.weightedHerdGuardLocked() || s.fastReady.Len() == 0 {
 		return nil, 0
 	}
@@ -59,7 +59,8 @@ func (s *Session) firstDataOnReceiptLocked(p *outbound) {
 	s.firstDataTokens = min(s.firstDataTokenCapLocked(), s.firstDataTokens+refill)
 }
 
-// A first response must be able to bypass already queued Bulk DATA, not
+// A first Stream DATA (client request or server response) must be able to
+// bypass already queued Bulk DATA, not
 // merely move ahead in the Session's Ready ring. Choose a low-baseRTT
 // Carrier with two reserved DATA slots, allowing at most 64KiB extra
 // flight. Unlike legacy score selection this explicitly prefers low latency.
@@ -68,9 +69,9 @@ func (s *Session) firstDataOnReceiptLocked(p *outbound) {
 // The fallback is ordinary fair DATA and does not spend a Token.
 // The Socket writer (not the Session dispatch modulo) enforces the 4:1
 // DATA-class fairness rule. A saturated normal flight must not stop an
-// eligible short first response from claiming its bounded bypass slot.
+// eligible short request or response from claiming its bounded bypass slot.
 func (s *Session) firstDataCarrierLocked(p *outbound, now time.Time) *carrier {
-	if !s.server || s.scheduler.configured != SchedulerWeighted ||
+	if s.scheduler.configured != SchedulerWeighted ||
 		s.weightedHerdGuardLocked() || p == nil || p.f.kind != kindData ||
 		p.f.offset != 0 || p.generation != 0 {
 		return nil
