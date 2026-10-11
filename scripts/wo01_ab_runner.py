@@ -118,9 +118,12 @@ def main():
             target.parent.mkdir(parents=True,exist_ok=True)
             subprocess.run(["git","-C",str(PROJECT),"worktree","add","--detach",str(target),rev],check=True,stdout=subprocess.DEVNULL)
         test=target/"macos/engine/multipath/wo01_ab_test.go"
-        if test.exists() and hashlib.sha256(test.read_bytes()).hexdigest()!=sha:
-            p.error(f"{test} differs from frozen reference fixture")
-        if not test.exists():test.write_bytes(FIXTURE.read_bytes())
+        # The exact pinned source reference stays unchanged. Overlay ONLY the
+        # frozen shared test fixture in its isolated detached worktree: older
+        # A1/A2 commits can themselves contain an earlier tracked fixture.
+        # Its hash is recorded in meta, never counted as a production change.
+        if not test.exists() or hashlib.sha256(test.read_bytes()).hexdigest()!=sha:
+            test.write_bytes(FIXTURE.read_bytes())
         tests[stage]=target
     meta={"stages":stage_list,"scenarios":scenarios,"rounds":args.rounds,
           "go":subprocess.check_output([str(GO),"version"],text=True).strip(),
