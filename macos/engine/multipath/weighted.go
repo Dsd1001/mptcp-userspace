@@ -145,3 +145,20 @@ func weightedAdaptiveFlightBudget(c *carrier, rate float64, now time.Time) int {
 	c.weightedAdaptiveAt = now
 	return c.weightedAdaptiveBudget
 }
+
+// weightedHerdGuardLocked latches a conservative policy across the full
+// lifetime of synchronized bulk fan-in, avoiding abrupt priority/flight mode
+// oscillation as individual Streams complete. This changes no wire semantics.
+func (s *Session) weightedHerdGuardLocked() bool {
+	if s.scheduler.configured != SchedulerWeighted {
+		return false
+	}
+	if s.weightedHerdGuard {
+		if len(s.streams) < 32 {
+			s.weightedHerdGuard = false
+		}
+	} else if len(s.streams) >= 64 {
+		s.weightedHerdGuard = true
+	}
+	return s.weightedHerdGuard
+}
