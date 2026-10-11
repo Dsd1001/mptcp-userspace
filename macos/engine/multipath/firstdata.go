@@ -29,7 +29,8 @@ func (s *Session) initFirstDataTokensLocked() {
 
 func (s *Session) firstDataCandidateLocked() (*dataReadyQueue, int) {
 	if s.scheduler.configured != SchedulerWeighted ||
-		s.fastReady.Len() == 0 || s.dispatchSequence%firstDataFastTurnStride != 0 {
+		s.weightedHerdGuardLocked() || s.fastReady.Len() == 0 ||
+		s.dispatchSequence%firstDataFastTurnStride != 0 {
 		return nil, 0
 	}
 	s.initFirstDataTokensLocked()

@@ -126,3 +126,29 @@ func TestWO01B1OtherModesNeverPromote(t *testing.T) {
 		}
 	}
 }
+
+// Under 150 synchronized OPENs, no DATA receives startup priority. This is a
+// safety fallback, not a fifth scheduler mode; normal round-robin still runs.
+func TestWO01B1HerdGuardDefersFastPriority(t *testing.T) {
+	s, _ := wo01B1Session()
+	for i := 0; i < 150; i++ {
+		id := uint64(1 + 2*i)
+		s.streams[id] = &Stream{s: s, id: id}
+	}
+	p := s.queueLocked(frame{kind: kindData, stream: 1, offset: 0, data: make([]byte, MaxPayload)})
+	if p == nil {
+		t.Fatal("failed to enqueue first data")
+	}
+	if _, tokens := s.firstDataCandidateLocked(); tokens != 0 {
+		t.Fatal("150 synchronized Streams gained priority")
+	}
+	if !s.weightedHerdGuard {
+		t.Fatal("large fan-in guard did not latch")
+	}
+	for i := 0; i < 119; i++ {
+		delete(s.streams, uint64(1+2*i))
+	}
+	if _, tokens := s.firstDataCandidateLocked(); tokens != p.cost {
+		t.Fatalf("small demand did not recover bounded fast priority: tokens=%d cost=%d", tokens, p.cost)
+	}
+}
