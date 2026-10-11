@@ -56,7 +56,7 @@ func wo01BackendStart(t *testing.T, bulkBytes int) *wo01Backend {
 			go func(conn net.Conn) {
 				defer func() { mu.Lock(); delete(sockets, conn); mu.Unlock(); conn.Close() }()
 				_ = conn.SetDeadline(time.Now().Add(115 * time.Second))
-				var trigger [1]byte
+				var trigger [5]byte
 				if _, err := io.ReadFull(conn, trigger[:]); err != nil {
 					state.failed.Add(1)
 					return
@@ -66,6 +66,7 @@ func wo01BackendStart(t *testing.T, bulkBytes int) *wo01Backend {
 					size = 32 << 10
 				}
 				chunk := wo01Payload(0)
+				binary.LittleEndian.PutUint64(chunk[8:16], uint64(binary.LittleEndian.Uint32(trigger[1:])))
 				for offset := 0; offset < size; offset += 32 << 10 {
 					binary.LittleEndian.PutUint64(chunk[:8], uint64(offset/(32<<10)))
 					if err := writeAll(conn, chunk[:min(len(chunk), size-offset)]); err != nil {
@@ -104,9 +105,10 @@ func wo01BackendStart(t *testing.T, bulkBytes int) *wo01Backend {
 	return state
 }
 
-func wo01ReadPayload(st *Stream, size int, recv *atomic.Int64) error {
+func wo01ReadPayload(st *Stream, size int, streamID uint32, recv *atomic.Int64) error {
 	buf := make([]byte, 32<<10)
 	want := wo01Payload(0)
+	binary.LittleEndian.PutUint64(want[8:16], uint64(streamID))
 	for offset := 0; offset < size; offset += len(buf) {
 		n := min(len(buf), size-offset)
 		if _, err := io.ReadFull(st, buf[:n]); err != nil {
@@ -129,44 +131,46 @@ func wo01FloatPercentile(sorted []float64, pct float64) float64 {
 }
 
 type wo01Result struct {
-	Scenario            string   `json:"scenario"`
-	Round               string   `json:"round"`
-	Streams             int      `json:"streams"`
-	BytesPerStream      int      `json:"bytes_per_stream"`
-	Paths               int      `json:"paths"`
-	DelaysMS            []int    `json:"one_way_delay_ms"`
-	RatesMbps           []int    `json:"configured_rates_mbps"`
-	DeliveredBytes      int64    `json:"delivered_bytes"`
-	ExpectedBytes       int64    `json:"expected_bytes"`
-	Mbps                float64  `json:"mbps"`
-	ElapsedSeconds      float64  `json:"elapsed_seconds"`
-	T50Seconds          float64  `json:"t50_seconds"`
-	T90Seconds          float64  `json:"t90_seconds"`
-	T99Seconds          float64  `json:"t99_seconds"`
-	T100Seconds         float64  `json:"t100_seconds"`
-	TailT99To100Seconds float64  `json:"tail_t99_to_100_seconds"`
-	ProbeP50MS          float64  `json:"probe_p50_ms"`
-	ProbeP95MS          float64  `json:"probe_p95_ms"`
-	ProbeP99MS          float64  `json:"probe_p99_ms"`
-	ProbeMaxMS          float64  `json:"probe_max_ms"`
-	ProbeFailures       int      `json:"probe_failures"`
-	Errors              []string `json:"errors"`
-	Retransmits         uint64   `json:"mpx_retransmits"`
-	CostDeferral        uint64   `json:"cost_deferral"`
-	FlightLimited       uint64   `json:"flight_limited"`
-	CarrierQueueLimited uint64   `json:"carrier_queue_limited"`
-	PeakOutstanding     int      `json:"peak_outstanding"`
-	PeakReady           int      `json:"peak_ready_bytes"`
-	PeakPending         int      `json:"peak_pending_bytes"`
-	PeakBudget          int      `json:"peak_budget_bytes"`
-	PeakHeap            uint64   `json:"peak_heap_bytes"`
-	WriterStallMaxMS    int      `json:"writer_stall_max_ms"`
-	RuntimeCPUSeconds   float64  `json:"runtime_cpu_seconds"`
-	Samples             int      `json:"100ms_samples"`
-	PathSentBytes       []uint64 `json:"path_sent_bytes"`
-	PathErrors          []uint64 `json:"path_errors"`
-	BackendGraceful     int64    `json:"backend_graceful"`
-	BackendFailures     int64    `json:"backend_failures"`
+	Scenario              string   `json:"scenario"`
+	Round                 string   `json:"round"`
+	Streams               int      `json:"streams"`
+	CompletedStreams      int      `json:"completed_streams"`
+	CompletionTimingValid bool     `json:"completion_timing_valid"`
+	BytesPerStream        int      `json:"bytes_per_stream"`
+	Paths                 int      `json:"paths"`
+	DelaysMS              []int    `json:"one_way_delay_ms"`
+	RatesMbps             []int    `json:"configured_rates_mbps"`
+	DeliveredBytes        int64    `json:"delivered_bytes"`
+	ExpectedBytes         int64    `json:"expected_bytes"`
+	Mbps                  float64  `json:"mbps"`
+	ElapsedSeconds        float64  `json:"elapsed_seconds"`
+	T50Seconds            float64  `json:"t50_seconds"`
+	T90Seconds            float64  `json:"t90_seconds"`
+	T99Seconds            float64  `json:"t99_seconds"`
+	T100Seconds           float64  `json:"t100_seconds"`
+	TailT99To100Seconds   float64  `json:"tail_t99_to_100_seconds"`
+	ProbeP50MS            float64  `json:"probe_p50_ms"`
+	ProbeP95MS            float64  `json:"probe_p95_ms"`
+	ProbeP99MS            float64  `json:"probe_p99_ms"`
+	ProbeMaxMS            float64  `json:"probe_max_ms"`
+	ProbeFailures         int      `json:"probe_failures"`
+	Errors                []string `json:"errors"`
+	Retransmits           uint64   `json:"mpx_retransmits"`
+	CostDeferral          uint64   `json:"cost_deferral"`
+	FlightLimited         uint64   `json:"flight_limited"`
+	CarrierQueueLimited   uint64   `json:"carrier_queue_limited"`
+	PeakOutstanding       int      `json:"peak_outstanding"`
+	PeakReady             int      `json:"peak_ready_bytes"`
+	PeakPending           int      `json:"peak_pending_bytes"`
+	PeakBudget            int      `json:"peak_budget_bytes"`
+	PeakHeap              uint64   `json:"peak_heap_bytes"`
+	WriterStallMaxMS      int      `json:"writer_stall_max_ms"`
+	RuntimeCPUSeconds     float64  `json:"runtime_cpu_seconds"`
+	Samples               int      `json:"100ms_samples"`
+	PathSentBytes         []uint64 `json:"path_sent_bytes"`
+	PathErrors            []uint64 `json:"path_errors"`
+	BackendGraceful       int64    `json:"backend_graceful"`
+	BackendFailures       int64    `json:"backend_failures"`
 }
 
 func wo01Scenario() (int, int, []int, []int, int, error) {
@@ -366,11 +370,14 @@ func TestWO01LocalAB(t *testing.T) {
 			if result.Scenario == "stagger150" {
 				time.Sleep(time.Duration(index*10) * time.Millisecond)
 			}
-			if _, e := stream.Write([]byte{1}); e != nil {
+			var trigger [5]byte
+			trigger[0] = 1
+			binary.LittleEndian.PutUint32(trigger[1:], uint32(index+1))
+			if _, e := stream.Write(trigger[:]); e != nil {
 				errCh <- fmt.Sprintf("bulk %d trigger: %v", index, e)
 				return
 			}
-			if e := wo01ReadPayload(stream, size, &recv); e != nil {
+			if e := wo01ReadPayload(stream, size, uint32(index+1), &recv); e != nil {
 				errCh <- fmt.Sprintf("bulk %d read: %v", index, e)
 				return
 			}
@@ -401,14 +408,19 @@ func TestWO01LocalAB(t *testing.T) {
 			continue
 		}
 		st.SetDeadline(time.Now().Add(12 * time.Second))
-		if _, e = st.Write([]byte{2}); e != nil {
+		var probeTrigger [5]byte
+		probeTrigger[0] = 2
+		binary.LittleEndian.PutUint32(probeTrigger[1:], uint32(streams+j+1))
+		if _, e = st.Write(probeTrigger[:]); e != nil {
 			result.ProbeFailures++
 			errCh <- fmt.Sprintf("probe %d write: %v", j, e)
 			st.Close()
 			continue
 		}
 		buf := make([]byte, 32<<10)
-		if _, e = io.ReadFull(st, buf); e != nil || !bytes.Equal(buf, wo01Payload(0)) {
+		probeExpect := wo01Payload(0)
+		binary.LittleEndian.PutUint64(probeExpect[8:16], uint64(streams+j+1))
+		if _, e = io.ReadFull(st, buf); e != nil || !bytes.Equal(buf, probeExpect) {
 			result.ProbeFailures++
 			errCh <- fmt.Sprintf("probe %d read: %v", j, e)
 		} else {
@@ -431,11 +443,19 @@ func TestWO01LocalAB(t *testing.T) {
 		result.Errors = append(result.Errors, e)
 	}
 	result.DeliveredBytes = recv.Load()
-	sort.Float64s(finish)
-	result.T50Seconds = wo01FloatPercentile(finish, .5)
-	result.T90Seconds = wo01FloatPercentile(finish, .9)
-	result.T99Seconds = wo01FloatPercentile(finish, .99)
-	result.T100Seconds = wo01FloatPercentile(finish, 1)
+	completed := make([]float64, 0, len(finish))
+	for _, sec := range finish {
+		if sec > 0 {
+			completed = append(completed, sec)
+		}
+	}
+	result.CompletedStreams = len(completed)
+	result.CompletionTimingValid = result.CompletedStreams == streams
+	sort.Float64s(completed)
+	result.T50Seconds = wo01FloatPercentile(completed, .5)
+	result.T90Seconds = wo01FloatPercentile(completed, .9)
+	result.T99Seconds = wo01FloatPercentile(completed, .99)
+	result.T100Seconds = wo01FloatPercentile(completed, 1)
 	result.TailT99To100Seconds = result.T100Seconds - result.T99Seconds
 	result.ElapsedSeconds = result.T100Seconds
 	if result.ElapsedSeconds > 0 {
@@ -471,6 +491,9 @@ func TestWO01LocalAB(t *testing.T) {
 	result.BackendFailures = backend.failed.Load()
 	if result.DeliveredBytes != result.ExpectedBytes {
 		result.Errors = append(result.Errors, "delivery mismatch")
+	}
+	if !result.CompletionTimingValid {
+		result.Errors = append(result.Errors, "incomplete Stream completion timing")
 	}
 	if result.BackendFailures != 0 {
 		result.Errors = append(result.Errors, "backend close errors")
