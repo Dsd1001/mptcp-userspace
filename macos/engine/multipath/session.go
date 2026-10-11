@@ -1367,9 +1367,10 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 			bestScore = score
 		}
 	}
-	// Waiting briefly for the earliest route can beat sending immediately over
-	// a high-delay path merely because another writer's tiny queue is full.
-	if best != nil && bestScore > earliest+.025 {
+	// Weighted DATA selection is work-conserving: only paths able to send
+	// DATA participate in cost ordering. Preserve legacy deferral semantics
+	// for the other scheduler modes.
+	if s.scheduler.configured != SchedulerWeighted && best != nil && bestScore > earliest+.025 {
 		s.pathSelection.CostDeferral++
 		return nil
 	}
