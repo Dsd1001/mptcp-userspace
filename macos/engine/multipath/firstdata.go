@@ -7,16 +7,12 @@ import "time"
 // state: no timers, goroutines, configuration UI or MPX/4 wire changes.
 const (
 	firstDataTokenCapNormal = 256 << 10
-	firstDataTokenCapBusy   = 128 << 10
-	firstDataTokenCapHerd   = 64 << 10
+	firstDataTokenCapBusy   = 64 << 10
 	firstDataTokenRefillDiv = 8 // gated on real DATA delivery confirmation
 )
 
 func (s *Session) firstDataTokenCapLocked() int {
-	if len(s.streams) >= 64 {
-		return firstDataTokenCapHerd
-	}
-	if s.readyDataBytes >= 8<<20 {
+	if len(s.streams) >= 64 || s.readyDataBytes >= 8<<20 {
 		return firstDataTokenCapBusy
 	}
 	return firstDataTokenCapNormal
