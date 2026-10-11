@@ -49,6 +49,7 @@ type PathSelectionStats struct {
 	Selected       uint64 `json:"selected"`
 	FlightBudget   uint64 `json:"flight_budget"`
 	CarrierQueue   uint64 `json:"carrier_queue"`
+	WriterStall    uint64 `json:"writer_stall"`
 	RoleRestricted uint64 `json:"role_restricted"`
 	Penalty        uint64 `json:"path_penalty"`
 	NoActive       uint64 `json:"no_active_carrier"`

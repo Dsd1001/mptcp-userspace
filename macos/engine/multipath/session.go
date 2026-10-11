@@ -1309,7 +1309,7 @@ func (s *Session) accept(st *Stream) bool {
 func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 	var best *carrier
 	bestScore, earliest := 1e30, 1e30
-	var roleBlocked, penaltyBlocked, budgetBlocked, queueBlocked, activeCount int
+	var roleBlocked, penaltyBlocked, budgetBlocked, queueBlocked, writerStallBlocked, activeCount int
 	healthy := false
 	for _, c := range s.paths {
 		if restricted && !s.schedulerPathEligibleLocked(c) {
@@ -1362,6 +1362,12 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		if len(c.queue) >= carrierQueue || c.outstanding >= budget {
 			continue
 		}
+		// A blocked Socket writer is not an available DATA path even when
+		// the application queue has spare slots. Control routing is unchanged.
+		if s.scheduler.configured == SchedulerWeighted && s.controlWriterStalled(c, now) {
+			writerStallBlocked++
+			continue
+		}
 		if best == nil || score < bestScore || (score == bestScore && c.id < best.id) {
 			best = c
 			bestScore = score
@@ -1384,6 +1390,8 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		s.pathSelection.FlightBudget++
 	case queueBlocked > 0:
 		s.pathSelection.CarrierQueue++
+	case writerStallBlocked > 0:
+		s.pathSelection.WriterStall++
 	case roleBlocked > 0:
 		s.pathSelection.RoleRestricted++
 	case penaltyBlocked > 0:
