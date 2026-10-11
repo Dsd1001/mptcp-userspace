@@ -143,48 +143,57 @@ func wo01FloatPercentile(sorted []float64, pct float64) float64 {
 }
 
 type wo01Result struct {
-	Scenario              string   `json:"scenario"`
-	Round                 string   `json:"round"`
-	Streams               int      `json:"streams"`
-	CompletedStreams      int      `json:"completed_streams"`
-	CompletionTimingValid bool     `json:"completion_timing_valid"`
-	BytesPerStream        int      `json:"bytes_per_stream"`
-	Paths                 int      `json:"paths"`
-	DelaysMS              []int    `json:"one_way_delay_ms"`
-	RatesMbps             []int    `json:"configured_rates_mbps"`
-	DeliveredBytes        int64    `json:"delivered_bytes"`
-	ExpectedBytes         int64    `json:"expected_bytes"`
-	Mbps                  float64  `json:"mbps"`
-	ElapsedSeconds        float64  `json:"elapsed_seconds"`
-	T50Seconds            float64  `json:"t50_seconds"`
-	T90Seconds            float64  `json:"t90_seconds"`
-	T99Seconds            float64  `json:"t99_seconds"`
-	T100Seconds           float64  `json:"t100_seconds"`
-	TailT99To100Seconds   float64  `json:"tail_t99_to_100_seconds"`
-	ProbeP50MS            float64  `json:"probe_p50_ms"`
-	ProbeP95MS            float64  `json:"probe_p95_ms"`
-	ProbeP99MS            float64  `json:"probe_p99_ms"`
-	ProbeMaxMS            float64  `json:"probe_max_ms"`
-	ProbeFailures         int      `json:"probe_failures"`
-	Errors                []string `json:"errors"`
-	Retransmits           uint64   `json:"mpx_retransmits"`
-	CostDeferral          uint64   `json:"cost_deferral"`
-	FlightLimited         uint64   `json:"flight_limited"`
-	CarrierQueueLimited   uint64   `json:"carrier_queue_limited"`
-	PeakOutstanding       int      `json:"peak_outstanding"`
-	PeakReady             int      `json:"peak_ready_bytes"`
-	PeakPending           int      `json:"peak_pending_bytes"`
-	PeakBudget            int      `json:"peak_budget_bytes"`
-	PeakHeap              uint64   `json:"peak_heap_bytes"`
-	WriterStallMaxMS      int      `json:"writer_stall_max_ms"`
-	RuntimeCPUSeconds     float64  `json:"runtime_cpu_seconds"`
-	Samples               int      `json:"100ms_samples"`
-	FirstDataPriority     uint64   `json:"first_data_priority_frames"`
-	FirstDataFallbacks    uint64   `json:"first_data_fair_fallbacks"`
-	PathSentBytes         []uint64 `json:"path_sent_bytes"`
-	PathErrors            []uint64 `json:"path_errors"`
-	BackendGraceful       int64    `json:"backend_graceful"`
-	BackendFailures       int64    `json:"backend_failures"`
+	Scenario              string  `json:"scenario"`
+	Round                 string  `json:"round"`
+	Streams               int     `json:"streams"`
+	CompletedStreams      int     `json:"completed_streams"`
+	CompletionTimingValid bool    `json:"completion_timing_valid"`
+	BytesPerStream        int     `json:"bytes_per_stream"`
+	Paths                 int     `json:"paths"`
+	DelaysMS              []int   `json:"one_way_delay_ms"`
+	RatesMbps             []int   `json:"configured_rates_mbps"`
+	DeliveredBytes        int64   `json:"delivered_bytes"`
+	ExpectedBytes         int64   `json:"expected_bytes"`
+	Mbps                  float64 `json:"mbps"`
+	ElapsedSeconds        float64 `json:"elapsed_seconds"`
+	T50Seconds            float64 `json:"t50_seconds"`
+	T90Seconds            float64 `json:"t90_seconds"`
+	T99Seconds            float64 `json:"t99_seconds"`
+	T100Seconds           float64 `json:"t100_seconds"`
+	TailT99To100Seconds   float64 `json:"tail_t99_to_100_seconds"`
+	ProbeP50MS            float64 `json:"probe_p50_ms"`
+	ProbeP95MS            float64 `json:"probe_p95_ms"`
+	// Historical Probe*MS values are 32KiB completion, not TTFB.
+	ProbeTTFBP50MS          float64  `json:"probe_ttfb_p50_ms"`
+	ProbeTTFBP95MS          float64  `json:"probe_ttfb_p95_ms"`
+	ProbeTTFBP99MS          float64  `json:"probe_ttfb_p99_ms"`
+	ProbeTTFBMaxMS          float64  `json:"probe_ttfb_max_ms"`
+	ProbeOpenP95MS          float64  `json:"probe_open_p95_ms"`
+	ProbeWriteP95MS         float64  `json:"probe_write_p95_ms"`
+	ProbeWaitFirstP95MS     float64  `json:"probe_wait_first_p95_ms"`
+	ClientFirstDataPriority uint64   `json:"client_first_data_priority_frames"`
+	ProbeP99MS              float64  `json:"probe_p99_ms"`
+	ProbeMaxMS              float64  `json:"probe_max_ms"`
+	ProbeFailures           int      `json:"probe_failures"`
+	Errors                  []string `json:"errors"`
+	Retransmits             uint64   `json:"mpx_retransmits"`
+	CostDeferral            uint64   `json:"cost_deferral"`
+	FlightLimited           uint64   `json:"flight_limited"`
+	CarrierQueueLimited     uint64   `json:"carrier_queue_limited"`
+	PeakOutstanding         int      `json:"peak_outstanding"`
+	PeakReady               int      `json:"peak_ready_bytes"`
+	PeakPending             int      `json:"peak_pending_bytes"`
+	PeakBudget              int      `json:"peak_budget_bytes"`
+	PeakHeap                uint64   `json:"peak_heap_bytes"`
+	WriterStallMaxMS        int      `json:"writer_stall_max_ms"`
+	RuntimeCPUSeconds       float64  `json:"runtime_cpu_seconds"`
+	Samples                 int      `json:"100ms_samples"`
+	FirstDataPriority       uint64   `json:"first_data_priority_frames"`
+	FirstDataFallbacks      uint64   `json:"first_data_fair_fallbacks"`
+	PathSentBytes           []uint64 `json:"path_sent_bytes"`
+	PathErrors              []uint64 `json:"path_errors"`
+	BackendGraceful         int64    `json:"backend_graceful"`
+	BackendFailures         int64    `json:"backend_failures"`
 }
 
 func wo01Scenario() (int, int, []int, []int, int, error) {
@@ -414,6 +423,7 @@ func TestWO01LocalAB(t *testing.T) {
 	started = time.Now()
 	close(start)
 	probeValues := make([]float64, 0, 12)
+	probeTTFB, probeOpen, probeWrite, probeWaitFirst := []float64{}, []float64{}, []float64{}, []float64{}
 	for j := 0; j < 12; j++ {
 		time.Sleep(170 * time.Millisecond)
 		t0 := time.Now()
@@ -423,6 +433,7 @@ func TestWO01LocalAB(t *testing.T) {
 			errCh <- fmt.Sprintf("probe %d open: %v", j, e)
 			continue
 		}
+		openedAt := time.Now()
 		st.SetDeadline(time.Now().Add(12 * time.Second))
 		var probeTrigger [5]byte
 		probeTrigger[0] = 2
@@ -433,14 +444,37 @@ func TestWO01LocalAB(t *testing.T) {
 			st.Close()
 			continue
 		}
+		writeDoneAt := time.Now()
 		buf := make([]byte, 32<<10)
 		probeExpect := wo01Payload(0)
 		binary.LittleEndian.PutUint64(probeExpect[8:16], uint64(streams+j+1))
-		if _, e = io.ReadFull(st, buf); e != nil || !bytes.Equal(buf, probeExpect) {
+		got, firstAt := 0, time.Time{}
+		var readErr error
+		for got < len(buf) {
+			var n int
+			n, readErr = st.Read(buf[got:])
+			if n > 0 && firstAt.IsZero() {
+				firstAt = time.Now()
+			}
+			got += n
+			if readErr != nil {
+				break
+			}
+		}
+		fullAt := time.Now()
+		if got != len(buf) || !bytes.Equal(buf, probeExpect) {
 			result.ProbeFailures++
-			errCh <- fmt.Sprintf("probe %d read: %v", j, e)
+			errCh <- fmt.Sprintf("probe %d read %d/32768: %v", j, got, readErr)
 		} else {
-			probeValues = append(probeValues, time.Since(t0).Seconds()*1000)
+			fullMS := fullAt.Sub(t0).Seconds() * 1000
+			firstMS := firstAt.Sub(t0).Seconds() * 1000
+			probeValues = append(probeValues, fullMS)
+			probeTTFB = append(probeTTFB, firstMS)
+			probeOpen = append(probeOpen, openedAt.Sub(t0).Seconds()*1000)
+			probeWrite = append(probeWrite, writeDoneAt.Sub(openedAt).Seconds()*1000)
+			probeWaitFirst = append(probeWaitFirst, firstAt.Sub(writeDoneAt).Seconds()*1000)
+			t.Logf("WO01_PROBE_DETAIL idx=%d open_ms=%.3f write_ms=%.3f wait_first_ms=%.3f ttfb_ms=%.3f full32_ms=%.3f",
+				j, probeOpen[len(probeOpen)-1], probeWrite[len(probeWrite)-1], probeWaitFirst[len(probeWaitFirst)-1], firstMS, fullMS)
 		}
 		if e = st.CloseWrite(); e != nil {
 			errCh <- fmt.Sprintf("probe %d closewrite: %v", j, e)
@@ -478,6 +512,18 @@ func TestWO01LocalAB(t *testing.T) {
 		result.Mbps = float64(result.DeliveredBytes) * 8 / 1e6 / result.ElapsedSeconds
 	}
 	sort.Float64s(probeValues)
+	sort.Float64s(probeTTFB)
+	sort.Float64s(probeOpen)
+	sort.Float64s(probeWrite)
+	sort.Float64s(probeWaitFirst)
+	result.ProbeTTFBP50MS = wo01FloatPercentile(probeTTFB, .50)
+	result.ProbeTTFBP95MS = wo01FloatPercentile(probeTTFB, .95)
+	result.ProbeTTFBP99MS = wo01FloatPercentile(probeTTFB, .99)
+	result.ProbeTTFBMaxMS = wo01FloatPercentile(probeTTFB, 1)
+	result.ProbeOpenP95MS = wo01FloatPercentile(probeOpen, .95)
+	result.ProbeWriteP95MS = wo01FloatPercentile(probeWrite, .95)
+	result.ProbeWaitFirstP95MS = wo01FloatPercentile(probeWaitFirst, .95)
+	result.ClientFirstDataPriority = wo01OptionalUintMetric(client.Snapshot(), "FirstDataPriorityFrames")
 	result.ProbeP50MS = wo01FloatPercentile(probeValues, .50)
 	result.ProbeP95MS = wo01FloatPercentile(probeValues, .95)
 	result.ProbeP99MS = wo01FloatPercentile(probeValues, .99)
