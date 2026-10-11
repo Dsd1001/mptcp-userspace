@@ -138,6 +138,10 @@ type carrier struct {
 	// Set only while this Carrier writer is inside writeFrames. Atomic read
 	// avoids taking Session.mu from the Socket I/O goroutine.
 	writeStartedNS atomic.Int64
+	// Weighted-only DATA flight controller; derived from base RTT and bounded
+	// delivered capacity. This never changes Aggregate's learned budget.
+	weightedAdaptiveBudget int
+	weightedAdaptiveAt     time.Time
 }
 
 // All stream, ledger and carrier accounting lives under one mutex. Network I/O
@@ -1307,6 +1311,21 @@ func (s *Session) accept(st *Stream) bool {
 }
 
 func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
+	// Independent of per-Carrier budgets: never allow the sum of all
+	// configured Weighted flights to grow beyond a bounded Session envelope.
+	// The 48 MiB cap still accommodates six 300ms-one-way paths at 92Mbps.
+	if s.scheduler.configured == SchedulerWeighted {
+		totalFlight := 0
+		for _, path := range s.paths {
+			if path.active {
+				totalFlight += path.outstanding
+			}
+		}
+		if totalFlight >= 48<<20 {
+			s.pathSelection.FlightBudget++
+			return nil
+		}
+	}
 	var best *carrier
 	bestScore, earliest := 1e30, 1e30
 	var roleBlocked, penaltyBlocked, budgetBlocked, queueBlocked, writerStallBlocked, activeCount int
@@ -1349,7 +1368,7 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		// budget. Filling a slow carrier's OS send buffer creates avoidable HOL.
 		budget := c.flightBudget()
 		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
-			budget = weightedFlightBudget(c, c.configuredRateBPS)
+			budget = weightedAdaptiveFlightBudget(c, c.configuredRateBPS, now)
 		}
 		if c.outstanding >= budget {
 			c.budgetLimited = true
@@ -1542,7 +1561,10 @@ func (s *Session) Snapshot() Stats {
 		measured, validSamples := schedulerMeasuredRate(c)
 		budget := c.flightBudget()
 		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
-			budget = weightedFlightBudget(c, c.configuredRateBPS)
+			budget = c.weightedAdaptiveBudget
+			if budget <= 0 {
+				budget = weightedAdaptiveTargetBudget(c, c.configuredRateBPS, now)
+			}
 		}
 		out.PathStats = append(out.PathStats, PathStats{MeasuredDeliveryBPS: measured, ValidDeliverySamples: validSamples, Role: c.scheduler.role, RoleReason: c.scheduler.lastRoleReason, DeliverySamples: c.deliverySamples, SchedulerProbeCount: c.scheduler.probeCount, SchedulerProbeBytes: c.scheduler.probeBytes, SchedulerProbeDebtPeak: c.scheduler.probeDebtPeak, SchedulerDataACKs: c.scheduler.dataACKs, ID: int(c.id), Address: c.address, Connected: c.active, Sent: c.sent, Received: c.received, RTTMS: float64(c.rtt) / float64(time.Millisecond), GoodputBPS: c.goodput, ConfiguredRateBPS: c.configuredRateBPS, Outstanding: c.outstanding, Queue: c.queued, Errors: c.errors, LastError: c.lastError, Budget: budget, DialAttempts: c.dialAttempts, Connections: c.connects, ConnectedAt: c.connectedAt, DisconnectedAt: c.disconnectedAt, ControlOutstanding: c.controlOutstanding, ControlQueue: c.controlQueued + 64*len(c.control)})
 	}
