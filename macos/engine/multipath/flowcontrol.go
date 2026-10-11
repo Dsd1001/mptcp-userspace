@@ -677,6 +677,10 @@ func (s *Session) readyLocked(p *outbound, front bool) {
 			rq.entry = s.readyStreams.PushBack(rq)
 		}
 	}
+	if s.scheduler.configured == SchedulerWeighted && p.f.offset == 0 && p.generation == 0 &&
+		rq.fastEntry == nil && rq.frames.Front() != nil && rq.frames.Front().Value == p {
+		rq.fastEntry = s.fastReady.PushBack(rq)
+	}
 	if rq.frames.Len() >= 4 {
 		s.bulkReady = rq
 	}
@@ -698,6 +702,14 @@ func (s *Session) unreadyLocked(p *outbound) {
 	}
 	rq.frames.Remove(p.ready)
 	p.ready = nil
+	if rq.fastEntry != nil {
+		top := rq.frames.Front()
+		if top == nil || top.Value.(*outbound).f.offset != 0 ||
+			top.Value.(*outbound).generation != 0 {
+			s.fastReady.Remove(rq.fastEntry)
+			rq.fastEntry = nil
+		}
+	}
 	if s.readyFrames > 0 {
 		s.readyFrames--
 	}
@@ -738,7 +750,7 @@ func (s *Session) dispatchLocked(now time.Time) {
 		}
 	}()
 
-	dispatchOne := func(rq *dataReadyQueue, advanceFair bool) bool {
+	dispatchOne := func(rq *dataReadyQueue, advanceFair, fast bool) bool {
 		if rq == nil || rq.frames.Len() == 0 {
 			return true
 		}
@@ -768,6 +780,11 @@ func (s *Session) dispatchLocked(now time.Time) {
 		c.queued += p.cost
 		select {
 		case c.queue <- sendTask{p: p, generation: p.generation}:
+			if fast {
+				s.firstDataTokens -= p.cost
+				p.firstDataTokenCharged = true
+				s.firstDataPromoted++
+			}
 			s.schedulerAllocatedLocked(c, p, now)
 			if advanceFair {
 				s.dispatchSequence++
@@ -790,6 +807,14 @@ func (s *Session) dispatchLocked(now time.Time) {
 	}
 
 	for dispatched < dataDispatchBatch && s.readyStreams.Len() != 0 {
+		// Bounded priority never replaces the fair ring. All non-promoted
+		// frames fall back to the original round-robin dispatch unmodified.
+		if fastRQ, charge := s.firstDataCandidateLocked(); fastRQ != nil && charge > 0 {
+			if !dispatchOne(fastRQ, true, true) {
+				return
+			}
+			continue
+		}
 		e := s.readyStreams.Front()
 		rq, _ := e.Value.(*dataReadyQueue)
 		if rq == nil || rq.frames.Len() == 0 {
@@ -800,7 +825,7 @@ func (s *Session) dispatchLocked(now time.Time) {
 			s.readyStreams.Remove(e)
 			continue
 		}
-		if !dispatchOne(rq, true) {
+		if !dispatchOne(rq, true, false) {
 			return
 		}
 		// Preserve the old bounded bulk bonus without scanning every ready
@@ -808,7 +833,7 @@ func (s *Session) dispatchLocked(now time.Time) {
 		// receives one extra turn per eight fair dispatches.
 		if s.dispatchSequence%8 == 0 && s.bulkReady != nil && s.bulkReady.frames.Len() >= 4 {
 			bonus := s.bulkReady
-			if !dispatchOne(bonus, false) {
+			if !dispatchOne(bonus, false, false) {
 				return
 			}
 		}

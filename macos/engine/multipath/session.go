@@ -47,51 +47,57 @@ type PathStats struct {
 
 type Stats struct {
 	SchedulerStats
-	Paths               int            `json:"paths"`
-	Connections         int            `json:"connections"`
-	Sent                uint64         `json:"sent"`
-	Received            uint64         `json:"received"`
-	Retransmits         uint64         `json:"retransmits"`
-	WindowWaits         uint64         `json:"window_waits"`
-	ReorderBytes        int            `json:"reorder_bytes"`
-	ReorderPeak         int            `json:"reorder_peak"`
-	PendingBytes        int            `json:"pending_bytes"`
-	BufferedBytes       int            `json:"buffered_bytes"`
-	ReceiveAllocated    int            `json:"receive_allocated_bytes"`
-	PathStats           []PathStats    `json:"path_stats"`
-	ReceiveCredit       int            `json:"receive_credit_bytes"`
-	WindowTarget        int            `json:"max_stream_window_target"`
-	WarmTarget          int            `json:"max_stream_warm_target_bytes"`
-	StandbyWindow       int            `json:"standby_window_bytes"`
-	WindowSeed          int            `json:"window_seed_bytes"`
-	WindowSeedAgeMS     float64        `json:"window_seed_age_ms"`
-	CreditRTTMS         float64        `json:"credit_rtt_ms"`
-	CreditBaseRTTMS     float64        `json:"credit_base_rtt_ms"`
-	DemandStreams       int            `json:"active_demand_streams"`
-	BulkStreams         int            `json:"active_bulk_streams"`
-	BulkWindowFloor     int            `json:"bulk_window_floor_bytes"`
-	ReceivePressure     int            `json:"receive_pressure_percent"`
-	StreamAllowance     int            `json:"stream_allowance_bytes"`
-	SessionRefillTarget int            `json:"session_refill_target_bytes"`
-	ReadyFrames         int            `json:"ready_frames"`
-	Resources           ResourceStats  `json:"resources"`
-	Lifecycle           LifecycleStats `json:"lifecycle"`
+	Paths                   int            `json:"paths"`
+	Connections             int            `json:"connections"`
+	Sent                    uint64         `json:"sent"`
+	Received                uint64         `json:"received"`
+	Retransmits             uint64         `json:"retransmits"`
+	WindowWaits             uint64         `json:"window_waits"`
+	ReorderBytes            int            `json:"reorder_bytes"`
+	ReorderPeak             int            `json:"reorder_peak"`
+	PendingBytes            int            `json:"pending_bytes"`
+	BufferedBytes           int            `json:"buffered_bytes"`
+	ReceiveAllocated        int            `json:"receive_allocated_bytes"`
+	FirstDataPriorityFrames uint64         `json:"first_data_priority_frames"`
+	FirstDataFairFallbacks  uint64         `json:"first_data_fair_fallbacks"`
+	FirstDataTokens         int            `json:"first_data_tokens_bytes"`
+	FirstDataReady          int            `json:"first_data_ready_streams"`
+	PathStats               []PathStats    `json:"path_stats"`
+	ReceiveCredit           int            `json:"receive_credit_bytes"`
+	WindowTarget            int            `json:"max_stream_window_target"`
+	WarmTarget              int            `json:"max_stream_warm_target_bytes"`
+	StandbyWindow           int            `json:"standby_window_bytes"`
+	WindowSeed              int            `json:"window_seed_bytes"`
+	WindowSeedAgeMS         float64        `json:"window_seed_age_ms"`
+	CreditRTTMS             float64        `json:"credit_rtt_ms"`
+	CreditBaseRTTMS         float64        `json:"credit_base_rtt_ms"`
+	DemandStreams           int            `json:"active_demand_streams"`
+	BulkStreams             int            `json:"active_bulk_streams"`
+	BulkWindowFloor         int            `json:"bulk_window_floor_bytes"`
+	ReceivePressure         int            `json:"receive_pressure_percent"`
+	StreamAllowance         int            `json:"stream_allowance_bytes"`
+	SessionRefillTarget     int            `json:"session_refill_target_bytes"`
+	ReadyFrames             int            `json:"ready_frames"`
+	Resources               ResourceStats  `json:"resources"`
+	Lifecycle               LifecycleStats `json:"lifecycle"`
 }
 
 type outbound struct {
-	f               frame
-	ready           *list.Element
-	path            *carrier
-	generation      uint64
-	sentAt, created time.Time
-	cost            int
-	attempts        int
+	f                     frame
+	ready                 *list.Element
+	path                  *carrier
+	generation            uint64
+	sentAt, created       time.Time
+	cost                  int
+	attempts              int
+	firstDataTokenCharged bool
 }
 
 type dataReadyQueue struct {
-	stream uint64
-	frames list.List
-	entry  *list.Element
+	stream    uint64
+	frames    list.List
+	entry     *list.Element
+	fastEntry *list.Element
 }
 
 type sendTask struct {
@@ -175,6 +181,10 @@ type Session struct {
 	ready                                            map[uint64]*dataReadyQueue
 	readyStreams                                     list.List
 	bulkReady                                        *dataReadyQueue
+	fastReady                                        list.List
+	firstDataTokens                                  int
+	firstDataTokensInitialized                       bool
+	firstDataPromoted, firstDataFairFallbacks        uint64
 	readyFrames, readyDataBytes, queueAdmissionLimit int
 	queueAdmissionWaiters                            int
 	receiveCredit, windowSeed                        int
@@ -441,6 +451,9 @@ func (s *Session) stop(err error) {
 	s.pending = make(map[uint64]*outbound)
 	s.ready = make(map[uint64]*dataReadyQueue)
 	s.readyStreams.Init()
+	s.fastReady.Init()
+	s.firstDataTokens = 0
+	s.firstDataTokensInitialized = false
 	s.bulkReady = nil
 	s.readyFrames = 0
 	s.controlReady.Init()
@@ -942,6 +955,15 @@ func (s *Session) removePendingLocked(p *outbound) {
 	if s.readyDataBytes < readyBefore {
 		s.signalQueueAdmissionLocked(readyBefore - s.readyDataBytes)
 	}
+	// Refund only a token charged to DATA still waiting in a Socket queue.
+	// Never refund sent bytes on reset/reinjection; no reset-driven burst.
+	if p.firstDataTokenCharged {
+		if p.sentAt.IsZero() && s.scheduler.configured == SchedulerWeighted {
+			s.initFirstDataTokensLocked()
+			s.firstDataTokens = min(s.firstDataTokenCapLocked(), s.firstDataTokens+p.cost)
+		}
+		p.firstDataTokenCharged = false
+	}
 	s.pendingBytes -= p.cost
 	if p.f.kind == kindData {
 		s.dataPendingFrames--
@@ -1014,6 +1036,7 @@ func (s *Session) ackLocked(c *carrier, f frame) error {
 		if p.attempts == 1 {
 			c.observeDelivery(now, p, f.offset)
 			s.schedulerReceiptLocked(c, p, now)
+			s.firstDataOnReceiptLocked(p)
 		}
 	}
 	kind := p.f.kind
@@ -1530,6 +1553,10 @@ func (s *Session) Snapshot() Stats {
 	defer s.mu.Unlock()
 	out := Stats{Connections: len(s.streams), Sent: s.sent, Received: s.received, Retransmits: s.retransmits, WindowWaits: s.windowWaits, ReorderPeak: s.reorderPeak, PendingBytes: s.pendingBytes, BufferedBytes: s.bufferedBytes, ReceiveAllocated: s.receiveAllocated}
 	out.SchedulerStats = s.schedulerSnapshotLocked()
+	out.FirstDataPriorityFrames = s.firstDataPromoted
+	out.FirstDataFairFallbacks = s.firstDataFairFallbacks
+	out.FirstDataTokens = s.firstDataTokens
+	out.FirstDataReady = s.fastReady.Len()
 	out.ReceiveCredit = s.receiveCredit
 	now := time.Now()
 	out.WindowSeed = s.windowSeed
