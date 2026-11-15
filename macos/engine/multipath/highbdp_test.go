@@ -9,7 +9,6 @@ import (
 	"os"
 	"runtime"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -244,10 +243,9 @@ func highBDPCase(t *testing.T, name string, rates []int64, rtts []time.Duration,
 			result.HeapPeak = max(result.HeapPeak, mem.HeapAlloc)
 		}
 	}()
-	var before, after syscall.Rusage
-	syscall.Getrusage(syscall.RUSAGE_SELF, &before)
+	before := readTestProcessUsage()
 	elapsed, err := transfer(client, size)
-	syscall.Getrusage(syscall.RUSAGE_SELF, &after)
+	after := readTestProcessUsage()
 	close(done)
 	<-joined
 	if err != nil {
@@ -255,11 +253,9 @@ func highBDPCase(t *testing.T, name string, rates []int64, rtts []time.Duration,
 	}
 	result.Seconds = elapsed.Seconds()
 	result.Mbps = float64(size) * 8 / elapsed.Seconds() / 1e6
-	result.CPU = cpuSeconds(after) - cpuSeconds(before)
-	result.RSSPeak = after.Maxrss
-	if runtime.GOOS == "linux" {
-		result.RSSPeak *= 1024
-	}
+	result.CPU = after.CPUSeconds - before.CPUSeconds
+	result.RSSPeak = after.RSSPeakBytes
+
 	// The original payload/FIN timing above is unchanged. Rev2 adds a reliable
 	// final-consumption settlement; validate cleanup separately after timing.
 	cleanupDeadline := time.Now().Add(5 * time.Second)

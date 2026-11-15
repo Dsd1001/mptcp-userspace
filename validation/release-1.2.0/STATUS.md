@@ -4,7 +4,7 @@ Updated: 2026-11-15. Status: local signed release candidate; NOT published.
 No release tag, public release, update feed, or production installation has been created.
 
 Candidate Source-ID:
-`a8fb64c53c76ea8249856625b321c673a783eba2465375ec42f975e3c3c00a0f`
+`aef32e40795e3989385c293c057d3b3f8025ef02b50e179b75c6e522c00cf886`
 
 ## Implemented scope
 
@@ -76,3 +76,17 @@ in project-local .scratch/v120-resume, .scratch/v120-resume-tests and
 .scratch/v120-package-report. Earlier work is retained in .scratch/v120-validation.
 All paths above are relative to the surrounding mptcp project, not this repository.
 Source-ID identifies source content; CI commit identifiers are recorded separately.
+
+## First remote CI attempt (commit 53b9c8f)
+
+Both GitHub Actions workflows triggered on push. Native Linux Engine tests,
+controller tests, race/vet, cross-build and compiled-process aggregation passed.
+The browser step failed because Playwright 1.56 did not support the then-default
+Ubuntu 26.04 image; Linux runner has been pinned to Ubuntu 24.04.
+
+The Windows build failed compiling pre-existing Unix-only Getrusage measurement
+fixtures, not the product transport. Optional performance measurements now use
+platform-specific helpers; the full multipath test executable cross-compiles
+for Windows while runtime assertions remain enabled. macOS engine full test,
+race and vet were rerun after the change and passed. Native Windows/Ubuntu
+re-validation is still required before release.

@@ -6,7 +6,6 @@ import (
 	"os"
 	"runtime"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -23,10 +22,6 @@ type performanceResult struct {
 	RSSPeakBytes   int64     `json:"test_process_rss_peak_bytes"`
 	Client         Stats     `json:"client"`
 	Landing        []Stats   `json:"landing"`
-}
-
-func cpuSeconds(r syscall.Rusage) float64 {
-	return float64(r.Utime.Sec+r.Stime.Sec) + float64(r.Utime.Usec+r.Stime.Usec)/1e6
 }
 
 func measureCase(t *testing.T, name string, rates []int64, latencies []time.Duration, payload int) performanceResult {
@@ -87,20 +82,17 @@ func measureCase(t *testing.T, name string, rates []int64, latencies []time.Dura
 			}
 		}
 	}()
-	var before, after syscall.Rusage
-	syscall.Getrusage(syscall.RUSAGE_SELF, &before)
+	before := readTestProcessUsage()
 	elapsed, err := transfer(s, payload)
-	syscall.Getrusage(syscall.RUSAGE_SELF, &after)
+	after := readTestProcessUsage()
 	close(monitored)
 	<-done
 	if err != nil {
 		t.Fatal(err)
 	}
-	rss := after.Maxrss
-	if runtime.GOOS == "linux" {
-		rss *= 1024
-	}
-	result := performanceResult{Name: name, PayloadBytes: payload, RelayRateBPS: rates, ElapsedSeconds: elapsed.Seconds(), GoodputBPS: float64(payload) / elapsed.Seconds(), CPUSeconds: cpuSeconds(after) - cpuSeconds(before), HeapPeakBytes: peak.Load(), RSSPeakBytes: rss, Client: s.Snapshot(), Landing: srv.Snapshots()}
+	rss := after.RSSPeakBytes
+
+	result := performanceResult{Name: name, PayloadBytes: payload, RelayRateBPS: rates, ElapsedSeconds: elapsed.Seconds(), GoodputBPS: float64(payload) / elapsed.Seconds(), CPUSeconds: after.CPUSeconds - before.CPUSeconds, HeapPeakBytes: peak.Load(), RSSPeakBytes: rss, Client: s.Snapshot(), Landing: srv.Snapshots()}
 	for _, d := range latencies {
 		result.RelayOneWayMS = append(result.RelayOneWayMS, float64(d)/float64(time.Millisecond))
 	}

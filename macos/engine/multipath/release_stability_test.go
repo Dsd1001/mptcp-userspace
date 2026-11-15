@@ -10,7 +10,6 @@ import (
 	"os"
 	"runtime"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -45,8 +44,7 @@ func sustainedStream(t *testing.T, s *Session, srv *Server, duration time.Durati
 	readDone := make(chan written, 1)
 	var received atomic.Int64
 	start := time.Now()
-	var before, after syscall.Rusage
-	syscall.Getrusage(syscall.RUSAGE_SELF, &before)
+	before := readTestProcessUsage()
 	go func() {
 		h := sha256.New()
 		data := make([]byte, 1<<20)
@@ -111,7 +109,7 @@ loop:
 	elapsed := time.Since(start)
 	w := <-sent
 	st.Close()
-	syscall.Getrusage(syscall.RUSAGE_SELF, &after)
+	after := readTestProcessUsage()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		complete := s.Snapshot().Connections == 0
@@ -124,7 +122,7 @@ loop:
 		time.Sleep(20 * time.Millisecond)
 	}
 	client, landing := s.Snapshot(), srv.Snapshots()
-	result := map[string]any{"name": name, "version": Version, "scope": "One logical TCP stream throughout; random SHA-256 streaming echo through real loopback shaped TCP proxies; process CPU/RSS include all test components", "seconds": elapsed.Seconds(), "bytes": got.n, "mbps": float64(got.n) * 8 / elapsed.Seconds() / 1e6, "samples": samples, "client_after": client, "landing_after": landing, "cpu_seconds": cpuSeconds(after) - cpuSeconds(before), "rss_highwater": after.Maxrss, "rss_unit": "bytes on Darwin, KiB on Linux", "sha256": fmt.Sprintf("%x", got.hash), "integrity": w.err == nil && got.err == nil && w.n == got.n && string(w.hash) == string(got.hash)}
+	result := map[string]any{"name": name, "version": Version, "scope": "One logical TCP stream throughout; random SHA-256 streaming echo through real loopback shaped TCP proxies; process CPU/RSS include all test components", "seconds": elapsed.Seconds(), "bytes": got.n, "mbps": float64(got.n) * 8 / elapsed.Seconds() / 1e6, "samples": samples, "client_after": client, "landing_after": landing, "cpu_seconds": after.CPUSeconds - before.CPUSeconds, "rss_highwater": after.RSSPeakBytes, "rss_unit": "bytes", "sha256": fmt.Sprintf("%x", got.hash), "integrity": w.err == nil && got.err == nil && w.n == got.n && string(w.hash) == string(got.hash)}
 	if path := os.Getenv("MPX_LONG_REPORT"); path != "" {
 		data, _ := json.MarshalIndent(result, "", "  ")
 		if err := os.WriteFile(path+"-"+name+".json", append(data, '\n'), 0644); err != nil {
@@ -157,7 +155,7 @@ loop:
 			}
 		}
 	}
-	t.Logf("SUSTAINED %s seconds=%.3f bytes=%d Mbps=%.3f cpu=%.3f intervals=%d integrity=true", name, elapsed.Seconds(), got.n, mbps, cpuSeconds(after)-cpuSeconds(before), len(samples))
+	t.Logf("SUSTAINED %s seconds=%.3f bytes=%d Mbps=%.3f cpu=%.3f intervals=%d integrity=true", name, elapsed.Seconds(), got.n, mbps, after.CPUSeconds-before.CPUSeconds, len(samples))
 }
 
 func TestHighBDPSustainedMargin(t *testing.T) {
