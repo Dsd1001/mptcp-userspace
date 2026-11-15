@@ -68,7 +68,7 @@ Version: $Version
 Source-ID: $SourceID
 Protocol: MPX/4 Protocol Version 4 Stable
 Platform: windows/amd64
-Mode: userspace_multipath only
+Mode: shared_mpx4_tunnel only
 GUI-SHA256: $GuiHash
 Engine-SHA256: $EngineHash
 Updater: SHA256 + Ed25519 (same public key as macOS Sparkle channel)

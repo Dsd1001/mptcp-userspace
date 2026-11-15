@@ -11,17 +11,18 @@ import (
 )
 
 type performanceResult struct {
-	Name           string    `json:"name"`
-	PayloadBytes   int       `json:"payload_bytes"`
-	RelayRateBPS   []int64   `json:"relay_rate_bytes_per_second"`
-	RelayOneWayMS  []float64 `json:"relay_one_way_delay_ms"`
-	ElapsedSeconds float64   `json:"elapsed_seconds"`
-	GoodputBPS     float64   `json:"goodput_bytes_per_second"`
-	CPUSeconds     float64   `json:"test_process_cpu_seconds"`
-	HeapPeakBytes  uint64    `json:"test_process_heap_peak_bytes"`
-	RSSPeakBytes   int64     `json:"test_process_rss_peak_bytes"`
-	Client         Stats     `json:"client"`
-	Landing        []Stats   `json:"landing"`
+	ProcessMetricsAvailable bool      `json:"process_metrics_available"`
+	Name                    string    `json:"name"`
+	PayloadBytes            int       `json:"payload_bytes"`
+	RelayRateBPS            []int64   `json:"relay_rate_bytes_per_second"`
+	RelayOneWayMS           []float64 `json:"relay_one_way_delay_ms"`
+	ElapsedSeconds          float64   `json:"elapsed_seconds"`
+	GoodputBPS              float64   `json:"goodput_bytes_per_second"`
+	CPUSeconds              float64   `json:"test_process_cpu_seconds"`
+	HeapPeakBytes           uint64    `json:"test_process_heap_peak_bytes"`
+	RSSPeakBytes            int64     `json:"test_process_rss_peak_bytes"`
+	Client                  Stats     `json:"client"`
+	Landing                 []Stats   `json:"landing"`
 }
 
 func measureCase(t *testing.T, name string, rates []int64, latencies []time.Duration, payload int) performanceResult {
@@ -92,7 +93,7 @@ func measureCase(t *testing.T, name string, rates []int64, latencies []time.Dura
 	}
 	rss := after.RSSPeakBytes
 
-	result := performanceResult{Name: name, PayloadBytes: payload, RelayRateBPS: rates, ElapsedSeconds: elapsed.Seconds(), GoodputBPS: float64(payload) / elapsed.Seconds(), CPUSeconds: after.CPUSeconds - before.CPUSeconds, HeapPeakBytes: peak.Load(), RSSPeakBytes: rss, Client: s.Snapshot(), Landing: srv.Snapshots()}
+	result := performanceResult{ProcessMetricsAvailable: before.Available && after.Available, Name: name, PayloadBytes: payload, RelayRateBPS: rates, ElapsedSeconds: elapsed.Seconds(), GoodputBPS: float64(payload) / elapsed.Seconds(), CPUSeconds: after.CPUSeconds - before.CPUSeconds, HeapPeakBytes: peak.Load(), RSSPeakBytes: rss, Client: s.Snapshot(), Landing: srv.Snapshots()}
 	for _, d := range latencies {
 		result.RelayOneWayMS = append(result.RelayOneWayMS, float64(d)/float64(time.Millisecond))
 	}

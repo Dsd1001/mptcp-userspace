@@ -70,7 +70,10 @@ def main() -> None:
                 raise RuntimeError('persisted record mismatch')
             if copied.stat().st_mode & 0o077:
                 raise RuntimeError('container secret store is not private')
+        first_mapping = mapped
         run('docker', 'restart', name)
+        mapped = run('docker', 'port', name, '8088/tcp').splitlines()[0]
+        base = 'http://' + mapped
         ready()
         _, raw = request('/admin/api/tunnels')
         rows = json.loads(raw)
@@ -78,15 +81,17 @@ def main() -> None:
             raise RuntimeError('tunnel store did not survive restart')
         _, raw = request('/admin/api/system')
         identity = json.loads(raw)
-        if identity.get('version') != '1.2.0' or identity.get('api_schema') != 4:
+        if identity.get('version') != (Path(__file__).resolve().parents[2] / 'provisioning/VERSION').read_text().strip() or identity.get('api_schema') != 4:
             raise RuntimeError('container suite identity mismatch')
-        result = {'passed': True, 'scope': 'native Linux Docker, disposable named volume, create/restart/reload/private-file checks', 'configured_user': configured_user, 'version': identity['version'], 'source_id': identity['source_id'], 'api_schema': identity['api_schema']}
+        result = {'passed': True, 'scope': 'native Linux Docker, disposable named volume, create/restart/reload/private-file checks', 'configured_user': configured_user, 'initial_port': first_mapping, 'restarted_port': mapped, 'version': identity['version'], 'source_id': identity['source_id'], 'api_schema': identity['api_schema']}
         args.report.write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result, indent=2))
     except Exception:
         if container:
             log = run('docker', 'logs', name)
-            args.report.with_suffix('.log').write_text(log)
+            state = run('docker', 'inspect', '--format', '{{json .State}}', name)
+            ports = run('docker', 'port', name)
+            args.report.with_suffix('.log').write_text(log + '\nSTATE=' + state + '\nPORTS=' + ports)
         raise
     finally:
         if container:

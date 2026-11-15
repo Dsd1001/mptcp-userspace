@@ -1,5 +1,5 @@
 # Build from repository root: docker build -f provisioning/Dockerfile .
-FROM golang:1.25 AS build
+FROM golang:1.25.14 AS build
 WORKDIR /src
 COPY macos/engine/go.mod ./macos/engine/go.mod
 COPY macos/engine/tunnelconfig ./macos/engine/tunnelconfig

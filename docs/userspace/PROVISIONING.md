@@ -1,4 +1,4 @@
-# MPTCP Tunnel provisioning and remote controller 1.2.0
+# MPTCP Tunnel provisioning and remote controller 1.2.1
 
 `mpx-provision` provides the tunnel-only configuration API and opt-in device control. Use HTTPS, a strong administrator password and private storage. The default data file is `./provisioning-data/tunnels.json`; set `MPX_PROVISION_DATA` explicitly for production. A legacy profiles.json/bundles.json is not converted or overwritten. Keep it for rollback and create a new tunnel store.
 
@@ -21,7 +21,7 @@ The backend persists device pairing, audit history, observed status and desired 
 Build from the repository root, because the controller imports the shared configuration package:
 
 ```sh
-docker build -f provisioning/Dockerfile --build-arg SOURCE_ID=YOUR_VERIFIED_SOURCE_ID -t mpx-provision:1.2.0 .
+docker build -f provisioning/Dockerfile --build-arg SOURCE_ID=YOUR_VERIFIED_SOURCE_ID -t mpx-provision:1.2.1 .
 # Or use provisioning/docker-compose.example.yml after setting a strong
 # MPX_PROVISION_ADMIN_PASSWORD and configuring the public HTTPS base URL.
 ```

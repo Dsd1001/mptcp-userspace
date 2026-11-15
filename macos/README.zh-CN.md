@@ -1,4 +1,4 @@
-# MPTCP Tunnel for macOS 1.2.0
+# MPTCP Tunnel for macOS 1.2.1
 
 安装发行 DMG 中的 MPTCP Desk.app；应用身份、钥匙串 Broker 与更新通道保持连续，界面名称为 MPTCP Tunnel。界面包括共享隧道、运行状态、远程管理、日志。
 

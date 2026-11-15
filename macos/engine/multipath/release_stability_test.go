@@ -122,7 +122,7 @@ loop:
 		time.Sleep(20 * time.Millisecond)
 	}
 	client, landing := s.Snapshot(), srv.Snapshots()
-	result := map[string]any{"name": name, "version": Version, "scope": "One logical TCP stream throughout; random SHA-256 streaming echo through real loopback shaped TCP proxies; process CPU/RSS include all test components", "seconds": elapsed.Seconds(), "bytes": got.n, "mbps": float64(got.n) * 8 / elapsed.Seconds() / 1e6, "samples": samples, "client_after": client, "landing_after": landing, "cpu_seconds": after.CPUSeconds - before.CPUSeconds, "rss_highwater": after.RSSPeakBytes, "rss_unit": "bytes", "sha256": fmt.Sprintf("%x", got.hash), "integrity": w.err == nil && got.err == nil && w.n == got.n && string(w.hash) == string(got.hash)}
+	result := map[string]any{"name": name, "version": Version, "scope": "One logical TCP stream throughout; random SHA-256 streaming echo through real loopback shaped TCP proxies; process CPU/RSS include all test components", "seconds": elapsed.Seconds(), "bytes": got.n, "mbps": float64(got.n) * 8 / elapsed.Seconds() / 1e6, "samples": samples, "client_after": client, "landing_after": landing, "process_metrics_available": before.Available && after.Available, "cpu_seconds": after.CPUSeconds - before.CPUSeconds, "rss_highwater": after.RSSPeakBytes, "rss_unit": "bytes", "sha256": fmt.Sprintf("%x", got.hash), "integrity": w.err == nil && got.err == nil && w.n == got.n && string(w.hash) == string(got.hash)}
 	if path := os.Getenv("MPX_LONG_REPORT"); path != "" {
 		data, _ := json.MarshalIndent(result, "", "  ")
 		if err := os.WriteFile(path+"-"+name+".json", append(data, '\n'), 0644); err != nil {

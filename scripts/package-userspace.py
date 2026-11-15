@@ -176,6 +176,10 @@ def check_stable_release(tests: dict, scheduler: dict, identity: str, version: s
 
 
 def main() -> None:
+    # Tunnel releases use the complete, fail-closed multi-platform gate.
+    if (ROOT/'macos/VERSION').read_text().strip().startswith('1.2.'):
+        module('tunnel_suite', ROOT/'scripts/tunnel-suite.py').main()
+        return
     parser=argparse.ArgumentParser()
     parser.add_argument('--require-live',action='store_true',help='Require 128/256/512/1024/2048 x 30s x 2 AND the source-matched 180s App/Surge mixed run')
     parser.add_argument('--engineering',action='store_true',help='Package explicitly unpromoted engineering artifacts; never marks failed performance/runtime gates passed')

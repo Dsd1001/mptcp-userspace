@@ -4,6 +4,8 @@ No desktop automation, installation or host network changes.
 """
 from __future__ import annotations
 import importlib.util
+import argparse
+import zipfile
 import base64
 import json
 import os
@@ -83,6 +85,10 @@ def macho_sections(path: pathlib.Path) -> dict[str, dict]:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--build-only', action='store_true', help='Verify candidate binaries only; never creates release PROVENANCE.json')
+    args = parser.parse_args()
+    source.check_frozen(ROOT)
     version=(ROOT/'macos/VERSION').read_text().strip()
     out=ROOT/'dist'/('userspace-'+version)
     files=source.collect();sums=source.manifest(files);identity=source.sha(sums)
@@ -104,30 +110,34 @@ def main() -> None:
         if not sparkle_archive.is_file() or source.sha(sparkle_archive.read_bytes())!='c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c':
             raise ValueError('Pinned Sparkle 2.10.0 archive missing or checksum mismatch')
         sparkle=work/'sparkle';sparkle.mkdir()
-        run(['tar','-xJf',str(sparkle_archive),'-C',str(sparkle),'./Sparkle.framework','./bin/sign_update'])
+        run(['tar','-xJf',str(sparkle_archive),'-C',str(sparkle),'./Sparkle.framework','./bin/sign_update','./bin/generate_keys'])
         sign_update=sparkle/'bin/sign_update'
-        appcast=out/'appcast.xml'
-        if not appcast.is_file():
-            raise ValueError('Signed appcast.xml missing')
-        feed=ET.parse(appcast).getroot()
-        ns={'sparkle':'http://www.andymatuschak.org/xml-namespaces/sparkle'}
-        item=feed.find('./channel/item')
-        if item is None:
-            raise ValueError('appcast item missing')
-        short=item.findtext('sparkle:shortVersionString',namespaces=ns)
-        build=item.findtext('sparkle:version',namespaces=ns)
-        enclosure=item.find('enclosure')
-        if short!=version or build!=str(plistlib.loads((ROOT/'macos/Info.plist').read_bytes())['CFBundleVersion']) or enclosure is None:
-            raise ValueError('appcast version/build mismatch')
-        signature=enclosure.attrib.get('{http://www.andymatuschak.org/xml-namespaces/sparkle}edSignature','')
-        if not signature or int(enclosure.attrib.get('length','0'))!=(out/dmg_name).stat().st_size:
-            raise ValueError('appcast DMG signature/length metadata invalid')
-        expected_url=f'https://github.com/Dsd1001/mptcp-userspace/releases/download/v{version}/{dmg_name}'
-        if enclosure.attrib.get('url')!=expected_url:
-            raise ValueError('appcast DMG URL mismatch')
-        run([str(sign_update),'--verify',str(out/dmg_name),signature])
-        run([str(sign_update),'--verify',str(appcast)])
-        checks.append('Sparkle appcast and DMG EdDSA signatures verified')
+        if not args.build_only:
+            public_key=run([str(sparkle/'bin/generate_keys'),'-p']).decode().strip()
+            if public_key!='2ADwJkrQ2XxjFo4bC3mjQkxjGBpsj3hfP7JTV0wdtek=':
+                raise ValueError('Updater verification key differs from pinned public key')
+            appcast=out/'appcast.xml'
+            if not appcast.is_file():
+                raise ValueError('Signed appcast.xml missing')
+            feed=ET.parse(appcast).getroot()
+            ns={'sparkle':'http://www.andymatuschak.org/xml-namespaces/sparkle'}
+            item=feed.find('./channel/item')
+            if item is None:
+                raise ValueError('appcast item missing')
+            short=item.findtext('sparkle:shortVersionString',namespaces=ns)
+            build=item.findtext('sparkle:version',namespaces=ns)
+            enclosure=item.find('enclosure')
+            if short!=version or build!=str(plistlib.loads((ROOT/'macos/Info.plist').read_bytes())['CFBundleVersion']) or enclosure is None:
+                raise ValueError('appcast version/build mismatch')
+            signature=enclosure.attrib.get('{http://www.andymatuschak.org/xml-namespaces/sparkle}edSignature','')
+            if not signature or int(enclosure.attrib.get('length','0'))!=(out/dmg_name).stat().st_size:
+                raise ValueError('appcast DMG signature/length metadata invalid')
+            expected_url=f'https://github.com/Dsd1001/mptcp-userspace/releases/download/v{version}/{dmg_name}'
+            if enclosure.attrib.get('url')!=expected_url:
+                raise ValueError('appcast DMG URL mismatch')
+            run([str(sign_update),'--verify',str(out/dmg_name),signature])
+            run([str(sign_update),'--verify',str(appcast)])
+            checks.append('Sparkle appcast and DMG EdDSA signatures verified')
         with tarfile.open(out/source_name,'r:gz') as archive:
             if set(archive.getnames())!=set(expected):
                 raise ValueError('Frozen source archive inventory differs')
@@ -247,7 +257,7 @@ def main() -> None:
                 run(['xcrun','swiftc','-O','-swift-version','5','-parse-as-library','-target',arch+'-apple-macosx13.0',
                      '-module-cache-path','/tmp/mptcp-swift-cache','-debug-prefix-map',str(frozen)+'=.',
                      '-F',str(sparkle),'-framework','Sparkle','-Xlinker','-rpath','-Xlinker','@executable_path/../Frameworks',
-                     str(frozen/'macos/Lifecycle.swift'),str(frozen/'macos/Profile.swift'),str(frozen/'macos/KeychainBrokerClient.swift'),str(frozen/'macos/RemoteControl.swift'),
+                     str(frozen/'macos/Lifecycle.swift'),str(frozen/'macos/Profile.swift'),str(frozen/'macos/TunnelProfile.swift'),str(frozen/'macos/TunnelView.swift'),str(frozen/'macos/KeychainBrokerClient.swift'),str(frozen/'macos/RemoteControl.swift'),
                      str(frozen/'macos/UpdateController.swift'),str(frozen/'macos/App.swift'),'-o',str(rebuilt_ui)])
                 thin_ui=work/('packaged-ui-'+goarch)
                 run(['lipo',str(ui),'-thin',arch,'-output',str(thin_ui)])
@@ -255,42 +265,79 @@ def main() -> None:
                     raise ValueError('Packaged App sections differ from frozen-source rebuild: '+arch)
                 reproduced['darwin-'+goarch]={'engine_sections':macho_sections(thin),'app_sections':macho_sections(thin_ui),
                     'comparison':'all Mach-O sections including executable code and constant data; excludes signatures/link-edit/UUID'}
-            for name in ['README.zh-CN.md','VALIDATION.md','tcp-profile.example.json','userspace-profile.example.json']:
+            for name in ['README.zh-CN.md','VALIDATION.md','tunnel.example.json']:
                 if (resources/name).read_bytes()!=files['macos/'+name]:
                     raise ValueError('Packaged documentation/example differs: '+name)
-            for name in ['DEPLOYMENT.zh-CN.md','PROTOCOL.md','PROVISIONING.md','VALIDATION.md','ADAPTIVE-FLOW-CONTROL.md','MPX3-CREDIT.md','SCHEDULER-MODES.md','REV2-SHARED-CREDIT.md']:
+            for name in ['SHARED-TUNNEL-1.2.1.zh-CN.md','RELEASE-'+version+'.zh-CN.md','PROTOCOL.md','PROVISIONING.md']:
                 if (resources/'docs/userspace'/name).read_bytes()!=files['docs/userspace/'+name]:
                     raise ValueError('Packaged protocol/deployment documentation differs')
-            # v1.1.2 intentionally removes the macOS Native MPTCP fallback.
-            # Keep the legacy schema2 example as a negative compatibility test:
-            # accepting it would silently re-enable an unavailable transport.
-            legacy=subprocess.run([str(engine),'validate'],input=files['macos/tcp-profile.example.json'],capture_output=True)
-            if legacy.returncode==0:
-                raise ValueError('Removed schema2 Native MPTCP example was accepted')
-            invalid=subprocess.run([str(engine),'validate'],input=files['macos/userspace-profile.example.json'],capture_output=True)
+            # Only the shared tunnel schema is a supported product interface.
+            for legacy in ({'schema_version': 2, 'mode': 'tcp'}, {'schema_version': 3, 'mode': 'userspace_multipath'}, {'schema_version': 2, 'kind': 'bundle', 'profiles': []}):
+                result=subprocess.run([str(engine),'validate-tunnel'],input=json.dumps(legacy).encode(),capture_output=True,timeout=10)
+                if result.returncode==0:
+                    raise ValueError('Removed legacy profile/bundle accepted')
+            invalid=subprocess.run([str(engine),'validate-tunnel'],input=files['macos/tunnel.example.json'],capture_output=True,timeout=10)
             if invalid.returncode==0:
                 raise ValueError('Placeholder transport key accepted')
-            profile=json.loads(files['macos/userspace-profile.example.json']);profile['transport_key']='0a'*32
-            run([str(engine),'validate'],input=json.dumps(profile).encode())
+            profile=json.loads(files['macos/tunnel.example.json']);profile['tunnel']['transport_key']='0a'*32
+            run([str(engine),'validate-tunnel'],input=json.dumps(profile).encode())
             checks.extend(['read-only DMG and strict code signature with BUILDINFO-matched designated requirement','embedded Sparkle framework and pinned public update key',
-                'ARM and x86_64 packaged engine execution','App and engine section-identical rebuilds from frozen source','schema2 Native rejection, userspace schema3 acceptance, and placeholder rejection',
+                'ARM and x86_64 packaged engine execution','App and engine section-identical rebuilds from frozen source','legacy Profile/Bundle rejection, shared-tunnel schema acceptance, placeholder rejection',
                 'packaged documentation equals frozen source','frozen Keychain Broker hash/signature/universal architecture'])
         finally:
             run(['hdiutil','detach',str(mount)])
     if source.manifest(source.collect())!=sums:
         raise ValueError('Sources changed during verification')
-    artifacts=[dmg_name,'appcast.xml',source_name,'MPTCP-Desk.BUILDINFO',
+    artifacts=[dmg_name,source_name,'MPTCP-Desk.BUILDINFO',
         'mptcp-client-linux-amd64','mptcp-client-linux-amd64.BUILDINFO',
         'mptcp-client-linux-arm64','mptcp-client-linux-arm64.BUILDINFO',
         'mptcp-landing','mptcp-landing.BUILDINFO',
         'mptcp-landing-linux-arm64','mptcp-landing-linux-arm64.BUILDINFO',
         'mpx-provision','mpx-provision.BUILDINFO',
         'mpx-provision-linux-arm64','mpx-provision-linux-arm64.BUILDINFO']
-    receipt={'version':version,'source_id':identity,'verified':True,'checks':checks,'reproduced':reproduced,
+    if not args.build_only:
+        installer='MPTCP-Desk-'+version+'-Windows-Setup.exe'
+        portable='MPTCP-Desk-'+version+'-Windows-Portable.zip'
+        for name in (installer, portable, 'MPTCP-Desk-Windows.exe', 'mptcp-engine.exe', 'MPTCP-Desk-Windows.BUILDINFO', 'windows-update.json'):
+            if not (out/name).is_file() or (out/name).is_symlink():
+                raise ValueError('Missing Windows release asset: '+name)
+        winfo=(out/'MPTCP-Desk-Windows.BUILDINFO').read_text(encoding='utf-8-sig')
+        if 'Version: '+version not in winfo or 'Source-ID: '+identity not in winfo or 'Mode: shared_mpx4_tunnel only' not in winfo:
+            raise ValueError('Windows BUILDINFO identity/mode mismatch')
+        for file,label in [('MPTCP-Desk-Windows.exe','GUI-SHA256'),('mptcp-engine.exe','Engine-SHA256')]:
+            data=(out/file).read_bytes()
+            if data[:2]!=b'MZ' or label+': '+source.sha(data).upper() not in winfo.upper():
+                raise ValueError('Windows executable hash mismatch: '+file)
+        with zipfile.ZipFile(out/portable) as z:
+            expected={'MPTCP-Desk-Windows.exe','mptcp-engine.exe','MPTCP-Desk-Windows.BUILDINFO'}
+            if set(z.namelist())!=expected or len(z.infolist())!=len(expected):
+                raise ValueError('Windows Portable inventory mismatch')
+            for name in expected:
+                if z.read(name)!=(out/name).read_bytes():
+                    raise ValueError('Windows Portable bytes mismatch: '+name)
+        update=json.loads((out/'windows-update.json').read_text())
+        if update.get('version')!=version or update.get('sha256')!=source.sha((out/installer).read_bytes()) or update.get('size')!=(out/installer).stat().st_size:
+            raise ValueError('Windows update identity/hash/size mismatch')
+        if update.get('url')!='https://github.com/Dsd1001/mptcp-userspace/releases/download/v'+version+'/'+installer:
+            raise ValueError('Windows update URL mismatch')
+        # Match the Windows engine bytes using the same pinned Go toolchain.
+        with tempfile.TemporaryDirectory(prefix='mpx-win-engine-') as temp:
+            rebuilt=pathlib.Path(temp)/'mptcp-engine.exe'
+            run([go,'build','-trimpath','-buildvcs=false','-ldflags='+flags,'-o',str(rebuilt),'.'],
+                cwd=ROOT/'macos/engine',env=dict(env,CGO_ENABLED='0',GOOS='windows',GOARCH='amd64'))
+            if rebuilt.read_bytes()!=(out/'mptcp-engine.exe').read_bytes():
+                raise ValueError('Windows engine does not reproduce; check pinned compiler version')
+        # The pinned Sparkle public key verifies both platform updates.
+        with tempfile.TemporaryDirectory(prefix='mpx-win-verify-') as temp:
+            run(['tar','-xJf',str(sparkle_archive),'-C',temp,'./bin/sign_update'])
+            run([str(pathlib.Path(temp)/'bin/sign_update'),'--verify',str(out/installer),update.get('ed25519_signature','')])
+        artifacts += ['appcast.xml',installer,portable,'MPTCP-Desk-Windows.exe','mptcp-engine.exe','MPTCP-Desk-Windows.BUILDINFO','windows-update.json']
+        checks.append('Windows Portable inventory, engine/GUI hashes and Ed25519 installer update verified')
+    receipt={'version':version,'source_id':identity,'verified':True,'update_signatures_verified':not args.build_only,'checks':checks,'reproduced':reproduced,
              'artifact_sha256':{name:source.sha((out/name).read_bytes()) for name in artifacts},
              'limitations':['Not a reproducible DMG filesystem container','Stable local signing is not Apple Developer ID/notarization',
                             'Intel execution is Rosetta, not physical Intel hardware','No GUI/keychain authorization interaction']}
-    (out/'PROVENANCE.json').write_text(json.dumps(receipt,indent=2)+'\n')
+    (out/('BUILD-PROVENANCE.json' if args.build_only else 'PROVENANCE.json')).write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps({k:v for k,v in receipt.items() if k!='reproduced'},indent=2))
 
 

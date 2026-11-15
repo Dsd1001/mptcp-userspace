@@ -8,6 +8,7 @@ import (
 )
 
 type testProcessUsage struct {
+	Available    bool
 	CPUSeconds   float64
 	RSSPeakBytes int64
 }
@@ -22,5 +23,5 @@ func readTestProcessUsage() testProcessUsage {
 	if runtime.GOOS == "linux" {
 		rss *= 1024
 	}
-	return testProcessUsage{CPUSeconds: cpu, RSSPeakBytes: rss}
+	return testProcessUsage{Available: true, CPUSeconds: cpu, RSSPeakBytes: rss}
 }

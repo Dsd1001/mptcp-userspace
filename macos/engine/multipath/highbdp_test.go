@@ -136,10 +136,11 @@ func highBDPRelay(t *testing.T, target string, rate int64, delay time.Duration) 
 }
 
 type highBDPResult struct {
-	RequestedSchedulerMode SchedulerMode     `json:"requested_scheduler_mode"`
-	WarmClient             Stats             `json:"client_after_warmup"`
-	WarmServer             Stats             `json:"server_after_warmup"`
-	ModeTimeline           []schedulerSample `json:"scheduler_timeline"`
+	ProcessMetricsAvailable bool              `json:"process_metrics_available"`
+	RequestedSchedulerMode  SchedulerMode     `json:"requested_scheduler_mode"`
+	WarmClient              Stats             `json:"client_after_warmup"`
+	WarmServer              Stats             `json:"server_after_warmup"`
+	ModeTimeline            []schedulerSample `json:"scheduler_timeline"`
 
 	Name       string    `json:"name"`
 	Rates      []int64   `json:"rates_bytes_per_second"`
@@ -254,6 +255,7 @@ func highBDPCase(t *testing.T, name string, rates []int64, rtts []time.Duration,
 	result.Seconds = elapsed.Seconds()
 	result.Mbps = float64(size) * 8 / elapsed.Seconds() / 1e6
 	result.CPU = after.CPUSeconds - before.CPUSeconds
+	result.ProcessMetricsAvailable = before.Available && after.Available
 	result.RSSPeak = after.RSSPeakBytes
 
 	// The original payload/FIN timing above is unchanged. Rev2 adds a reliable

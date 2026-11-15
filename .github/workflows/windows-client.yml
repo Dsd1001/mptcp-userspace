@@ -41,7 +41,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "1.25.14"
           cache-dependency-path: windows/go.sum
 
       - uses: actions/setup-python@v5
@@ -77,7 +77,7 @@ jobs:
       - name: Test cross-platform Source-ID canonicalization
         shell: powershell
         run: |
-          python -m unittest tests/userspace/source_manifest_test.py
+          python -m unittest tests/userspace/source_manifest_test.py tests/userspace/tunnel_release_test.py
           if ($LASTEXITCODE -ne 0) { throw "Source manifest tests failed" }
 
       - name: Check frontend JavaScript syntax
@@ -124,6 +124,7 @@ jobs:
           }
 
       - name: Upload Windows artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mptcp-desk-windows

@@ -85,7 +85,7 @@ def archive(path: pathlib.Path, files: dict[str, bytes]) -> None:
                 entry.size = len(data)
                 entry.mtime = entry.uid = entry.gid = 0
                 entry.uname = entry.gname = 'root'
-                entry.mode = 0o755 if name.endswith('.sh') or name == 'mptcp-landing' else 0o644
+                entry.mode = 0o755 if name.endswith(('.sh', '.py')) or p.name in {'mptcp-client-linux-amd64', 'mptcp-client-linux-arm64', 'mptcp-landing', 'mptcp-landing-linux-arm64', 'mpx-provision', 'mpx-provision-linux-arm64'} else 0o644
                 out.addfile(entry, io.BytesIO(data))
     with tarfile.open(path, 'r:gz') as check:
         if len(check.getnames()) != len(files) or set(check.getnames()) != set(files):

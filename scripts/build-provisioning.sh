@@ -40,7 +40,7 @@ build_one() {
         amd64) file "$out" | grep -E 'ELF 64-bit.*x86-64.*statically linked' ;;
         arm64) file "$out" | grep -E 'ELF 64-bit.*ARM aarch64.*statically linked' ;;
     esac
-    shasum -a 256 "$out" > "$out.sha256"
+    (cd "$OUT" && shasum -a 256 "$(basename "$out")") > "$out.sha256"
     {
         printf 'Component: mpx-provision\nVersion: %s\nSource-ID: %s\nTarget: linux/%s\nCGO_ENABLED: 0\nAPI: tunnel_profile schema 4 (tunnel-only)\n' "$VERSION" "$SOURCE_ID" "$arch"
         "$GO" version

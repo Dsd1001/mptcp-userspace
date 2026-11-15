@@ -3,7 +3,7 @@ name: Shared tunnel suite acceptance
 on:
   workflow_dispatch:
   push:
-    branches: [release/v1.2.0-tunnel]
+    branches: ["release/**"]
   pull_request:
     paths:
       - "macos/engine/**"
@@ -26,7 +26,8 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "1.25.14"
+          cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -38,6 +39,11 @@ jobs:
           python3 scripts/source-manifest.py --freeze | tee validation/current-linux/source.json
           git rev-parse HEAD > validation/current-linux/COMMIT
           go version > validation/current-linux/toolchain.txt
+      - name: Release packaging regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests/userspace -p "*test.py" 2>&1 | tee validation/current-linux/release-script-tests.log
       - name: Engine full tests, race, vet and config fuzz
         shell: bash
         run: |

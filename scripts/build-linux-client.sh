@@ -27,7 +27,7 @@ build_one() {
         amd64) file "$out" | grep -E 'ELF 64-bit.*x86-64.*statically linked' ;;
         arm64) file "$out" | grep -E 'ELF 64-bit.*ARM aarch64.*statically linked' ;;
     esac
-    shasum -a 256 "$out" > "$out.sha256"
+    (cd "$OUT" && shasum -a 256 "$(basename "$out")") > "$out.sha256"
     {
         printf 'Component: mptcp-client\nVersion: %s\nSource-ID: %s\nTarget: linux/%s\nCGO_ENABLED: 0\nProtocol: MPX/4 Protocol Version 4 Stable\nProtocol-Release: protocol-v4.0.0\nProtocol-Source: 44f587fd279ed2238b070dd68114c76822353f4d\nMode: shared_mpx4_tunnel only\n' "$VERSION" "$SOURCE_ID" "$arch"
         "$GO" version

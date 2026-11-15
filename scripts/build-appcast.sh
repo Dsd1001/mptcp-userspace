@@ -20,7 +20,10 @@ fi
 
 TMP=$(mktemp -d /tmp/mptcp-appcast.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
-tar -xJf "$ARCHIVE" -C "$TMP" ./bin/sign_update
+tar -xJf "$ARCHIVE" -C "$TMP" ./bin/sign_update ./bin/generate_keys
+PUBLIC_KEY=$("$TMP/bin/generate_keys" -p)
+EXPECTED_KEY=$(plutil -extract SUPublicEDKey raw -o - "$ROOT/macos/Info.plist")
+[[ "$PUBLIC_KEY" == "$EXPECTED_KEY" ]] || { echo "Update signing key differs from pinned public key; refusing to sign" >&2; exit 1; }
 SIGNATURE_LINE=$("$TMP/bin/sign_update" "$DMG")
 ED_SIGNATURE=$(printf '%s\n' "$SIGNATURE_LINE" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
 LENGTH=$(stat -f %z "$DMG")
