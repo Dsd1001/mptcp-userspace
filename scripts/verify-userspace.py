@@ -84,6 +84,24 @@ def macho_sections(path: pathlib.Path) -> dict[str, dict]:
     return sections
 
 
+def check_windows_buildinfo(out: pathlib.Path, version: str, identity: str) -> None:
+    """Accept Windows CRLF/BOM metadata while comparing digest fields exactly."""
+    info=(out/'MPTCP-Desk-Windows.BUILDINFO').read_text(encoding='utf-8-sig')
+    fields={}
+    for line in info.splitlines():
+        if ': ' in line:
+            key,value=line.split(': ',1)
+            if key in fields:
+                raise ValueError('Duplicate Windows BUILDINFO field: '+key)
+            fields[key]=value
+    if fields.get('Version')!=version or fields.get('Source-ID')!=identity or fields.get('Mode')!='shared_mpx4_tunnel only':
+        raise ValueError('Windows BUILDINFO identity/mode mismatch')
+    for filename,label in [('MPTCP-Desk-Windows.exe','GUI-SHA256'),('mptcp-engine.exe','Engine-SHA256')]:
+        data=(out/filename).read_bytes()
+        if data[:2]!=b'MZ' or fields.get(label,'').lower()!=source.sha(data):
+            raise ValueError('Windows executable hash mismatch: '+filename)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-only', action='store_true', help='Verify candidate binaries only; never creates release PROVENANCE.json')
@@ -301,13 +319,7 @@ def main() -> None:
         for name in (installer, portable, 'MPTCP-Desk-Windows.exe', 'mptcp-engine.exe', 'MPTCP-Desk-Windows.BUILDINFO', 'windows-update.json'):
             if not (out/name).is_file() or (out/name).is_symlink():
                 raise ValueError('Missing Windows release asset: '+name)
-        winfo=(out/'MPTCP-Desk-Windows.BUILDINFO').read_text(encoding='utf-8-sig')
-        if 'Version: '+version not in winfo or 'Source-ID: '+identity not in winfo or 'Mode: shared_mpx4_tunnel only' not in winfo:
-            raise ValueError('Windows BUILDINFO identity/mode mismatch')
-        for file,label in [('MPTCP-Desk-Windows.exe','GUI-SHA256'),('mptcp-engine.exe','Engine-SHA256')]:
-            data=(out/file).read_bytes()
-            if data[:2]!=b'MZ' or label+': '+source.sha(data).upper() not in winfo.upper():
-                raise ValueError('Windows executable hash mismatch: '+file)
+        check_windows_buildinfo(out,version,identity)
         with zipfile.ZipFile(out/portable) as z:
             expected={'MPTCP-Desk-Windows.exe','mptcp-engine.exe','MPTCP-Desk-Windows.BUILDINFO'}
             if set(z.namelist())!=expected or len(z.infolist())!=len(expected):

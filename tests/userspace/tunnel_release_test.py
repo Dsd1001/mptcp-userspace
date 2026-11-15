@@ -115,4 +115,41 @@ class TunnelReleaseGateTests(unittest.TestCase):
         self.assertNotIn("files['macos/userspace-profile.example.json']", text)
 
 
+class WindowsBuildInfoRegressionTests(unittest.TestCase):
+    def test_mixed_case_engine_label_crlf_and_bom(self):
+        spec=importlib.util.spec_from_file_location('verify_suite',ROOT/'scripts/verify-userspace.py')
+        verify=importlib.util.module_from_spec(spec);spec.loader.exec_module(verify)
+        with tempfile.TemporaryDirectory() as tmp:
+            out=pathlib.Path(tmp)
+            lines=['Version: 1.2.1','Source-ID: '+('a'*64),'Mode: shared_mpx4_tunnel only']
+            for name,label in [('MPTCP-Desk-Windows.exe','GUI-SHA256'),('mptcp-engine.exe','Engine-SHA256')]:
+                data=b'MZ'+name.encode();(out/name).write_bytes(data)
+                lines.append(label+': '+suite.source.sha(data))
+            info=out/'MPTCP-Desk-Windows.BUILDINFO'
+            info.write_bytes(('\ufeff'+'\r\n'.join(lines)+'\r\n').encode())
+            verify.check_windows_buildinfo(out,'1.2.1','a'*64)
+            (out/'mptcp-engine.exe').write_bytes(b'MZchanged')
+            with self.assertRaisesRegex(ValueError,'hash mismatch'):
+                verify.check_windows_buildinfo(out,'1.2.1','a'*64)
+
+    def test_duplicate_or_prefix_digest_is_rejected(self):
+        spec=importlib.util.spec_from_file_location('verify_suite',ROOT/'scripts/verify-userspace.py')
+        verify=importlib.util.module_from_spec(spec);spec.loader.exec_module(verify)
+        with tempfile.TemporaryDirectory() as tmp:
+            out=pathlib.Path(tmp)
+            lines=['Version: 1.2.1','Source-ID: '+('a'*64),'Mode: shared_mpx4_tunnel only']
+            for name,label in [('MPTCP-Desk-Windows.exe','GUI-SHA256'),('mptcp-engine.exe','Engine-SHA256')]:
+                data=b'MZ'+name.encode();(out/name).write_bytes(data)
+                lines.append(label+': '+suite.source.sha(data).upper())
+            info=out/'MPTCP-Desk-Windows.BUILDINFO'
+            info.write_text('\n'.join(lines)+'\n')
+            verify.check_windows_buildinfo(out,'1.2.1','a'*64)
+            info.write_text('\n'.join(lines+[lines[-1]])+'\n')
+            with self.assertRaisesRegex(ValueError,'Duplicate'):
+                verify.check_windows_buildinfo(out,'1.2.1','a'*64)
+            lines[-1]+='ff';info.write_text('\n'.join(lines)+'\n')
+            with self.assertRaisesRegex(ValueError,'hash mismatch'):
+                verify.check_windows_buildinfo(out,'1.2.1','a'*64)
+
+
 if __name__ == '__main__': unittest.main()
