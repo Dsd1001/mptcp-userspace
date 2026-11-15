@@ -194,6 +194,7 @@ func (st *Stream) receiveCommitLocked(end uint64) error {
 	}
 	fc.rxCommitted += delta
 	st.rxHigh = end
+	st.routeReceiveAccountLocked(int(delta), 0)
 	s.receiveCredit, s.receiveGrowth = newUsed, newGrowth
 	fc.peakRX, fc.peakGrowth = max(fc.peakRX, newUsed), max(fc.peakGrowth, newGrowth)
 	return nil
@@ -208,6 +209,7 @@ func (st *Stream) releaseReadCreditLocked(oldRead uint64) {
 	}
 	n := int(st.rxRead - oldRead)
 	old := int(st.rxHigh - oldRead)
+	st.routeReceiveAccountLocked(-n, 0)
 	s.receiveCredit -= n
 	s.receiveGrowth -= growthOf(old) - growthOf(old-n)
 	s.credit.rxConsumed += uint64(n)

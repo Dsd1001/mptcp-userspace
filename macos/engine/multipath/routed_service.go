@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	productServiceRoutedUOT  byte = 5
 	productServiceRoutedTCP  byte = 3
 	productServiceRouteProbe byte = 4
 	MaxTCPRoutes                  = 64
@@ -33,6 +34,7 @@ var (
 // Backend may be an IP or DNS name; it is resolved for each new connection.
 // Existing connections are never moved or replayed after a DNS change.
 type TCPRoute struct {
+	UDPBackend     string `json:"udp_backend,omitempty"`
 	ID             uint32 `json:"id"`
 	Name           string `json:"name,omitempty"`
 	Backend        string `json:"backend"`
@@ -109,8 +111,18 @@ func ValidateTCPRoutes(routes []TCPRoute) error {
 		if route.MaxConnections < 0 || route.MaxConnections > MaxStreams {
 			return errors.New("route max_connections must be 1..2048, or 0 for default 512")
 		}
-		if err := validateRouteBackend(route.Backend); err != nil {
-			return fmt.Errorf("route %d: %w", route.ID, err)
+		if route.Backend == "" && route.UDPBackend == "" {
+			return errors.New("route requires a TCP backend or udp_backend")
+		}
+		if route.Backend != "" {
+			if err := validateRouteBackend(route.Backend); err != nil {
+				return fmt.Errorf("route %d TCP: %w", route.ID, err)
+			}
+		}
+		if route.UDPBackend != "" {
+			if err := validateRouteBackend(route.UDPBackend); err != nil {
+				return fmt.Errorf("route %d UDP: %w", route.ID, err)
+			}
 		}
 	}
 	return nil
@@ -147,12 +159,8 @@ func DialClientWithRoutedPolicy(ctx context.Context, addresses []string, token s
 	if err := ValidateRoutePolicies(routes); err != nil {
 		return nil, err
 	}
-	s, err := dialClientPolicy(ctx, addresses, token, mode, capacities, true)
+	s, err := dialClientPolicy(ctx, addresses, token, mode, capacities, true, routes)
 	if err != nil {
-		return nil, err
-	}
-	if err = s.ConfigureRoutePolicies(routes); err != nil {
-		s.Close()
 		return nil, err
 	}
 	st, err := s.openProductService(ctx, productServiceRouteProbe)
@@ -168,6 +176,14 @@ func DialClientWithRoutedPolicy(ctx context.Context, addresses []string, token s
 // immediately (including for server-first protocols). At most 64 KiB may be
 // committed before the private reply pump validates the egress connection result.
 func (s *Session) OpenRoutedTCP(parent context.Context, routeID uint32) (*Stream, error) {
+	return s.openRoutedService(parent, routeID, productServiceRoutedTCP)
+}
+
+func (s *Session) OpenRoutedUOT(parent context.Context, routeID uint32) (*Stream, error) {
+	return s.openRoutedService(parent, routeID, productServiceRoutedUOT)
+}
+
+func (s *Session) openRoutedService(parent context.Context, routeID uint32, kind byte) (*Stream, error) {
 	s.mu.Lock()
 	allowed := s.productMux && !s.server && routeID != 0 && s.routeGroups[routeID] != nil
 	s.mu.Unlock()
@@ -188,10 +204,10 @@ func (s *Session) OpenRoutedTCP(parent context.Context, routeID uint32) (*Stream
 		return nil, err
 	}
 	deadline, _ := ctx.Deadline()
-	st.armProductReply(productServiceRoutedTCP, deadline)
+	st.armProductReply(kind, deadline)
 	st.SetWriteDeadline(deadline)
 	stop := context.AfterFunc(ctx, func() { st.SetWriteDeadline(time.Now()) })
-	request := [10]byte{'M', 'P', 'S', '1', productServiceRoutedTCP, 0}
+	request := [10]byte{'M', 'P', 'S', '1', kind, 0}
 	binary.BigEndian.PutUint32(request[6:], routeID)
 	err = writeAll(st, request[:])
 	if !stop() || ctx.Err() != nil {
@@ -212,7 +228,7 @@ func (s *Session) OpenRoutedTCP(parent context.Context, routeID uint32) (*Stream
 	return st, nil
 }
 
-func (srv *Server) openRoutedBackend(st *Stream, finish func(byte)) {
+func (srv *Server) openRoutedBackend(st *Stream, kind byte, finish func(byte)) {
 	// Unlike an unused pre-open, a partially supplied route header has a short
 	// deadline. The bounded early data is left in the existing MPX receive pages.
 	st.SetDeadline(time.Now().Add(productServiceResponseTimeout))
@@ -226,6 +242,15 @@ func (srv *Server) openRoutedBackend(st *Stream, finish func(byte)) {
 		finish(5)
 		return
 	}
+	target := route.config.Backend
+	if kind == productServiceRoutedUOT {
+		target = route.config.UDPBackend
+	}
+	if target == "" {
+		finish(2)
+		return
+	}
+
 	st.s.mu.Lock()
 	err := st.s.bindRouteLocked(st, id)
 	st.s.mu.Unlock()
@@ -250,7 +275,12 @@ func (srv *Server) openRoutedBackend(st *Stream, finish func(byte)) {
 		finish(4)
 		return
 	}
-	c, err := PlainDial(ctx, route.config.Backend)
+	var c net.Conn
+	if kind == productServiceRoutedUOT {
+		c, err = (&net.Dialer{}).DialContext(ctx, "udp", target)
+	} else {
+		c, err = PlainDial(ctx, target)
+	}
 	cancel()
 	<-route.dialing
 	if err != nil {
@@ -261,9 +291,17 @@ func (srv *Server) openRoutedBackend(st *Stream, finish func(byte)) {
 	// Re-arm after dialing so a slow but successful dial can still report its
 	// result. A failed route never replays bytes to another backend.
 	st.SetDeadline(time.Now().Add(productServiceResponseTimeout))
-	if productServiceReply(st, productServiceRoutedTCP, 0) != nil {
+	if productServiceReply(st, kind, 0) != nil {
 		return
 	}
 	st.SetDeadline(time.Time{})
+	if kind == productServiceRoutedUOT {
+		udp, ok := c.(*net.UDPConn)
+		if !ok {
+			return
+		}
+		serveUOTBackend(st.s.ctx, st, udp)
+		return
+	}
 	Bridge(st.s.ctx, st, c.(HalfConn), 15*time.Minute)
 }

@@ -159,6 +159,9 @@ type carrier struct {
 // All stream, ledger and carrier accounting lives under one mutex. Network I/O
 // and backend I/O never hold it. Readers cannot block unrelated logical flows.
 type Session struct {
+	uotClientFlows                                   int
+	uotQueuedBytes                                   int
+	routeLogicalProtected, routePhysicalProtected    int
 	routeGroups                                      map[uint32]*routeGroup
 	routeReady                                       list.List
 	routeReadyWeight                                 int
@@ -475,6 +478,16 @@ func (s *Session) stop(err error) {
 	s.pendingBytes = 0
 	s.bufferedBytes = 0
 	s.readyDataBytes = 0
+	s.routeReady.Init()
+	s.routeReadyWeight = 0
+	s.routeLogicalProtected, s.routePhysicalProtected = 0, 0
+	for _, r := range s.routeGroups {
+		r.ready.Init()
+		r.entry = nil
+		r.deficit = 0
+		r.readyBytes = 0
+		r.receiveUsed, r.receiveAllocated = 0, 0
+	}
 	s.wakeLocked()
 }
 

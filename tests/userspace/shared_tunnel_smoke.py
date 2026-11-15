@@ -149,7 +149,7 @@ def main() -> None:
             egress_reserve = reserve_port()
             egress_port = egress_reserve.getsockname()[1]
             egress_reserve.close()
-            config = {'schema_version': 1, 'listen_tcp': f'127.0.0.1:{egress_port}', 'transport_key': key, 'max_sessions': 2, 'scheduler_mode': 'aggregate', 'tcp_routes': [
+            config = {'schema_version': 2, 'kind': 'mpx4_tunnel_egress', 'listen_tcp': f'127.0.0.1:{egress_port}', 'transport_key': key, 'max_sessions': 2, 'scheduler_mode': 'aggregate', 'routes': [
                 {'id': i + 1, 'backend': f'127.0.0.1:{port}'} for i, port in enumerate(backend_ports)]}
             private = directory / 'egress-private.json'
             private.write_text(json.dumps(config)); private.chmod(0o600)

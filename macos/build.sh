@@ -86,7 +86,7 @@ for arch in arm64 amd64; do
     [[ $arch != amd64 ]] || swift_arch=x86_64
     xcrun swiftc -O -swift-version 5 -parse-as-library -target "$swift_arch-apple-macosx13.0" \
         -module-cache-path /tmp/mptcp-swift-cache -debug-prefix-map "$ROOT"=. \
-        -F "$SPARKLE_VENDOR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks         "$ROOT/macos/Lifecycle.swift" "$ROOT/macos/Profile.swift" "$ROOT/macos/KeychainBrokerClient.swift" "$ROOT/macos/RemoteControl.swift" "$ROOT/macos/UpdateController.swift" "$ROOT/macos/App.swift" -o "$BUILD/MPTCPDesk-$arch"
+        -F "$SPARKLE_VENDOR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks         "$ROOT/macos/Lifecycle.swift" "$ROOT/macos/Profile.swift" "$ROOT/macos/TunnelProfile.swift" "$ROOT/macos/TunnelView.swift" "$ROOT/macos/KeychainBrokerClient.swift" "$ROOT/macos/RemoteControl.swift" "$ROOT/macos/UpdateController.swift" "$ROOT/macos/App.swift" -o "$BUILD/MPTCPDesk-$arch"
     (
         cd "$ROOT/macos/engine"
         CGO_ENABLED=1 GOOS=darwin GOARCH=$arch CC="clang -arch $swift_arch -isysroot $SDK -mmacosx-version-min=13.0" \
@@ -111,7 +111,7 @@ cp "$BROKER_RESOURCE" "$APP/Contents/Resources/MPTCPKeychainBroker.v1.b64"
 xcrun swiftc "$ROOT/macos/Icon.swift" -module-cache-path /tmp/mptcp-swift-cache -o "$BUILD/icon-generator"
 "$BUILD/icon-generator" "$APPROOT/AppIcon.iconset"
 iconutil -c icns "$APPROOT/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
-for name in README.zh-CN.md VALIDATION.md tcp-profile.example.json userspace-profile.example.json; do
+for name in README.zh-CN.md VALIDATION.md tunnel.example.json; do
     cp "$ROOT/macos/$name" "$APP/Contents/Resources/$name"
     cp "$ROOT/macos/$name" "$STAGE/$name"
 done

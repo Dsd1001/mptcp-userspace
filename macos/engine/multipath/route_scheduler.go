@@ -4,22 +4,30 @@ import (
 	"container/list"
 	"errors"
 	"sort"
+	"time"
 )
 
 // Each route owns a ring of references to the existing per-Stream ready queues.
 // No DATA is copied and no second reliable ledger is introduced. Group 0 holds
 // setup/probe traffic until a product Stream has selected an allowed route.
 type routeGroup struct {
-	id         uint32
-	weight     int
-	ready      list.List
-	entry      *list.Element
-	deficit    int
-	readyBytes int
-	dispatched uint64
+	receiveUsed, receiveAllocated, receiveFloor, receiveLimit int
+	receivePressureResets, receiveWindowDeferrals             uint64
+	id                                                        uint32
+	weight                                                    int
+	ready                                                     list.List
+	entry                                                     *list.Element
+	deficit                                                   int
+	readyBytes                                                int
+	dispatched                                                uint64
 }
 
 type RouteStats struct {
+	ReceiveUsed            int    `json:"receive_unconsumed_bytes"`
+	ReceiveAllocated       int    `json:"receive_allocated_bytes"`
+	ReceiveLimit           int    `json:"receive_limit_bytes"`
+	ReceivePressureResets  uint64 `json:"receive_pressure_resets"`
+	ReceiveWindowDeferrals uint64 `json:"receive_window_deferrals"`
 	ID                     uint32 `json:"route_id"`
 	Weight                 int    `json:"weight"`
 	Streams                int    `json:"streams"`
@@ -53,7 +61,7 @@ func (s *Session) ConfigureRoutePolicies(policies []RoutePolicy) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || !s.productMux || s.routeGroups != nil || s.dataPendingFrames != 0 {
+	if s.closed || !s.productMux || s.routeGroups != nil || s.dataPendingFrames != 0 || s.receiveCredit != 0 || s.receiveAllocated != 0 {
 		return errors.New("route policies require a fresh product-service Session")
 	}
 	s.routeGroups = make(map[uint32]*routeGroup, len(policies)+1)
@@ -62,6 +70,7 @@ func (s *Session) ConfigureRoutePolicies(policies []RoutePolicy) error {
 		weight, _ := normalizedRouteWeight(p.Weight)
 		s.routeGroups[p.ID] = &routeGroup{id: p.ID, weight: weight}
 	}
+	s.initRouteReceiveLocked()
 	return nil
 }
 
@@ -75,7 +84,11 @@ func (s *Session) bindRouteLocked(st *Stream, id uint32) error {
 	if st.routeID != 0 || st.txNext != 0 || s.ready[st.id] != nil {
 		return errors.New("a Stream route cannot be changed after sending DATA")
 	}
+	if err := s.moveRouteReceiveLocked(st, id); err != nil {
+		return err
+	}
 	st.routeID = id
+	st.advertiseCreditLocked(time.Now())
 	return nil
 }
 
@@ -200,7 +213,7 @@ func (s *Session) routeSnapshotLocked() []RouteStats {
 	}
 	out := make([]RouteStats, 0, len(s.routeGroups))
 	for _, r := range s.routeGroups {
-		out = append(out, RouteStats{ID: r.id, Weight: r.weight, Streams: counts[r.id], ClosingStreams: closing[r.id], ReadyDataBytes: r.readyBytes, DispatchedPayloadBytes: r.dispatched})
+		out = append(out, RouteStats{ReceiveUsed: r.receiveUsed, ReceiveAllocated: r.receiveAllocated, ReceiveLimit: r.receiveLimit, ReceivePressureResets: r.receivePressureResets, ReceiveWindowDeferrals: r.receiveWindowDeferrals, ID: r.id, Weight: r.weight, Streams: counts[r.id], ClosingStreams: closing[r.id], ReadyDataBytes: r.readyBytes, DispatchedPayloadBytes: r.dispatched})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

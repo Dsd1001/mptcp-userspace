@@ -3,14 +3,18 @@ from __future__ import annotations
 import argparse,gzip,hashlib,io,json,pathlib,re,tarfile
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 FILES=(
-'provisioning/VERSION','provisioning/go.mod','provisioning/main.go','provisioning/main_test.go','provisioning/Dockerfile','provisioning/docker-compose.example.yml','provisioning/.dockerignore','provisioning/.gitignore','provisioning/web/index.html','scripts/build-provisioning.sh','scripts/provisioning-source-manifest.py','docs/userspace/PROVISIONING.md')
+'provisioning/VERSION','provisioning/go.mod','provisioning/Dockerfile','provisioning/docker-compose.example.yml','provisioning/.dockerignore','provisioning/.gitignore','.dockerignore','macos/engine/go.mod','scripts/build-provisioning.sh','scripts/provisioning-source-manifest.py','docs/userspace/PROVISIONING.md')
+
 def sha(b): return hashlib.sha256(b).hexdigest()
 def collect():
  out={}
- for n in FILES:
+ names=set(FILES)
+ for directory,pattern in [("provisioning","*.go"),("provisioning/web","*.html"),("macos/engine/tunnelconfig","*.go")]:
+  names.update(p.relative_to(ROOT).as_posix() for p in (ROOT/directory).rglob(pattern))
+ for n in sorted(names):
   p=ROOT/n
   if not p.is_file() or p.is_symlink(): raise ValueError('missing source '+n)
-  b=p.read_bytes(); b.decode('utf-8')
+  b=p.read_text().replace('\r\n','\n').replace('\r','\n').encode()
   if re.search(rb'-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----',b): raise ValueError('private key in '+n)
   out[n]=b
  return out

@@ -167,6 +167,11 @@ func (st *Stream) grantCreditLocked(desired uint64) {
 	if st.rxRead > ^uint64(0)-MaxStreamWindow {
 		return
 	}
+	if st.s.routeGroups != nil {
+		target := st.routeWindowTargetLocked()
+		st.windowTarget, st.initialWindow = target, target
+		desired = min(desired, st.rxRead+uint64(target))
+	}
 	desired = min(desired, st.rxRead+MaxStreamWindow)
 	if desired > st.rxLimit {
 		st.rxLimit = desired

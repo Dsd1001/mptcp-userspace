@@ -1,28 +1,32 @@
 {
-  "schema_version": 1,
-  "listen_tcp": "0.0.0.0:24002",
-  "transport_key": "REPLACE_WITH_64_HEX_CHARACTERS",
-  "max_sessions": 4,
-  "scheduler_mode": "aggregate",
-  "tcp_routes": [
+  "schema_version": 2,
+  "kind": "mpx4_tunnel_egress",
+  "listen_tcp": "0.0.0.0:24001",
+  "transport_key": "REPLACE_WITH_THE_SAME_64_HEX_CHARACTERS",
+  "scheduler_mode": "auto",
+  "max_sessions": 8,
+  "routes": [
     {
       "id": 1,
-      "name": "HKBN",
+      "name": "hkbn",
       "backend": "hkbn.example.invalid:8388",
+      "udp_backend": "hkbn.example.invalid:8388",
       "weight": 1,
       "max_connections": 512
     },
     {
       "id": 2,
-      "name": "HKT",
+      "name": "hkt",
       "backend": "hkt.example.invalid:8388",
+      "udp_backend": "hkt.example.invalid:8388",
       "weight": 1,
       "max_connections": 512
     },
     {
       "id": 3,
-      "name": "iCable",
+      "name": "icable",
       "backend": "icable.example.invalid:8388",
+      "udp_backend": "icable.example.invalid:8388",
       "weight": 1,
       "max_connections": 512
     }

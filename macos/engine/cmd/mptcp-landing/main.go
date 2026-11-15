@@ -51,64 +51,81 @@ func (t *terminal) confirm(label string) (bool, error) {
 	return v == "yes", e
 }
 func (t *terminal) configure(c Config) (Config, error) {
-	if len(c.TCPRoutes) != 0 {
-		return c, errors.New("routed tunnel configuration must be edited through JSON config --source; interactive fixed-backend editing is disabled")
-	}
 	var err error
-	fmt.Fprintln(t.out, "请使用独立于旧 Native MPTCP 和 SS backend 的新聚合端口。传输密钥不是 SS 密码。")
-	if c.ListenTCP, err = t.line("TCP 聚合监听", c.ListenTCP); err != nil {
+	fmt.Fprintln(t.out, "1.2.0 shared tunnel egress: all Relay paths must converge here. Configure ordinary business TCP/UDP targets, NOT another MPX listener.")
+	c.SchemaVersion = 2
+	c.Kind = "mpx4_tunnel_egress"
+	c.BackendTCP, c.BackendUDP, c.ListenUDP = "", "", ""
+	c.UDPEnabled, c.UOTEnabled = false, false
+	if c.ListenTCP, err = t.line("TCP tunnel listen", c.ListenTCP); err != nil {
 		return c, err
 	}
-	if c.BackendTCP, err = t.line("已有 SS TCP backend", c.BackendTCP); err != nil {
-		return c, err
-	}
-	defaultUDP := "n"
-	if c.UDPEnabled {
-		defaultUDP = "y"
-	}
-	udp, err := t.line("启用原生 UDP 多路径？y/n", defaultUDP)
+	count, err := t.line("Number of allowlisted routes (1..64)", strconv.Itoa(max(1, len(c.TCPRoutes))))
 	if err != nil {
 		return c, err
 	}
-	if udp != "y" && udp != "n" {
-		return c, errors.New("请输入 y 或 n")
+	n, err := strconv.Atoi(count)
+	if err != nil || n < 1 || n > multipath.MaxTCPRoutes {
+		return c, errors.New("route count must be 1..64")
 	}
-	c.UDPEnabled = udp == "y"
-	defaultUOT := "n"
-	if c.UOTEnabled {
-		defaultUOT = "y"
-	}
-	uot, err := t.line("允许客户端使用 UoT（UDP 经 TCP 传输）？y/n", defaultUOT)
-	if err != nil {
-		return c, err
-	}
-	if uot != "y" && uot != "n" {
-		return c, errors.New("请输入 y 或 n")
-	}
-	c.UOTEnabled = uot == "y"
-	if c.UDPEnabled {
-		if c.ListenUDP, err = t.line("UDP 聚合监听", c.ListenUDP); err != nil {
+	routes := make([]multipath.TCPRoute, n)
+	for i := range routes {
+		route := multipath.TCPRoute{ID: uint32(i + 1), Weight: 1, MaxConnections: 512}
+		if i < len(c.TCPRoutes) {
+			route = c.TCPRoutes[i]
+		}
+		id, e := t.line(fmt.Sprintf("Route %d ID", i+1), strconv.FormatUint(uint64(route.ID), 10))
+		if e != nil {
+			return c, e
+		}
+		value, e := strconv.ParseUint(id, 10, 32)
+		if e != nil || value == 0 {
+			return c, errors.New("route ID must be a positive uint32")
+		}
+		route.ID = uint32(value)
+		if route.Name, err = t.line("Route name", route.Name); err != nil {
 			return c, err
 		}
-	}
-	if c.UDPEnabled || c.UOTEnabled {
-		if c.BackendUDP, err = t.line("已有 SS UDP backend", c.BackendUDP); err != nil {
+		if route.Backend, err = t.line("TCP backend host:port (- to disable)", route.Backend); err != nil {
 			return c, err
 		}
+		if route.Backend == "-" {
+			route.Backend = ""
+		}
+		if route.UDPBackend, err = t.line("UDP backend host:port for UoT (- to disable)", route.UDPBackend); err != nil {
+			return c, err
+		}
+		if route.UDPBackend == "-" {
+			route.UDPBackend = ""
+		}
+		weight, e := t.line("Route weight (1..16)", strconv.Itoa(max(1, route.Weight)))
+		if e != nil {
+			return c, e
+		}
+		route.Weight, e = strconv.Atoi(weight)
+		if e != nil {
+			return c, e
+		}
+		limit, e := t.line("Route maximum active backend connections", strconv.Itoa(func() int {
+			if route.MaxConnections == 0 {
+				return 512
+			}
+			return route.MaxConnections
+		}()))
+		if e != nil {
+			return c, e
+		}
+		route.MaxConnections, e = strconv.Atoi(limit)
+		if e != nil {
+			return c, e
+		}
+		routes[i] = route
 	}
-	defaultScheduler := c.SchedulerMode
-	if defaultScheduler == "" {
-		defaultScheduler = string(multipath.SchedulerAuto)
-	}
-	scheduler, err := t.line("Landing 本地 Scheduler（auto/aggregate/protect/weighted）", defaultScheduler)
-	if err != nil {
+	c.TCPRoutes = routes
+	if c.SchedulerMode, err = t.line("Scheduler (auto/aggregate/protect/weighted)", c.SchedulerMode); err != nil {
 		return c, err
 	}
-	if _, err = multipath.ParseSchedulerMode(scheduler); err != nil {
-		return c, err
-	}
-	c.SchedulerMode = scheduler
-	key, err := t.line("传输密钥：回车保留；new 生成新密钥；或粘贴 64 位十六进制（输入可在终端显示）", "")
+	key, err := t.line("Transport Key: enter keeps it; new generates one; or paste 64 hex characters", "")
 	if err != nil {
 		return c, err
 	}
@@ -120,7 +137,7 @@ func (t *terminal) configure(c Config) (Config, error) {
 	} else if key != "" {
 		c.TransportKey = key
 	}
-	sessions, err := t.line("最多客户端会话数", strconv.Itoa(c.MaxSessions))
+	sessions, err := t.line("Maximum client Sessions (1..16)", strconv.Itoa(c.MaxSessions))
 	if err != nil {
 		return c, err
 	}
@@ -302,10 +319,16 @@ func doctor(ctx context.Context, m *manager, c Config, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "版本 %s；主机 %s/%s；配置有效；传输密钥已隐藏。\n", multipath.Version, runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintln(out, "运行协议为应用层 MPX/4 Protocol Version 4 Stable（protocol-v4.0.0）；Client/Landing 建议使用同一 1.0.0 套件。无需启用内核 MPTCP，不修改防火墙、路由或 SS 配置。")
+	fmt.Fprintln(out, "运行协议为应用层 MPX/4 Protocol Version 4 Stable（protocol-v4.0.0）；客户端与隧道出口必须使用同一 1.2.0 套件。无需启用内核 MPTCP，不修改防火墙、路由或 SS 配置。")
 	var failures []error
 	if len(c.TCPRoutes) != 0 {
 		for _, route := range c.TCPRoutes {
+			if route.UDPBackend != "" {
+				fmt.Fprintf(out, "Route %d UoT backend: requires a real datagram round-trip; UDP dial alone does not prove reachability.\n", route.ID)
+			}
+			if route.Backend == "" {
+				continue
+			}
 			probe, cancel := context.WithTimeout(ctx, 3*time.Second)
 			conn, err := multipath.PlainDial(probe, route.Backend)
 			cancel()

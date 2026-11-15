@@ -1,143 +1,29 @@
-# Provisioning and remote device control — v1.1.1
+# MPTCP Tunnel provisioning and remote controller 1.2.0
 
-Provisioning is the optional control plane for distributing MPTCP Userspace Profiles/Bundles and managing opted-in MPTCP Desk devices. Application payload traffic does **not** pass through Provisioning.
+`mpx-provision` provides the tunnel-only configuration API and opt-in device control. Use HTTPS, a strong administrator password and private storage. The default data file is `./provisioning-data/tunnels.json`; set `MPX_PROVISION_DATA` explicitly for production. A legacy profiles.json/bundles.json is not converted or overwritten. Keep it for rollback and create a new tunnel store.
 
-## Deployment model
+Environment: `MPX_PROVISION_LISTEN` (default 127.0.0.1:8088), `MPX_PROVISION_PUBLIC_BASE_URL` (HTTPS except loopback), `MPX_PROVISION_ADMIN_USER`, `MPX_PROVISION_ADMIN_PASSWORD` or its existing private password-file option. The browser admin interface uses Basic authentication; terminate TLS at a trusted reverse proxy. Do not log complete secret API paths at that proxy.
 
-Recommended production layout:
+## Tunnel configuration
 
-```text
-Internet HTTPS
-     |
- nginx / Caddy
-     |
-127.0.0.1:<provision-port>
-     |
- mpx-provision
-```
+Create a tunnel in /admin with name, optional URL alias, one shared transport group and multiple business inlets. Public `GET /v1/tunnel/[alias/]token` returns the established AES-GCM authenticated provisioning envelope, not plaintext JSON. Decrypted payload is schema 4, kind tunnel_profile, with identity/revision/background preference and a shared_mpx4_tunnel config. Complete URLs are bearer credentials. Redirects are rejected by clients. API-token rotation immediately invalidates the old URL.
 
-Keep the Provisioning process on loopback/private service networking and terminate public TLS in a mature reverse proxy.
+Admin APIs `/admin/api/tunnels` and `/admin/api/tunnels/{id}` manage records; updates, deletions and token rotation require expected_revision. Writes use private temporary files, fsync and atomic replacement; memory is published only after durable success. Concurrent stale edits receive 409. Deleting a tunnel still assigned to a device is refused. Old public /v1/config and /v1/bundle endpoints, and old profile/bundle admin APIs, return 410.
 
-## Profile and Bundle URLs
+## Devices
 
-A public configuration URL is a high-entropy bearer credential, for example:
+Enable remote management on each client locally, save the controller address and enter the one-time pairing code. Each device may be assigned one tunnel. Desired state, restart, sync and update use monotonic generations; old profile/bundle assignments are retained for administrative reassignment but produce a stopped control view with no provisioning URL. No arbitrary command execution is available.
 
-```text
-https://config.example.com/v1/config/<64-hex-secret>
-https://config.example.com/v1/config/<alias>/<64-hex-secret>
-https://config.example.com/v1/bundle/<64-hex-secret>
-https://config.example.com/v1/bundle/<alias>/<64-hex-secret>
-```
+The backend persists device pairing, audit history, observed status and desired configuration. A configuration edit alone does not hot-swap live business connections; request Sync to refresh the cache and Restart when an intentional connection interruption is acceptable. Device deletion/unpair revokes future control authentication. Unassigned devices must not run a cached local configuration in response to a remote start.
 
-Possession of the complete URL grants configuration access and decryption capability. Never publish these URLs in logs, screenshots or issues.
+## Container
 
-## Opaque response envelope
-
-Public Profile/Bundle responses use an encrypted envelope:
-
-```json
-{"v":1,"n":"<nonce>","d":"<ciphertext>"}
-```
-
-The URL secret is used as key material for the envelope derivation. The plaintext inside remains the validated Profile/Bundle control document.
-
-The envelope reduces accidental disclosure in browsers/proxies but **does not replace HTTPS** because anyone holding the full URL also has the material needed to decrypt the response.
-
-Current clients retain legacy plaintext response compatibility only for migration.
-
-## Bundle modes
-
-A Bundle can be:
-
-- **single_select** — one Profile active at a time;
-- **parallel** — one or more Profiles active concurrently.
-
-Parallel Profiles remain independent runtimes. Their Relay lists are not flattened into one Session.
-
-Provisioning validates membership and local port plans. The Client validates again and performs local socket preflight before starting a parallel set.
-
-Runtime failures are isolated after startup: one failed Profile does not stop healthy Profile listeners.
-
-## Last Known Good on macOS
-
-After the first successful managed sync, MPTCP Desk keeps a protected Last Known Good cache associated with the source endpoint fingerprint.
-
-The cache allows normal start, app/system restart and sleep/wake recovery to start from the last validated configuration without waiting on a fresh network request. API refresh runs asynchronously.
-
-A successful refresh updates the next-reconnect configuration and does not forcibly interrupt the current Session. A changed Provisioning URL cannot reuse a cache associated with the previous source fingerprint.
-
-The full Provisioning URL remains in Keychain rather than the ordinary cache file.
-
-## Linux managed mode
-
-Linux Client reads a managed control document from stdin:
-
-```json
-{"url":"https://config.example.com/v1/bundle/<secret>","profile_ids":["profile-a"]}
-```
+Build from the repository root, because the controller imports the shared configuration package:
 
 ```sh
-mptcp-client-linux-amd64 validate-managed < managed.json
-mptcp-client-linux-amd64 run-managed < managed.json
+docker build -f provisioning/Dockerfile --build-arg SOURCE_ID=YOUR_VERIFIED_SOURCE_ID -t mpx-provision:1.2.0 .
+# Or use provisioning/docker-compose.example.yml after setting a strong
+# MPX_PROVISION_ADMIN_PASSWORD and configuring the public HTTPS base URL.
 ```
 
-Remote HTTP is rejected; loopback HTTP is allowed for development. Redirects are rejected.
-
-## Device control
-
-Remote device control is separate from Profile/Bundle configuration access and is opt-in on the Mac.
-
-The user must locally:
-
-1. enable Remote Management;
-2. configure the HTTPS control-server root URL;
-3. enter a short-lived pairing code.
-
-Provisioning cannot remotely enable this switch or replace the locally chosen control-server address.
-
-After pairing, MPTCP Desk uses outbound HTTPS long polling, so the Mac does not need a public IP or inbound port.
-
-The control plane exposes bounded product operations such as:
-
-- desired running/stopped state;
-- Profile/Bundle assignment;
-- configuration sync generation;
-- forwarding restart generation;
-- signed-app update generation.
-
-There is no arbitrary Shell command field.
-
-## Device credentials
-
-Each paired Mac gets a unique device credential. The Mac stores its secret in Keychain; Provisioning stores a hash in `devices.json`. Pairing codes are also persisted as hashes rather than plaintext secrets.
-
-Admin operations can rotate pairing, revoke/delete a device and inspect bounded audit history.
-
-## Reverse-proxy requirements
-
-- HTTPS is mandatory for remote use.
-- Do not log full `/v1/config/` or `/v1/bundle/` secret paths.
-- Do not log `Authorization` headers.
-- Device long polling needs an upstream timeout longer than the poll interval; roughly 35–60 seconds is a practical proxy setting.
-- Configuration responses should remain `Cache-Control: no-store`.
-
-## Data files
-
-Protect Provisioning state as private service data. Typical files include:
-
-```text
-profiles.json
-bundles.json
-devices.json
-administrator password state
-```
-
-Use restrictive permissions such as `0600` and keep backups with the same secrecy as the live data.
-
-## Relationship to Relay/Landing tuning
-
-Provisioning does not carry application payload and therefore the project recommendation **Landing=CUBIC / Relay=BBR** is unrelated to the Provisioning HTTP server itself. Apply those congestion-control roles to actual Landing and Relay hosts, not blindly to the control-plane server.
-
-## Version matching
-
-For normal production operation use a matched **v1.1.1 Client + v1.1.1 Landing + v1.1.1 Provisioning** suite. The control-plane formats retain migration compatibility, but matched versions reduce ambiguity during incident response.
+The distroless runtime runs as nonroot and needs a writable private /data volume. Container builds without a verified Source-ID explicitly identify themselves as unfrozen-container-build. Building a container does not configure TLS or expose an administrator password safely by itself.

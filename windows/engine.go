@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mptcp-desktop/engine/tunnelconfig"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,63 +99,41 @@ type engineLaunch struct {
 }
 
 func (a *App) prepareLaunchLocked() (engineLaunch, error) {
+	var cfg tunnelconfig.Config
 	switch a.settings.ConfigurationSource {
 	case "local":
+		if a.settings.MigrationRequired {
+			return engineLaunch{}, errors.New("请先配置 1.2.0 共享隧道，旧的独立 Profile 不会启动")
+		}
 		key, err := unprotectString(a.settings.TransportKeyCipher)
 		if err != nil {
-			return engineLaunch{}, fmt.Errorf("Transport Key 解密失败: %w", err)
+			return engineLaunch{}, errors.New("本地隧道密钥解密失败")
 		}
-		if key == "" {
-			return engineLaunch{}, errors.New("尚未配置 Transport Key")
-		}
-		profile := a.settings.Profile
-		if err := validateLocalProfile(profile, true); err != nil {
-			return engineLaunch{}, err
-		}
-		if err := validateTransportKey(key); err != nil {
-			return engineLaunch{}, err
-		}
-		cfg := engineConfig{
-			SchemaVersion: 3,
-			Mode:          "userspace_multipath",
-			ListenPort:    profile.ListenPort,
-			TCPEnabled:    profile.TCPEnabled,
-			UDPEnabled:    profile.UDPEnabled,
-			UOTEnabled:    profile.UOTEnabled,
-			SchedulerMode: profile.SchedulerMode,
-			Relays:        profile.Relays,
-			TransportKey:  key,
-		}
-		data, err := json.Marshal(cfg)
-		return engineLaunch{Args: []string{"run"}, Input: data}, err
-
+		cfg = a.settings.Tunnel
+		cfg.Tunnel.TransportKey = key
 	case "managed":
-		if a.managed == nil {
-			return engineLaunch{}, errors.New("尚无可用 Provisioning/LKG 配置，请先同步")
+		if a.managed == nil || a.managed.Tunnel == nil {
+			return engineLaunch{}, errors.New("尚无经过验证的共享隧道远端配置")
 		}
-		if a.managed.Profile != nil {
-			if err := a.managed.Profile.validateWindows(); err != nil {
-				return engineLaunch{}, err
-			}
-			data, err := json.Marshal(a.managed.Profile.engineConfig())
-			return engineLaunch{Args: []string{"run"}, Input: data}, err
+		if err := a.managed.Tunnel.Validate(); err != nil {
+			return engineLaunch{}, err
 		}
-		if a.managed.Bundle != nil {
-			if err := validateWindowsBundle(a.managed.Bundle); err != nil {
-				return engineLaunch{}, err
-			}
-			selected := append([]string(nil), a.settings.SelectedProfileIDs...)
-			if len(selected) == 0 {
-				return engineLaunch{}, errors.New("Bundle 至少选择一个 Windows Profile")
-			}
-			data, err := json.Marshal(a.managed.Bundle)
-			args := append([]string{"run-bundle"}, selected...)
-			return engineLaunch{Args: args, Input: data}, err
+		if len(a.settings.SelectedProfileIDs) == 0 {
+			return engineLaunch{}, errors.New("至少选择一个业务入口")
 		}
-		return engineLaunch{}, errors.New("Provisioning 配置无效")
+		var err error
+		cfg, err = a.managed.Tunnel.Config.Select(a.settings.SelectedProfileIDs)
+		if err != nil {
+			return engineLaunch{}, err
+		}
 	default:
 		return engineLaunch{}, errors.New("未知配置来源")
 	}
+	if err := cfg.Validate(); err != nil {
+		return engineLaunch{}, err
+	}
+	data, err := json.Marshal(cfg)
+	return engineLaunch{Args: []string{"run-tunnel"}, Input: data}, err
 }
 
 func (a *App) Start() error {
@@ -388,7 +367,18 @@ func (a *App) handleEngineEvent(event EngineEvent, token uint64) {
 		}
 	}
 
+	for _, inlet := range event.Inlets {
+		a.state.ProfileStatus[inlet.ID] = "共享隧道"
+		a.state.ProfileEvents[inlet.ID] = EngineEvent{ProfileID: inlet.ID, Connections: inlet.Active, UDPConnections: int64(inlet.UDPConnections), Dropped: inlet.UDPDropped}
+	}
 	switch event.Kind {
+	case "retrying":
+		a.state.Running = true
+		a.state.Busy = false
+		a.state.Status = "共享隧道重连中"
+		a.state.Event.Paths = 0
+		a.state.Event.Connections = 0
+		a.state.Event.PathStats = nil
 	case "connecting", "bundle_connecting", "bundle_reconnecting":
 		a.state.Busy = true
 		if event.Message != "" {
@@ -544,22 +534,8 @@ func (a *App) scheduleRecovery(token uint64, attempt int) {
 }
 
 func (a *App) effectiveBackgroundResidentLocked() bool {
-	if a.settings.ConfigurationSource != "managed" || a.managed == nil {
-		return a.settings.BackgroundResident
-	}
-	if a.managed.Profile != nil {
-		return a.managed.Profile.BackgroundResident
-	}
-	if a.managed.Bundle != nil {
-		selected := map[string]bool{}
-		for _, id := range a.settings.SelectedProfileIDs {
-			selected[id] = true
-		}
-		for _, p := range a.managed.Bundle.Profiles {
-			if selected[p.ProfileID] && p.BackgroundResident {
-				return true
-			}
-		}
+	if a.settings.ConfigurationSource == "managed" && a.managed != nil && a.managed.Tunnel != nil {
+		return a.managed.Tunnel.BackgroundResident
 	}
 	return a.settings.BackgroundResident
 }

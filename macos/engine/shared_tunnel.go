@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,33 +12,16 @@ import (
 	"time"
 
 	"mptcp-desktop/engine/multipath"
+	"mptcp-desktop/engine/tunnelconfig"
 )
 
 const sharedTunnelKind = "shared_mpx4_tunnel"
 
 var errSharedListener = errors.New("shared inlet listener stopped")
 
-type SharedTunnelTransport struct {
-	TransportKey  string  `json:"transport_key"`
-	Relays        []Relay `json:"relays"`
-	SchedulerMode string  `json:"scheduler_mode,omitempty"`
-}
-
-type SharedTunnelInlet struct {
-	ID             string `json:"id"`
-	Name           string `json:"name,omitempty"`
-	ListenPort     int    `json:"listen_port"`
-	RouteID        uint32 `json:"route_id"`
-	Weight         int    `json:"weight,omitempty"`
-	MaxConnections int    `json:"max_connections,omitempty"`
-}
-
-type SharedTunnelConfig struct {
-	SchemaVersion int                   `json:"schema_version"`
-	Kind          string                `json:"kind"`
-	Tunnel        SharedTunnelTransport `json:"tunnel"`
-	Inlets        []SharedTunnelInlet   `json:"inlets"`
-}
+type SharedTunnelTransport = tunnelconfig.Transport
+type SharedTunnelInlet = tunnelconfig.Inlet
+type SharedTunnelConfig tunnelconfig.Config
 
 func (c SharedTunnelConfig) transportConfig(port int) Config {
 	mode := c.Tunnel.SchedulerMode
@@ -58,77 +39,36 @@ func (c SharedTunnelConfig) policies() []multipath.RoutePolicy {
 	return out
 }
 
-func (c SharedTunnelConfig) validate() error {
-	if c.SchemaVersion != 1 || c.Kind != sharedTunnelKind {
-		return errors.New("shared tunnel requires schema_version=1 and kind=shared_mpx4_tunnel")
-	}
-	if len(c.Inlets) < 1 || len(c.Inlets) > multipath.MaxTCPRoutes {
-		return errors.New("require 1..64 tunnel inlets")
-	}
-	ids, ports := make(map[string]bool), make(map[int]bool)
-	for _, inlet := range c.Inlets {
-		if inlet.ID == "" || len(inlet.ID) > 64 || ids[inlet.ID] {
-			return errors.New("inlet IDs must be nonempty, unique, and at most 64 bytes")
-		}
-		if len(inlet.Name) > 128 {
-			return errors.New("inlet name is too long")
-		}
-		for _, ch := range inlet.ID {
-			if ch <= ' ' || ch == '/' || ch == '\\' {
-				return errors.New("invalid inlet ID")
-			}
-		}
-		ids[inlet.ID] = true
-		if ports[inlet.ListenPort] {
-			return errors.New("inlet listen ports must be unique")
-		}
-		ports[inlet.ListenPort] = true
-		if inlet.MaxConnections < 0 || inlet.MaxConnections > multipath.MaxStreams {
-			return errors.New("inlet max_connections must be 1..2048, or 0 for default 512")
-		}
-		if err := c.transportConfig(inlet.ListenPort).validate(); err != nil {
-			return fmt.Errorf("inlet %s: %w", inlet.ID, err)
-		}
-	}
-	return multipath.ValidateRoutePolicies(c.policies())
-}
+func (c SharedTunnelConfig) validate() error { return tunnelconfig.Config(c).Validate() }
 
 func readSharedTunnel(reader io.Reader) (SharedTunnelConfig, error) {
-	var c SharedTunnelConfig
-	data, err := io.ReadAll(io.LimitReader(reader, (64<<10)+1))
-	if err != nil {
-		return c, err
-	}
-	if len(data) > 64<<10 {
-		return c, errors.New("shared tunnel configuration exceeds 64 KiB")
-	}
-	d := json.NewDecoder(bytes.NewReader(data))
-	d.DisallowUnknownFields()
-	if err = d.Decode(&c); err != nil {
-		return c, err
-	}
-	if err = d.Decode(new(any)); err != io.EOF {
-		return c, errors.New("configuration must contain one JSON object")
-	}
-	return c, c.validate()
+	c, err := tunnelconfig.Decode(reader)
+	return SharedTunnelConfig(c), err
 }
 
 type SharedInletStats struct {
-	ID         string `json:"id"`
-	RouteID    uint32 `json:"route_id"`
-	ListenPort int    `json:"listen_port"`
-	Active     int64  `json:"active_connections"`
-	Accepted   uint64 `json:"accepted_connections"`
-	Rejected   uint64 `json:"rejected_connections"`
+	UDPConnections   int    `json:"udp_connections"`
+	UDPSentBytes     uint64 `json:"udp_sent_bytes"`
+	UDPReceivedBytes uint64 `json:"udp_received_bytes"`
+	UDPDropped       uint64 `json:"udp_dropped"`
+	ID               string `json:"id"`
+	RouteID          uint32 `json:"route_id"`
+	ListenPort       int    `json:"listen_port"`
+	Active           int64  `json:"active_connections"`
+	Accepted         uint64 `json:"accepted_connections"`
+	Rejected         uint64 `json:"rejected_connections"`
 }
 
 type sharedInletRuntime struct {
-	config   SharedTunnelInlet
-	listener net.Listener
-	slots    chan struct{}
-	active   atomic.Int64
-	accepted atomic.Uint64
-	rejected atomic.Uint64
+	udp        *net.UDPConn
+	uot        *multipath.UOTClient
+	udpDropped atomic.Uint64
+	config     SharedTunnelInlet
+	listener   net.Listener
+	slots      chan struct{}
+	active     atomic.Int64
+	accepted   atomic.Uint64
+	rejected   atomic.Uint64
 }
 
 type sharedTunnelRuntime struct {
@@ -151,25 +91,40 @@ func newSharedTunnelRuntime(ctx context.Context, c SharedTunnelConfig) (*sharedT
 	}
 	r := &sharedTunnelRuntime{ctx: ctx, locals: make(map[net.Conn]bool), slots: make(chan struct{}, multipath.MaxStreams-32), fatal: make(chan error, len(c.Inlets))}
 	for _, inlet := range c.Inlets {
-		listener, err := multipath.PlainListen(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(inlet.ListenPort)))
-		if err != nil {
-			for _, opened := range r.inlets {
-				opened.listener.Close()
-			}
-			return nil, fmt.Errorf("inlet %s listen: %w", inlet.ID, err)
-		}
 		limit := inlet.MaxConnections
 		if limit == 0 {
 			limit = 512
 		}
-		r.inlets = append(r.inlets, &sharedInletRuntime{config: inlet, listener: listener, slots: make(chan struct{}, limit)})
+		in := &sharedInletRuntime{config: inlet, slots: make(chan struct{}, limit)}
+		r.inlets = append(r.inlets, in)
+		address := net.JoinHostPort("127.0.0.1", strconv.Itoa(inlet.ListenPort))
+		var err error
+		if inlet.TCP() {
+			in.listener, err = multipath.PlainListen(ctx, address)
+		}
+		if err == nil && inlet.UOTEnabled {
+			var addr *net.UDPAddr
+			addr, err = net.ResolveUDPAddr("udp4", address)
+			if err == nil {
+				in.udp, err = net.ListenUDP("udp4", addr)
+			}
+		}
+		if err != nil {
+			r.closeSockets()
+			return nil, fmt.Errorf("inlet %s listen: %w", inlet.ID, err)
+		}
 	}
 	return r, nil
 }
 
 func (r *sharedTunnelRuntime) closeSockets() {
 	for _, inlet := range r.inlets {
-		inlet.listener.Close()
+		if inlet.listener != nil {
+			inlet.listener.Close()
+		}
+		if inlet.udp != nil {
+			inlet.udp.Close()
+		}
 	}
 	r.mu.Lock()
 	connections := make([]net.Conn, 0, len(r.locals))
@@ -184,8 +139,16 @@ func (r *sharedTunnelRuntime) closeSockets() {
 
 func (r *sharedTunnelRuntime) inletStats() []SharedInletStats {
 	out := make([]SharedInletStats, 0, len(r.inlets))
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, inlet := range r.inlets {
-		out = append(out, SharedInletStats{ID: inlet.config.ID, RouteID: inlet.config.RouteID, ListenPort: inlet.config.ListenPort, Active: inlet.active.Load(), Accepted: inlet.accepted.Load(), Rejected: inlet.rejected.Load()})
+		row := SharedInletStats{ID: inlet.config.ID, RouteID: inlet.config.RouteID, ListenPort: inlet.config.ListenPort, Active: inlet.active.Load(), Accepted: inlet.accepted.Load(), Rejected: inlet.rejected.Load(), UDPDropped: inlet.udpDropped.Load()}
+		if inlet.uot != nil {
+			var drops uint64
+			row.UDPConnections, row.UDPSentBytes, row.UDPReceivedBytes, drops = inlet.uot.PayloadSnapshot()
+			row.UDPDropped += drops
+		}
+		out = append(out, row)
 	}
 	return out
 }
@@ -271,23 +234,48 @@ func (r *sharedTunnelRuntime) serve(inlet *sharedInletRuntime) {
 }
 
 func (r *sharedTunnelRuntime) runSession(s *multipath.Session) error {
-	r.mu.Lock()
-	r.session = s
-	r.mu.Unlock()
+	attached := make([]*multipath.UOTClient, 0)
 	defer func() {
 		r.mu.Lock()
 		if r.session == s {
 			r.session = nil
 		}
+		for _, inlet := range r.inlets {
+			inlet.uot = nil
+		}
 		r.mu.Unlock()
 		s.Close()
+		for _, u := range attached {
+			u.Close()
+		}
 	}()
+	for _, inlet := range r.inlets {
+		if inlet.udp == nil {
+			continue
+		}
+		u, err := multipath.AttachRoutedClientUOT(s, inlet.udp, inlet.config.RouteID, inlet.config.MaxConnections)
+		if err != nil {
+			return err
+		}
+		attached = append(attached, u)
+		r.mu.Lock()
+		inlet.uot = u
+		r.mu.Unlock()
+	}
+	r.mu.Lock()
+	r.session = s
+	r.mu.Unlock()
 	for _, inlet := range r.inlets {
 		emit(Event{Kind: "listening", Mode: sharedTunnelKind, ProfileID: inlet.config.ID, ProfileName: inlet.config.Name, ListenPort: inlet.config.ListenPort, Message: fmt.Sprintf("shared route %d", inlet.config.RouteID)})
 	}
 	stats := func() {
 		v := s.Snapshot()
-		emit(Event{Kind: "stats", Mode: sharedTunnelKind, Paths: v.Paths, Connections: int64(v.Connections), Sent: int64(v.Sent), Received: int64(v.Received), PathStats: v.PathStats, Routes: v.Routes, Inlets: r.inletStats(), SchedulerStats: v.SchedulerStats, Resources: &v.Resources, Lifecycle: &v.Lifecycle, Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol})
+		inlets := r.inletStats()
+		var connections int64
+		for _, inlet := range inlets {
+			connections += inlet.Active
+		}
+		emit(Event{Kind: "stats", Mode: sharedTunnelKind, Paths: v.Paths, Connections: connections, Sent: int64(v.Sent), Received: int64(v.Received), PathStats: v.PathStats, Routes: v.Routes, Inlets: inlets, SchedulerStats: v.SchedulerStats, Resources: &v.Resources, Lifecycle: &v.Lifecycle, Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol})
 	}
 	stats()
 	ticker := time.NewTicker(time.Second)
@@ -325,8 +313,14 @@ func runSharedTunnel(parent context.Context, c SharedTunnelConfig) error {
 		stop()
 	}()
 	for _, inlet := range r.inlets {
-		r.accepts.Add(1)
-		go r.serve(inlet)
+		if inlet.listener != nil {
+			r.accepts.Add(1)
+			go r.serve(inlet)
+		}
+		if inlet.udp != nil {
+			r.accepts.Add(1)
+			go r.serveUDP(inlet)
+		}
 	}
 	transport := c.transportConfig(c.Inlets[0].ListenPort)
 	mode, _ := transport.schedulerMode()
@@ -378,4 +372,30 @@ func runSharedTunnel(parent context.Context, c SharedTunnelConfig) error {
 		}
 	}
 	return nil
+}
+
+func (r *sharedTunnelRuntime) serveUDP(inlet *sharedInletRuntime) {
+	defer r.accepts.Done()
+	buf := make([]byte, 65536)
+	for {
+		n, from, err := inlet.udp.ReadFromUDPAddrPort(buf)
+		if err != nil {
+			if r.ctx.Err() == nil {
+				select {
+				case r.fatal <- fmt.Errorf("%w: UDP inlet %s: %v", errSharedListener, inlet.config.ID, err):
+				default:
+				}
+			}
+			return
+		}
+		r.mu.Lock()
+		u := inlet.uot
+		live := r.session != nil
+		r.mu.Unlock()
+		if u == nil || !live {
+			inlet.udpDropped.Add(1)
+			continue
+		}
+		u.ReceiveDatagram(from, buf[:n])
+	}
 }

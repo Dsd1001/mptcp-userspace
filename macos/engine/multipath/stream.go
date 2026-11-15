@@ -200,6 +200,10 @@ func (st *Stream) prepareReceiveLocked(offset uint64, data []byte) (receiveWork,
 			missing++
 		}
 	}
+	if err := st.checkRouteReceiveLocked(missing); err != nil {
+		st.rxMu.Unlock()
+		return receiveWork{}, err
+	}
 	if missing > (MaxBuffered-st.s.receiveAllocated)/receivePageCost {
 		st.rxMu.Unlock()
 		return receiveWork{}, st.s.resourceLocked(LimitReceiveAllocated, false)
@@ -208,6 +212,7 @@ func (st *Stream) prepareReceiveLocked(offset uint64, data []byte) (receiveWork,
 		if st.pages[index] == nil {
 			st.pages[index] = &receivePage{}
 			st.s.receiveAllocated += receivePageCost
+			st.routeReceiveAccountLocked(0, receivePageCost)
 		}
 	}
 	return receiveWork{offset: offset, data: data, active: true}, nil
@@ -376,7 +381,7 @@ func (st *Stream) consumeProductReplyLocked() error {
 	st.productReplyPending = false
 	st.productReplyDeadline = time.Time{}
 	st.productReplyErr = err
-	if err == nil && st.productReplyKind == productServiceRoutedTCP {
+	if err == nil && (st.productReplyKind == productServiceRoutedTCP || st.productReplyKind == productServiceRoutedUOT) {
 		st.s.mu.Lock()
 		st.routeConfirmed = true
 		st.s.signalStreamWriterLocked(st)
@@ -469,6 +474,7 @@ func (st *Stream) readRaw(p []byte) (int, error) {
 				return 0, protocolViolation("receive storage changed before consume")
 			}
 			s.receiveAllocated -= freedPages * receivePageCost
+			st.routeReceiveAccountLocked(0, -freedPages*receivePageCost)
 			s.bufferedBytes -= n
 			s.received += uint64(n)
 			st.lastActivity = time.Now()
@@ -666,6 +672,7 @@ func (st *Stream) releaseReceiveLocked() {
 	st.rxMu.Lock()
 	st.s.bufferedBytes -= st.buffered
 	st.buffered = 0
+	st.routeReceiveAccountLocked(0, -len(st.pages)*receivePageCost)
 	st.s.receiveAllocated -= len(st.pages) * receivePageCost
 	st.pages = nil
 	st.rxMu.Unlock()

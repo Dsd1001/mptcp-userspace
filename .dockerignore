@@ -1,0 +1,13 @@
+**
+!macos/
+!macos/engine/
+!macos/engine/go.mod
+!macos/engine/tunnelconfig/
+!macos/engine/tunnelconfig/*.go
+!provisioning/
+!provisioning/go.mod
+!provisioning/*.go
+!provisioning/VERSION
+!provisioning/web/
+!provisioning/web/index.html
+!provisioning/Dockerfile

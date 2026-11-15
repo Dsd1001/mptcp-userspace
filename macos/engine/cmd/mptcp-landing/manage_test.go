@@ -81,7 +81,6 @@ func TestStagingInstallUpgradeRollbackUninstall(t *testing.T) {
 	}
 	changed := c
 	changed.ListenTCP = "0.0.0.0:24002"
-	changed.ListenUDP = "0.0.0.0:24002"
 	if err := m.setConfig(changed); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +223,7 @@ func TestConfigValidationPrivacyAndCLI(t *testing.T) {
 		t.Fatal("world-readable key accepted")
 	}
 	os.Chmod(path, 0600)
-	for _, mutate := range []func(*Config){func(v *Config) { v.SchemaVersion = 2 }, func(v *Config) { v.TransportKey = "password" }, func(v *Config) { v.ListenTCP = v.BackendTCP }, func(v *Config) { v.MaxSessions = 17 }} {
+	for _, mutate := range []func(*Config){func(v *Config) { v.SchemaVersion = 1 }, func(v *Config) { v.TransportKey = "password" }, func(v *Config) { v.ListenTCP = v.TCPRoutes[0].Backend }, func(v *Config) { v.MaxSessions = 17 }} {
 		broken := c
 		mutate(&broken)
 		if broken.validate() == nil {
@@ -260,7 +259,7 @@ func TestConfigValidationPrivacyAndCLI(t *testing.T) {
 func TestInteractiveInstallAndCancel(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "interactive")
 	var out bytes.Buffer
-	input := "1\n" + strings.Repeat("\n", 9) + "yes\n7\n0\n"
+	input := "1\n" + strings.Repeat("\n", 11) + "yes\n7\n0\n"
 	if err := runCLI(context.Background(), []string{"--root", root}, strings.NewReader(input), &out); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +275,7 @@ func TestInteractiveInstallAndCancel(t *testing.T) {
 		t.Fatal("interactive install key leaked")
 	}
 	other := filepath.Join(t.TempDir(), "cancelled")
-	input = "1\n" + strings.Repeat("\n", 9) + "no\n0\n"
+	input = "1\n" + strings.Repeat("\n", 11) + "no\n0\n"
 	if err = runCLI(context.Background(), []string{"--root", other}, strings.NewReader(input), io.Discard); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +284,7 @@ func TestInteractiveInstallAndCancel(t *testing.T) {
 	}
 }
 
-func TestForegroundServerTCPUDPAndStatus(t *testing.T) {
+func TestForegroundSharedTunnelTCPUOTAndStatus(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	backend, err := multipath.PlainListen(ctx, "127.0.0.1:0")
@@ -325,16 +324,15 @@ func TestForegroundServerTCPUDPAndStatus(t *testing.T) {
 	reserved.Close()
 	c, _ := defaultConfig()
 	c.ListenTCP = address
-	c.ListenUDP = address
-	c.BackendTCP = backend.Addr().String()
-	c.BackendUDP = udpBackend.LocalAddr().String()
+	c.TCPRoutes[0].Backend = backend.Addr().String()
+	c.TCPRoutes[0].UDPBackend = udpBackend.LocalAddr().String()
 	status := filepath.Join(t.TempDir(), "status.json")
 	stopped := make(chan error, 1)
 	go func() { stopped <- runServer(ctx, c, status, io.Discard) }()
 	var client *multipath.Session
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		client, err = multipath.DialClient(ctx, []string{address, address}, c.TransportKey)
+		client, err = multipath.DialClientWithRoutedPolicy(ctx, []string{address, address}, c.TransportKey, multipath.SchedulerAggregate, nil, []multipath.RoutePolicy{{ID: 1}})
 		if err == nil {
 			break
 		}
@@ -349,7 +347,7 @@ func TestForegroundServerTCPUDPAndStatus(t *testing.T) {
 	if err = client.WaitPaths(request, 2); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := client.Open(request)
+	stream, err := client.OpenRoutedTCP(request, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,14 +373,16 @@ func TestForegroundServerTCPUDPAndStatus(t *testing.T) {
 		t.Fatal("foreground TCP mismatch")
 	}
 	stream.Close()
-	udp, err := multipath.StartClientUDP(client, c.TransportKey, "127.0.0.1:0", []string{address, address})
+	localUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer udp.Close()
-	if err = udp.WaitPaths(request, 2); err != nil {
+	udp, err := multipath.StartRoutedClientUOT(client, localUDP, 1, 16)
+	if err != nil {
+		localUDP.Close()
 		t.Fatal(err)
 	}
+	defer udp.Close()
 	app, err := net.DialUDP("udp", nil, udp.Addr().(*net.UDPAddr))
 	if err != nil {
 		t.Fatal(err)

@@ -8,7 +8,7 @@ import (
 
 func TestRoutedLandingConfiguration(t *testing.T) {
 	key, _ := multipath.NewKey()
-	c := Config{SchemaVersion: 1, ListenTCP: "127.0.0.1:24099", TransportKey: key, MaxSessions: 4, TCPRoutes: []multipath.TCPRoute{{ID: 1, Backend: "landing.example.test:8388"}, {ID: 2, Backend: "127.0.0.1:8389"}}}
+	c := Config{SchemaVersion: 2, Kind: "mpx4_tunnel_egress", ListenTCP: "127.0.0.1:24099", TransportKey: key, MaxSessions: 4, TCPRoutes: []multipath.TCPRoute{{ID: 1, Backend: "landing.example.test:8388"}, {ID: 2, Backend: "127.0.0.1:8389"}}}
 	data, _ := json.Marshal(c)
 	if _, err := decodeConfig(data); err != nil {
 		t.Fatal(err)

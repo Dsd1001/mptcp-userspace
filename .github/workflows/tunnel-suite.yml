@@ -1,0 +1,96 @@
+name: Shared tunnel suite acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release/v1.2.0-tunnel]
+  pull_request:
+    paths:
+      - "macos/engine/**"
+      - "provisioning/**"
+      - "tests/userspace/**"
+      - "scripts/**"
+      - ".github/workflows/tunnel-suite.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Canonical identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p validation/current-linux
+          python3 scripts/source-manifest.py --freeze | tee validation/current-linux/source.json
+          git rev-parse HEAD > validation/current-linux/COMMIT
+          go version > validation/current-linux/toolchain.txt
+      - name: Engine full tests, race, vet and config fuzz
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd macos/engine
+          go test ./... -count=1 -timeout=180s | tee ../../validation/current-linux/engine-tests.log
+          go test -race ./... -count=1 -timeout=240s | tee ../../validation/current-linux/engine-race.log
+          go vet ./... 2>&1 | tee ../../validation/current-linux/engine-vet.log
+          go test ./tunnelconfig -run '^$' -fuzz '^FuzzConfigDecode$' -fuzztime=10s 2>&1 | tee ../../validation/current-linux/config-fuzz.log
+      - name: Controller full tests, race and vet
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd provisioning
+          go test ./... -count=1 -timeout=120s | tee ../validation/current-linux/controller-tests.log
+          go test -race ./... -count=1 -timeout=120s | tee ../validation/current-linux/controller-race.log
+          go vet ./... 2>&1 | tee ../validation/current-linux/controller-vet.log
+      - name: Cross-build Linux suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-linux-client.sh
+          bash scripts/build-userspace-landing.sh
+          bash scripts/build-provisioning.sh --suite
+          sha256sum dist/mptcp-client-linux-* dist/mptcp-landing* dist/mpx-provision* > validation/current-linux/binaries.sha256
+      - name: Compiled processes and shaped single-stream aggregation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/userspace/shared_tunnel_smoke.py --client dist/mptcp-client-linux-amd64 --egress dist/mptcp-landing --report validation/current-linux/process-smoke.json
+          cd macos/engine
+          MPX_PERF=1 go test ./multipath -run '^TestRoutedControlledAggregation$' -count=2 -v -timeout=180s | tee ../../validation/current-linux/aggregation.log
+      - name: Browser UI acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check windows/frontend/dist/app.js
+          npm install --prefix "$RUNNER_TEMP/tunnel-ui" playwright@1.56.1
+          "$RUNNER_TEMP/tunnel-ui/node_modules/.bin/playwright" install --with-deps chromium
+          NODE_PATH="$RUNNER_TEMP/tunnel-ui/node_modules" node tests/userspace/tunnel_web_ui.cjs --controller dist/mpx-provision --output validation/current-linux/ui
+      - name: Container builds and persists tunnel configuration as nonroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -f provisioning/Dockerfile --build-arg SOURCE_ID="$(cat SOURCE_ID)" -t mpx-provision:acceptance .
+          python3 tests/userspace/tunnel_container_smoke.py --image mpx-provision:acceptance --report validation/current-linux/container.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tunnel-linux-${{ github.run_id }}
+          path: |
+            validation/current-linux
+            dist/mptcp-client-linux-*
+            dist/mptcp-landing*
+            dist/mpx-provision*
+            SOURCE_ID
+            SOURCE_SHA256SUMS

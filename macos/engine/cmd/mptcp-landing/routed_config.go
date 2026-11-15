@@ -4,11 +4,12 @@ import (
 	"errors"
 	"mptcp-desktop/engine/multipath"
 	"net"
+	"strings"
 )
 
 func (c Config) validateRouted() error {
-	if c.SchemaVersion != 1 {
-		return errors.New("routed egress requires schema_version=1")
+	if c.SchemaVersion != 2 || c.Kind != "mpx4_tunnel_egress" {
+		return errors.New("1.2.0 requires schema_version=2, kind=mpx4_tunnel_egress; legacy fixed-backend configurations are not converted")
 	}
 	if _, err := multipath.ParseKey(c.TransportKey); err != nil {
 		return err
@@ -29,11 +30,17 @@ func (c Config) validateRouted() error {
 		return err
 	}
 	lh, lp, _ := net.SplitHostPort(c.ListenTCP)
+	listenIP := net.ParseIP(lh)
 	for _, route := range c.TCPRoutes {
+		if route.Backend == "" {
+			continue
+		}
 		bh, bp, _ := net.SplitHostPort(route.Backend)
 		ip := net.ParseIP(bh)
-		if lp == bp && (lh == bh || ip != nil && ip.IsLoopback() && net.ParseIP(lh).IsUnspecified()) {
-			return errors.New("TCP route loops back to the tunnel listener")
+		localName := strings.EqualFold(strings.TrimSuffix(bh, "."), "localhost")
+		sameHost := bh == lh || ip != nil && listenIP != nil && ip.Equal(listenIP)
+		if lp == bp && (sameHost || (localName || ip != nil && ip.IsLoopback()) && (listenIP.IsUnspecified() || listenIP.IsLoopback())) {
+			return errors.New("route backend loops back to the TCP tunnel listener")
 		}
 	}
 	return nil

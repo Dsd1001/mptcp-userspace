@@ -242,7 +242,7 @@ func productServiceResponseError(kind byte, response []byte) error {
 	if kind == productServiceRouteProbe {
 		return ErrRoutedUnsupported
 	}
-	if kind == productServiceRoutedTCP {
+	if kind == productServiceRoutedTCP || kind == productServiceRoutedUOT {
 		switch response[5] {
 		case 3:
 			return ErrRouteDial
@@ -315,7 +315,7 @@ func (srv *Server) openProductBackend(st *Stream) {
 			st.Read(end[:])
 		}
 	}
-	if len(srv.tcpRoutes) != 0 && kind != productServiceRoutedTCP && kind != productServiceRouteProbe {
+	if len(srv.tcpRoutes) != 0 && kind != productServiceRoutedTCP && kind != productServiceRoutedUOT && kind != productServiceRouteProbe {
 		finish(2)
 		return
 	}
@@ -326,8 +326,8 @@ func (srv *Server) openProductBackend(st *Stream) {
 		} else {
 			finish(0)
 		}
-	case productServiceRoutedTCP:
-		srv.openRoutedBackend(st, finish)
+	case productServiceRoutedTCP, productServiceRoutedUOT:
+		srv.openRoutedBackend(st, kind, finish)
 	case productServiceProbe:
 		if srv.uotBackend == nil {
 			finish(1)

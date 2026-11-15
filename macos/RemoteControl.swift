@@ -366,6 +366,17 @@ extension Model {
     @MainActor
     func applyRemoteDesiredState(_ desired: RemoteDesiredState) {
         guard remoteManagementEnabled else { return }
+        guard desired.revision >= remoteControlRevision else { return }
+        guard desired.desired_state == "running" || desired.desired_state == "stopped" else {
+            problem = "远端期望状态无效"; return
+        }
+        if desired.desired_state == "running" {
+            guard desired.assignment_type == "tunnel", let endpoint = desired.provisioning_url, !endpoint.isEmpty else {
+                if running || busy { stop() }
+                problem = "1.2.0 只能运行分配的共享隧道，拒绝旧 Profile/Bundle 或未分配配置"
+                return
+            }
+        }
         if desired.revision >= remoteControlRevision {
             remoteControlRevision = desired.revision
             if !remoteDeviceID.isEmpty {
@@ -373,11 +384,13 @@ extension Model {
             }
         }
 
-        if let endpoint = desired.provisioning_url, !endpoint.isEmpty, endpoint != provisioningURL {
+        if let endpoint = desired.provisioning_url, !endpoint.isEmpty, endpoint != provisioningURL || !remoteConfigurationSelected {
             do {
                 try applyRemoteAssignedProvisioningURL(endpoint)
             } catch {
                 problem = "远程配置分配失败：" + error.localizedDescription
+                if running || busy { stop() }
+                return
             }
         }
 

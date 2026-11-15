@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+	"mptcp-desktop/engine/tunnelconfig"
 )
 
 const cryptProtectUIForbidden = 0x1
@@ -30,26 +32,31 @@ var (
 )
 
 type diskSettings struct {
-	ConfigurationSource     string       `json:"configuration_source"`
-	Profile                 LocalProfile `json:"profile"`
-	TransportKeyCipher      string       `json:"transport_key_cipher,omitempty"`
-	ProvisioningCipher      string       `json:"provisioning_cipher,omitempty"`
-	ManagedCacheCipher      string       `json:"managed_cache_cipher,omitempty"`
-	SelectedProfileIDs      []string     `json:"selected_profile_ids,omitempty"`
-	BackgroundResident      bool         `json:"background_resident"`
-	DesiredRunning          bool         `json:"desired_running"`
-	AutomaticUpdates        bool         `json:"automatic_updates"`
-	RemoteEnabled           bool         `json:"remote_enabled"`
-	RemoteServer            string       `json:"remote_server,omitempty"`
-	RemoteCredentialCipher  string       `json:"remote_credential_cipher,omitempty"`
-	RemoteRevision          uint64       `json:"remote_revision,omitempty"`
-	RemoteRestartGeneration uint64       `json:"remote_restart_generation,omitempty"`
-	RemoteSyncGeneration    uint64       `json:"remote_sync_generation,omitempty"`
-	RemoteUpdateGeneration  uint64       `json:"remote_update_generation,omitempty"`
+	SchemaVersion           int                 `json:"schema_version"`
+	Tunnel                  tunnelconfig.Config `json:"tunnel"`
+	MigrationRequired       bool                `json:"migration_required,omitempty"`
+	ConfigurationSource     string              `json:"configuration_source"`
+	Profile                 LocalProfile        `json:"profile"`
+	TransportKeyCipher      string              `json:"transport_key_cipher,omitempty"`
+	ProvisioningCipher      string              `json:"provisioning_cipher,omitempty"`
+	ManagedCacheCipher      string              `json:"managed_cache_cipher,omitempty"`
+	SelectedProfileIDs      []string            `json:"selected_profile_ids,omitempty"`
+	BackgroundResident      bool                `json:"background_resident"`
+	DesiredRunning          bool                `json:"desired_running"`
+	AutomaticUpdates        bool                `json:"automatic_updates"`
+	RemoteEnabled           bool                `json:"remote_enabled"`
+	RemoteServer            string              `json:"remote_server,omitempty"`
+	RemoteCredentialCipher  string              `json:"remote_credential_cipher,omitempty"`
+	RemoteRevision          uint64              `json:"remote_revision,omitempty"`
+	RemoteRestartGeneration uint64              `json:"remote_restart_generation,omitempty"`
+	RemoteSyncGeneration    uint64              `json:"remote_sync_generation,omitempty"`
+	RemoteUpdateGeneration  uint64              `json:"remote_update_generation,omitempty"`
 }
 
 func defaultSettings() diskSettings {
 	return diskSettings{
+		SchemaVersion:       2,
+		Tunnel:              defaultTunnelConfig(),
 		ConfigurationSource: "local",
 		Profile: LocalProfile{
 			ListenPort:    1081,
@@ -99,6 +106,48 @@ func loadSettings() (diskSettings, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return defaultSettings(), err
 	}
+	var identity struct {
+		SchemaVersion int                  `json:"schema_version"`
+		Tunnel        *tunnelconfig.Config `json:"tunnel"`
+	}
+	if err := json.Unmarshal(data, &identity); err != nil {
+		return defaultSettings(), err
+	}
+	if identity.SchemaVersion != 2 || identity.Tunnel == nil || identity.Tunnel.Kind != tunnelconfig.Kind {
+		// Preserve the old file separately before any v1.2 save can replace it.
+		backup := path + ".pre-1.2.backup"
+		f, e := os.OpenFile(backup, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if e == nil {
+			_, e = f.Write(data)
+			if e == nil {
+				e = f.Sync()
+			}
+			ce := f.Close()
+			if e == nil {
+				e = ce
+			}
+		}
+		if errors.Is(e, os.ErrExist) {
+			info, check := os.Lstat(backup)
+			if check != nil || !info.Mode().IsRegular() {
+				return defaultSettings(), errors.New("legacy backup is not a regular private file; refusing migration")
+			}
+			original, check := os.ReadFile(backup)
+			if check != nil || !bytes.Equal(original, data) {
+				return defaultSettings(), errors.New("legacy backup differs; refusing to overwrite original settings")
+			}
+		}
+		if e != nil && !errors.Is(e, os.ErrExist) {
+			return defaultSettings(), fmt.Errorf("legacy settings backup failed: %w", e)
+		}
+		s.SchemaVersion = 2
+		s.MigrationRequired = true
+		s.DesiredRunning = false
+		s.Tunnel = defaultTunnelConfig()
+		s.TransportKeyCipher = ""
+		s.ManagedCacheCipher = ""
+		s.SelectedProfileIDs = nil
+	}
 	if s.ConfigurationSource != "local" && s.ConfigurationSource != "managed" {
 		s.ConfigurationSource = "local"
 	}
@@ -118,6 +167,22 @@ func saveSettings(s diskSettings) error {
 	path, err := settingsPath()
 	if err != nil {
 		return err
+	}
+	if old, e := os.ReadFile(path); e == nil {
+		var identity struct {
+			SchemaVersion int `json:"schema_version"`
+		}
+		if json.Unmarshal(old, &identity) != nil {
+			return errors.New("refusing to overwrite corrupt settings without a verified migration")
+		}
+		if identity.SchemaVersion != 2 {
+			backup, e := os.ReadFile(path + ".pre-1.2.backup")
+			if e != nil || !bytes.Equal(backup, old) {
+				return errors.New("refusing to overwrite legacy settings without a matching backup")
+			}
+		}
+	} else if !errors.Is(e, os.ErrNotExist) {
+		return e
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {

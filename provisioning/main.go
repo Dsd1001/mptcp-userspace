@@ -822,6 +822,7 @@ func validateInput(name string, cfg provisionConfig) error {
 }
 
 type app struct {
+	tunnels      *tunnelStore
 	store        *store
 	bundles      *bundleStore
 	devices      *deviceStore
@@ -1385,7 +1386,11 @@ func (a *app) adminSystem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusOK, systemInfo{Component: "mpx-provision", Version: Version, SourceID: SourceID, APISchema: 1, PasswordChange: a.passwordFile != ""})
+	schema := 1
+	if a.tunnels != nil {
+		schema = 4
+	}
+	writeJSON(w, http.StatusOK, systemInfo{Component: "mpx-provision", Version: Version, SourceID: SourceID, APISchema: schema, PasswordChange: a.passwordFile != ""})
 }
 
 func (a *app) adminPassword(w http.ResponseWriter, r *http.Request) {
@@ -1412,40 +1417,6 @@ func (a *app) adminPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (a *app) handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", 405)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		_, _ = io.WriteString(w, "ok\n")
-	})
-	mux.HandleFunc("/v1/config/", a.publicConfig)
-	mux.HandleFunc("/v1/bundle/", a.publicBundle)
-	mux.HandleFunc("/v1/device/pair", a.devicePair)
-	mux.HandleFunc("/v1/device/poll", a.devicePoll)
-	mux.HandleFunc("/v1/device/report", a.deviceReport)
-	mux.HandleFunc("/v1/device/unpair", a.deviceUnpair)
-	mux.HandleFunc("/admin", a.requireAdmin(a.adminPage))
-	mux.HandleFunc("/admin/", a.requireAdmin(a.adminPage))
-	mux.HandleFunc("/admin/api/system", a.requireAdmin(a.adminSystem))
-	mux.HandleFunc("/admin/api/password", a.requireAdmin(a.adminPassword))
-	mux.HandleFunc("/admin/api/profiles", a.requireAdmin(a.adminProfiles))
-	mux.HandleFunc("/admin/api/profiles/", a.requireAdmin(a.adminProfileByID))
-	mux.HandleFunc("/admin/api/bundles", a.requireAdmin(a.adminBundles))
-	mux.HandleFunc("/admin/api/bundles/", a.requireAdmin(a.adminBundleByID))
-	mux.HandleFunc("/admin/api/devices", a.requireAdmin(a.adminDevices))
-	mux.HandleFunc("/admin/api/devices/", a.requireAdmin(a.adminDeviceByID))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("X-Frame-Options", "DENY")
-		mux.ServeHTTP(w, r)
-	})
 }
 
 func validatePublicBase(raw string) error {
@@ -1481,18 +1452,13 @@ func main() {
 	if err := validatePublicBase(publicBase); err != nil {
 		log.Fatal(err)
 	}
-	dataPath := getenv("MPX_PROVISION_DATA", "./provisioning-data/profiles.json")
+	dataPath := getenv("MPX_PROVISION_DATA", "./provisioning-data/tunnels.json")
 	passwordFile := getenv("MPX_PROVISION_ADMIN_PASSWORD_FILE", filepath.Join(filepath.Dir(dataPath), "admin-password"))
 	pass, err := loadAdminPassword(passwordFile, bootstrapPass)
 	if err != nil {
 		log.Fatal(err)
 	}
-	st, err := newStore(dataPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	bundlePath := getenv("MPX_PROVISION_BUNDLES", filepath.Join(filepath.Dir(dataPath), "bundles.json"))
-	bs, err := newBundleStore(bundlePath)
+	st, err := newTunnelStore(dataPath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1501,12 +1467,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	for _, b := range bs.list() {
-		if err := validateBundleProfiles(b.Mode, b.ProfileIDs, st, "", nil); err != nil {
-			log.Fatalf("bundle %s invalid: %v", b.ID, err)
-		}
-	}
-	a := &app{store: st, bundles: bs, devices: ds, adminUser: user, adminPass: pass, passwordFile: passwordFile, publicBase: publicBase}
+	a := &app{tunnels: st, devices: ds, adminUser: user, adminPass: pass, passwordFile: passwordFile, publicBase: publicBase}
 	srv := &http.Server{Addr: listen, Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	log.Printf("MPX Provisioning %s (%s) listening on %s (admin /admin)", Version, SourceID, listen)
 	log.Fatal(srv.ListenAndServe())

@@ -41,6 +41,19 @@ final class Model: ObservableObject {
     static let shared = Model()
     @Published var relays = [RelayRow(host: "", port: 21001), RelayRow(host: "", port: 21002)]
     @Published var listenPort = "1081"
+    @Published var tunnelSelectedTab: Int = 0
+    @Published var tunnelRevealKey = false
+    @Published var tunnelRevealURL = false
+    @Published var tunnelInlets: [TunnelInlet] = [
+        TunnelInlet(id:"hkbn", name:"HKBN", listen_port:1081, route_id:1),
+        TunnelInlet(id:"hkt", name:"HKT", listen_port:1082, route_id:2),
+        TunnelInlet(id:"icable", name:"iCable", listen_port:1083, route_id:3)
+    ]
+    @Published var tunnelRouteMetrics: [TunnelRouteMetric] = []
+    @Published var tunnelInletMetrics: [TunnelInletMetric] = []
+    private var lastProvisioningTunnel: ManagedTunnelProfile?
+    private static let tunnelPreferenceKey = "multipath-tunnel-v1"
+
     @Published var schedulerMode = "auto"
     @Published var configuredSchedulerMode = ""
     @Published var effectiveSchedulerMode = ""
@@ -329,21 +342,18 @@ final class Model: ObservableObject {
             configurationSource = provisioningURL.isEmpty ? "local" : "remote"
         }
         provisioningStatus = provisioningManaged ? "远端配置 · 本地缓存优先" : (remoteConfigurationSelected ? "请填写 API 地址" : "本地配置")
-        if let data = UserDefaults.standard.data(forKey: "multipath-profile-v2"),
-           var profile = try? JSONDecoder().decode(Profile.self, from: data) {
+        if let data = UserDefaults.standard.data(forKey: Self.tunnelPreferenceKey) {
             do {
-                guard profile.userspace else {
-                    throw Message("检测到旧 Native MPTCP 配置。v1.1.6 只支持 Userspace，请重新填写 Transport Key 与 Relay 后保存")
-                }
-                profile.transport_key = try TransportKeyStore.load()
-                try profile.validate()
-                apply(profile)
+                var configuration = try JSONDecoder().decode(TunnelConfig.self, from: data)
+                configuration.tunnel.transport_key = try TransportKeyStore.load() ?? ""
+                try configuration.validate()
+                applyTunnel(configuration)
             } catch {
                 problem = error.localizedDescription
                 UserDefaults.standard.set(false, forKey: Self.wantsForwardingKey)
             }
-        } else if UserDefaults.standard.data(forKey: "tcp-forward-profile-v1") != nil {
-            problem = "检测到旧 Native MPTCP 配置。请创建 MPX/4 Userspace 配置；不会尝试使用旧 Native 隧道启动"
+        } else if UserDefaults.standard.data(forKey: "multipath-profile-v2") != nil || UserDefaults.standard.data(forKey: "tcp-forward-profile-v1") != nil {
+            problem = "1.2.0 已改为共享隧道。旧 Profile/多组 MPX 配置保留但不自动启动，请配置共同隧道出口和业务入口"
             UserDefaults.standard.set(false, forKey: Self.wantsForwardingKey)
         }
         backgroundResident = UserDefaults.standard.bool(forKey: Self.residentKey)
@@ -383,7 +393,40 @@ final class Model: ObservableObject {
         schedulerMode = p.schedulerMode
         transportKey = p.transport_key ?? ""
     }
+    func applyTunnel(_ configuration: TunnelConfig) {
+        relays = configuration.tunnel.relays
+        schedulerMode = configuration.tunnel.schedulerMode
+        transportKey = configuration.tunnel.transport_key
+        tunnelInlets = configuration.inlets
+        listenPort = String(configuration.inlets.first?.listen_port ?? 1081)
+        tcpEnabled = configuration.inlets.contains { $0.tcpEnabled }
+        udpEnabled = false
+        uotEnabled = configuration.inlets.contains { $0.uotEnabled }
+    }
+    func tunnelConfiguration() throws -> TunnelConfig {
+        let configuration = TunnelConfig(tunnel: TunnelTransport(
+            transport_key: transportKey.trimmingCharacters(in:.whitespacesAndNewlines),
+            relays: relays.map { RelayRow(host:$0.host.trimmingCharacters(in:.whitespacesAndNewlines),port:$0.port,download_mbps:$0.download_mbps,upload_mbps:$0.upload_mbps) },
+            scheduler_mode:schedulerMode), inlets:tunnelInlets)
+        try configuration.validate()
+        return configuration
+    }
+    func addTunnelInlet() {
+        guard !configurationLocked && tunnelInlets.count < 64 else { return }
+        let usedRoutes = Set(tunnelInlets.map(\.route_id)), usedPorts = Set(tunnelInlets.map(\.listen_port)), usedIDs = Set(tunnelInlets.map(\.id))
+        var route: UInt32 = 1
+        while usedRoutes.contains(route) { route += 1 }
+        var port = 1081
+        while usedPorts.contains(port) && port < 65535 { port += 1 }
+        var identifier = "inlet-\(route)"
+        while usedIDs.contains(identifier) { identifier += "x" }
+        tunnelInlets.append(TunnelInlet(id:identifier,name:"入口 \(route)",listen_port:port,route_id:route))
+    }
     private func resetProvisioningBundleState() {
+        lastProvisioningTunnel = nil
+        tunnelRouteMetrics = []
+        tunnelInletMetrics = []
+
         provisioningIsBundle = false
         provisioningBundleMode = ""
         provisioningBundleID = ""
@@ -453,85 +496,38 @@ final class Model: ObservableObject {
         preferredSelection: Set<String>? = nil,
         updateResident: Bool = true
     ) throws -> ManagedLaunchPlan {
-        switch document {
-        case .profile(let payload):
-            resetProvisioningBundleState()
-            let provisioned = try payload.validatedProfile()
-            if provisioned.userspace { try TransportKeyStore.save(provisioned.transport_key ?? "") }
-            try applyProvisionedSummary(payload)
-            UserDefaults.standard.set(try provisioned.preferenceData(), forKey: "multipath-profile-v2")
-            provisioningRevision = payload.revision ?? ""
-            provisioningDisplayName = payload.display_name ?? ""
-            let resident = payload.background_resident ?? false
-            if updateResident && resident != backgroundResident { setBackgroundResident(resident) }
-            return ManagedLaunchPlan(
-                action: "run",
-                stdinData: try JSONEncoder().encode(provisioned),
-                extraArguments: [],
-                resident: resident,
-                revision: provisioningRevision,
-                displayName: provisioningDisplayName,
-                selectedProfileIDs: []
-            )
-
-        case .bundle(let bundle):
-            try bundle.validate()
-            let available = Set(bundle.profiles.compactMap(\.profile_id))
-            var selection = (preferredSelection ?? savedBundleSelection(bundle.bundle_id)).intersection(available)
-            if bundle.mode == "single_select" {
-                if selection.count != 1 { selection = bundle.profiles.first?.profile_id.map { [$0] } ?? [] }
-            } else if selection.isEmpty {
-                selection = available
-            }
-            _ = try bundle.selectedProfiles(ids: selection)
-            saveBundleSelection(bundle.bundle_id, ids: selection)
-            lastProvisioningBundle = bundle
-            provisioningIsBundle = true
-            provisioningBundleMode = bundle.mode
-            provisioningBundleID = bundle.bundle_id
-            provisioningRevision = bundle.revision
-            provisioningDisplayName = bundle.display_name
-            provisioningRuntimeStatus = [:]
-            provisioningRuntimeError = [:]
-            provisioningTCPPaths = [:]
-            provisioningUDPPaths = [:]
-            provisioningDiagnostics = [:]
-            try applyBundleSelection(bundle, ids: selection, updateResident: updateResident)
-            let selected = try orderedSelectedPayloads(bundle, ids: selection)
-            let resident = selected.contains { $0.background_resident ?? false }
-            return ManagedLaunchPlan(
-                action: "run-bundle",
-                stdinData: try JSONEncoder().encode(bundle),
-                extraArguments: selected.compactMap(\.profile_id),
-                resident: resident,
-                revision: bundle.revision,
-                displayName: bundle.display_name,
-                selectedProfileIDs: selection
-            )
+        guard case .tunnel(let payload) = document else { throw Message("1.2.0 不再运行旧 Profile/Bundle，请改用共享隧道配置") }
+        try payload.validate()
+        let available = Set(payload.config.inlets.map(\.id))
+        var selected = (preferredSelection ?? savedBundleSelection(payload.profile_id)).intersection(available)
+        if selected.isEmpty { selected = available }
+        let configuration = try payload.config.selecting(selected)
+        saveBundleSelection(payload.profile_id, ids:selected)
+        lastProvisioningTunnel = payload
+        lastProvisioningBundle = nil
+        provisioningIsBundle = true
+        provisioningBundleMode = "shared_tunnel"
+        provisioningBundleID = payload.profile_id
+        provisioningRevision = payload.revision
+        provisioningDisplayName = payload.display_name
+        provisioningSelectedProfileIDs = selected
+        provisioningProfiles = payload.config.inlets.map { inlet in
+            ProvisioningProfileChoice(id:inlet.id,name:inlet.displayName,listenPort:inlet.listen_port,relayCount:payload.config.tunnel.relays.count,mode:"shared_mpx4_tunnel",backgroundResident:payload.background_resident,udpEnabled:false,uotEnabled:inlet.uotEnabled)
         }
+        provisioningRuntimeStatus = [:]; provisioningRuntimeError = [:]
+        provisioningTCPPaths = [:]; provisioningUDPPaths = [:]; provisioningDiagnostics = [:]
+        applyTunnel(payload.config)
+        if updateResident && backgroundResident != payload.background_resident { setBackgroundResident(payload.background_resident) }
+        return ManagedLaunchPlan(action:"run-tunnel",stdinData:try JSONEncoder().encode(configuration),extraArguments:[],resident:payload.background_resident,revision:payload.revision,displayName:payload.display_name,selectedProfileIDs:selected)
     }
 
     private func selectedIDsForFetchedDocument(_ document: RelayProvisioningDocument) throws -> Set<String> {
-        switch document {
-        case .profile:
-            return []
-        case .bundle(let bundle):
-            let available = Set(bundle.profiles.compactMap(\.profile_id))
-            var selected: Set<String>
-            if provisioningBundleID == bundle.bundle_id, !provisioningSelectedProfileIDs.isEmpty {
-                selected = provisioningSelectedProfileIDs.intersection(available)
-            } else {
-                selected = savedBundleSelection(bundle.bundle_id).intersection(available)
-            }
-            if bundle.mode == "single_select" {
-                if selected.count != 1 { selected = bundle.profiles.first?.profile_id.map { [$0] } ?? [] }
-            } else if selected.isEmpty {
-                selected = available
-            }
-            _ = try bundle.selectedProfiles(ids: selected)
-            saveBundleSelection(bundle.bundle_id, ids: selected)
-            return selected
-        }
+        guard case .tunnel(let payload) = document else { throw Message("1.2.0 需要共享隧道远端配置") }
+        try payload.validate()
+        let available = Set(payload.config.inlets.map(\.id))
+        let preferred = provisioningBundleID == payload.profile_id ? provisioningSelectedProfileIDs : savedBundleSelection(payload.profile_id)
+        let selected = preferred.intersection(available)
+        return selected.isEmpty ? available : selected
     }
 
     private func managedLaunchPlanFromCache() throws -> (ManagedProvisioningCachedDocument, ManagedLaunchPlan)? {
@@ -622,6 +618,9 @@ final class Model: ObservableObject {
                     let revision: String
                     let name: String
                     switch result.document {
+                    case .tunnel(let payload):
+                        revision = payload.revision
+                        name = payload.display_name
                     case .profile(let payload):
                         revision = payload.revision ?? ""
                         name = payload.display_name ?? ""
@@ -667,27 +666,14 @@ final class Model: ObservableObject {
     }
 
     func setProvisioningProfileSelected(_ id: String, selected: Bool) {
-        guard !configurationLocked, let bundle = lastProvisioningBundle else { return }
+        guard !configurationLocked, let payload = lastProvisioningTunnel else { return }
         do {
             var next = provisioningSelectedProfileIDs
-            if bundle.mode == "single_select" {
-                guard selected else { return }
-                next = [id]
-            } else {
-                if selected { next.insert(id) } else { next.remove(id) }
-                guard !next.isEmpty else { throw Message("多配置并行至少保留 1 个启用 Profile") }
-            }
-            _ = try bundle.selectedProfiles(ids: next)
-            saveBundleSelection(bundle.bundle_id, ids: next)
-            try? ManagedProvisioningCacheStore.updateSelection(endpoint: provisioningURL, selectedProfileIDs: next)
-            try applyBundleSelection(bundle, ids: next)
-            provisioningRuntimeStatus = [:]
-            provisioningRuntimeError = [:]
-            provisioningTCPPaths = [:]
-            provisioningUDPPaths = [:]
-            provisioningDiagnostics = [:]
-            let count = next.count
-            provisioningStatus = bundle.mode == "parallel" ? "\(bundle.display_name) · 已选择 \(count) 个 Profile" : "\(bundle.display_name) · 已选择 1 个 Profile"
+            if selected { next.insert(id) } else { next.remove(id) }
+            _ = try payload.config.selecting(next)
+            try ManagedProvisioningCacheStore.updateSelection(endpoint:provisioningURL,selectedProfileIDs:next)
+            _ = try applyManagedDocument(.tunnel(payload),preferredSelection:next)
+            provisioningStatus = "\(payload.display_name) · \(next.count) 个业务入口共享一条隧道"
             problem = nil
         } catch { problem = error.localizedDescription }
     }
@@ -696,6 +682,19 @@ final class Model: ObservableObject {
         guard !configurationLocked, ["local", "remote"].contains(source) else { return }
         configurationSource = source
         UserDefaults.standard.set(source, forKey: Self.configurationSourceKey)
+        if source == "local" {
+            do {
+                if let data = UserDefaults.standard.data(forKey:Self.tunnelPreferenceKey) {
+                    var c = try JSONDecoder().decode(TunnelConfig.self,from:data)
+                    c.tunnel.transport_key = try TransportKeyStore.load() ?? ""
+                    try c.validate(); applyTunnel(c)
+                } else {
+                    transportKey = ""; relays = [RelayRow(host:"",port:24001),RelayRow(host:"",port:24001)]
+                    tunnelInlets = [TunnelInlet(id:"inlet-1",name:"入口 1",listen_port:1081,route_id:1)]
+                }
+            } catch { problem = error.localizedDescription; return }
+        }
+
         problem = nil
         provisioningStatus = source == "local" ? "本地配置" : (provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "请填写 API 地址" : "远端配置 · 本地缓存优先")
     }
@@ -863,7 +862,7 @@ final class Model: ObservableObject {
             if startManagedFromCache(automatic: automatic) { return }
             syncProvisioning(startAfterSync: true, automatic: automatic)
         } else {
-            launch("run", automatic: automatic)
+            launch("run-tunnel", automatic: automatic)
         }
     }
 
@@ -876,21 +875,21 @@ final class Model: ObservableObject {
     }
     struct Message: LocalizedError { var text: String; init(_ text: String) {self.text = text}; var errorDescription: String? {text} }
     func save() {
-        guard !configurationLocked else { return }
+        guard !configurationLocked && !remoteConfigurationSelected else { return }
         do {
-            let p = try profile()
-            try TransportKeyStore.save(p.transport_key ?? "")
-            UserDefaults.standard.set(try p.preferenceData(), forKey: "multipath-profile-v2")
+            let c = try tunnelConfiguration()
+            try TransportKeyStore.save(c.tunnel.transport_key)
+            UserDefaults.standard.set(try c.preferenceData(),forKey:Self.tunnelPreferenceKey)
             problem = nil
-            append("Userspace 配置已保存；传输密钥保存在本机钥匙串")
+            append("共享隧道已保存；传输密钥保存在本机钥匙串")
         } catch { problem = error.localizedDescription }
     }
     func loadProfileData(_ data: Data) throws {
-        guard !configurationLocked else { throw Message("运行期间配置已锁定，请先停止转发") }
-        guard data.count <= 32768 else { throw Message("配置文件过大") }
-        let p = try JSONDecoder().decode(Profile.self, from:data)
-        try p.validate()
-        apply(p)
+        guard !configurationLocked else { throw Message("运行期间配置已锁定，请先停止隧道") }
+        let c = try TunnelConfig.decode(data)
+        configurationSource = "local"
+        UserDefaults.standard.set("local",forKey:Self.configurationSourceKey)
+        applyTunnel(c)
     }
     func receiveSchedulerEvent(_ event: EngineEvent) {
         if let value = event.configured_scheduler_mode { configuredSchedulerMode = value }
@@ -950,15 +949,15 @@ final class Model: ObservableObject {
         guard !busy && !running else {return}
         let action = requestedAction == "doctor" ? "doctor-userspace" : requestedAction
         let checking = action.hasPrefix("doctor")
-        let forwarding = action == "run" || action == "run-bundle"
+        let forwarding = action == "run" || action == "run-tunnel"
         guard let engine = Bundle.main.url(forResource: "mptcp-desktop-engine", withExtension: nil) else {problem = "安装包缺少传输引擎";return}
         do {
             var data = stdinData ?? Data()
-            if action == "run" && stdinData == nil {
-                data = try JSONEncoder().encode(profile())
+            if (action == "run" || action == "run-tunnel") && stdinData == nil {
+                data = try JSONEncoder().encode(tunnelConfiguration())
                 if !automatic { save(); if problem != nil { return } }
-            } else if action == "run-bundle" && stdinData == nil {
-                throw Message("Bundle 启动缺少刚同步的 Provisioning 数据")
+            } else if action == "run-bundle" {
+                throw Message("1.2.0 已移除旧的独立多组 MPX 模式")
             }
             problem = nil; busy = true; status = checking ? "检查环境中" : "连接中"
             if action == "run-bundle" {
@@ -1107,7 +1106,17 @@ final class Model: ObservableObject {
             if consumeBundleProfileEvent(event) { continue }
 
             receiveSchedulerEvent(event)
+            if let values = event.routes { tunnelRouteMetrics = values }
+            if let values = event.inlets {
+                tunnelInletMetrics = values
+                for value in values { provisioningRuntimeStatus[value.id] = "共享隧道 · \(value.active_connections) TCP 连接" }
+            }
             switch event.kind {
+            case "retrying":
+                running = true; busy = false
+                status = "共享隧道重连中"
+                paths = 0; connections = 0; tcpPaths = []
+
             case "bundle_listening":
                 running = true; busy = false
                 recoveryAttempt = 0; needsRecovery = false
@@ -1729,7 +1738,7 @@ struct StatusMenu: View {
 @main struct MPTCPDesktop: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
-        Window("MPTCP Desk", id: "main") {DesktopView()}.windowResizability(.contentMinSize)
+        Window("MPTCP Tunnel", id: "main") {TunnelDesktopView()}.windowResizability(.contentMinSize)
             .commands {
                 CommandGroup(replacing:.newItem) {}
                 CommandGroup(replacing:.appInfo) {

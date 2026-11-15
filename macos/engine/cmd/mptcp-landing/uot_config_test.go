@@ -7,37 +7,39 @@ import (
 	"testing"
 )
 
-func TestUOTLandingConfigCompatibility(t *testing.T) {
+func TestEgressTunnelOnlyConfigAndRoutedUOT(t *testing.T) {
 	c, err := defaultConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.UOTEnabled {
-		t.Fatal("default config unexpectedly enables UoT")
-	}
-	old, err := decodeConfig(configBytes(c))
-	if err != nil || old.UOTEnabled {
-		t.Fatalf("legacy config migration: %+v %v", old, err)
-	}
-	c.UOTEnabled, c.UDPEnabled, c.ListenUDP = true, false, ""
-	if err := c.validate(); err != nil {
-		t.Fatalf("UoT should not need public UDP listener: %v", err)
+	if c.SchemaVersion != 2 || c.Kind != "mpx4_tunnel_egress" || c.UDPEnabled || len(c.TCPRoutes) != 1 {
+		t.Fatal("default is not tunnel-only")
 	}
 	decoded, err := decodeConfig(configBytes(c))
-	if err != nil || !decoded.UOTEnabled || decoded.UDPEnabled {
-		t.Fatalf("UoT round trip: %+v %v", decoded, err)
+	if err != nil || decoded.TCPRoutes[0].UDPBackend == "" {
+		t.Fatalf("routed UoT roundtrip: %v", err)
 	}
-	c.BackendUDP = ""
-	if err := c.validate(); err == nil {
-		t.Fatal("UoT accepted missing UDP backend")
+	old := bytes.Replace(configBytes(c), []byte(`"schema_version": 2`), []byte(`"schema_version": 1`), 1)
+	if _, err = decodeConfig(old); err == nil {
+		t.Fatal("legacy schema accepted")
 	}
-	c.BackendUDP = "0.0.0.0:8388"
-	if err := c.validate(); err == nil {
-		t.Fatal("UoT accepted unspecified backend")
+	for _, field := range []string{`"backend_tcp":"127.0.0.1:8388"`, `"udp_enabled":true`, `"listen_udp":"0.0.0.0:24001"`, `"uot_enabled":true`} {
+		bad := append([]byte("{"+field+","), configBytes(c)[1:]...)
+		if _, err = decodeConfig(bad); err == nil {
+			t.Fatalf("legacy field accepted: %s", field)
+		}
 	}
-	c.BackendUDP, c.ListenUDP, c.UDPEnabled = "127.0.0.1:8388", "0.0.0.0:24001", true
-	if err := c.validate(); err != nil {
-		t.Fatalf("Landing may offer both native UDP and UoT: %v", err)
+	c.TCPRoutes[0].Backend = ""
+	if err = c.validate(); err != nil {
+		t.Fatalf("UDP-only route rejected: %v", err)
+	}
+	c.TCPRoutes[0].UDPBackend = "0.0.0.0:8388"
+	if err = c.validate(); err == nil {
+		t.Fatal("unspecified UDP target accepted")
+	}
+	c.TCPRoutes[0].UDPBackend = ""
+	if err = c.validate(); err == nil {
+		t.Fatal("route without service accepted")
 	}
 }
 
@@ -46,18 +48,19 @@ func TestConfigureUOTWithoutPublicUDP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Keep TCP endpoints; turn native UDP off; allow UoT; set its UDP backend.
-	input := "\n\nn\ny\n127.0.0.1:8389\n\n\n\n"
+	// listener, count, id, name, TCP target disabled, UDP target, weight,
+	// maximum connections, scheduler, key unchanged, maximum sessions.
+	input := "\n\n\n\n-\n127.0.0.1:8389\n\n\n\n\n\n"
 	var out bytes.Buffer
-	terminal := terminal{reader: bufio.NewReader(strings.NewReader(input)), out: &out}
-	got, err := terminal.configure(c)
+	term := terminal{reader: bufio.NewReader(strings.NewReader(input)), out: &out}
+	got, err := term.configure(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.UDPEnabled || !got.UOTEnabled || got.BackendUDP != "127.0.0.1:8389" {
-		t.Fatalf("UoT configuration=%+v", got.redacted())
+	if got.TCPRoutes[0].Backend != "" || got.TCPRoutes[0].UDPBackend != "127.0.0.1:8389" || got.ListenUDP != "" {
+		t.Fatal("wrong routed UoT config")
 	}
-	if strings.Contains(out.String(), "UDP 聚合监听") {
-		t.Fatal("UoT-only configuration prompted for public UDP listener")
+	if strings.Contains(out.String(), "UDP 聚合监听") || strings.Contains(out.String(), c.TransportKey) {
+		t.Fatal("unexpected public UDP listener prompt or leaked key")
 	}
 }

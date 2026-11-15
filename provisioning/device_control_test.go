@@ -178,7 +178,7 @@ func TestDeviceControlPairDesiredReportAndRevoke(t *testing.T) {
 		adminUser: "admin", adminPass: "secret",
 		publicBase: "https://cfg.example.test",
 	}
-	srv := httptest.NewServer(a.handler())
+	srv := httptest.NewServer(a.legacyHandlerForTest())
 	defer srv.Close()
 	client := srv.Client()
 
@@ -386,7 +386,7 @@ func TestDeviceControlRejectsUnknownCommandAndCrossDeviceSecret(t *testing.T) {
 	bs, _ := newBundleStore(filepath.Join(dir, "bundles.json"))
 	ds, _ := newDeviceStore(filepath.Join(dir, "devices.json"))
 	a := &app{store: st, bundles: bs, devices: ds, adminUser: "admin", adminPass: "secret"}
-	srv := httptest.NewServer(a.handler())
+	srv := httptest.NewServer(a.legacyHandlerForTest())
 	defer srv.Close()
 	client := srv.Client()
 
@@ -441,7 +441,7 @@ func TestDeviceControlLongPollWakesOnDesiredChange(t *testing.T) {
 	bs, _ := newBundleStore(filepath.Join(dir, "bundles.json"))
 	ds, _ := newDeviceStore(filepath.Join(dir, "devices.json"))
 	a := &app{store: st, bundles: bs, devices: ds, adminUser: "admin", adminPass: "secret"}
-	srv := httptest.NewServer(a.handler())
+	srv := httptest.NewServer(a.legacyHandlerForTest())
 	defer srv.Close()
 	client := srv.Client()
 

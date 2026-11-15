@@ -5,12 +5,26 @@ on:
   pull_request:
     paths:
       - "windows/**"
+      - "provisioning/**"
+      - "examples/**"
+      - "scripts/**"
+      - "tests/userspace/**"
+      - "docs/**"
+      - "README*"
+      - ".dockerignore"
       - "macos/engine/**"
       - "scripts/source-manifest.py"
       - ".github/workflows/windows-client.yml"
   push:
     paths:
       - "windows/**"
+      - "provisioning/**"
+      - "examples/**"
+      - "scripts/**"
+      - "tests/userspace/**"
+      - "docs/**"
+      - "README*"
+      - ".dockerignore"
       - "macos/engine/**"
       - "scripts/source-manifest.py"
       - ".github/workflows/windows-client.yml"
@@ -57,6 +71,7 @@ jobs:
       - name: Check frontend JavaScript syntax
         shell: powershell
         run: node --check windows/frontend/dist/app.js
+          if ($LASTEXITCODE -ne 0) { throw "Frontend syntax failed" }
 
       - name: Build Windows Desk, engine, portable ZIP and installer
         shell: powershell

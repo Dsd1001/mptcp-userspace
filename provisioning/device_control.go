@@ -260,6 +260,15 @@ func (a *app) validateDeviceAssignment(kind, id string) error {
 	if kind == "" && id == "" {
 		return nil
 	}
+	if a.tunnels != nil {
+		if kind != "tunnel" {
+			return errors.New("1.2.0 assignment_type must be tunnel or empty; legacy Profile/Bundle assignments require reconfiguration")
+		}
+		if _, ok := a.tunnels.get(id); !ok {
+			return errors.New("assigned tunnel does not exist")
+		}
+		return nil
+	}
 	if kind == "profile" {
 		if _, ok := a.store.get(id); !ok {
 			return errors.New("assigned Profile does not exist")
@@ -598,6 +607,14 @@ func deviceCredentials(r *http.Request) (string, string) {
 }
 
 func (a *app) assignmentURL(r *http.Request, rec deviceRecord) string {
+	if a.tunnels != nil {
+		if rec.AssignmentType == "tunnel" {
+			if p, ok := a.tunnels.get(rec.AssignmentID); ok {
+				return a.tunnelView(r, p).APIURL
+			}
+		}
+		return ""
+	}
 	switch rec.AssignmentType {
 	case "profile":
 		if p, ok := a.store.get(rec.AssignmentID); ok {
@@ -620,6 +637,12 @@ func (a *app) assignmentURL(r *http.Request, rec deviceRecord) string {
 }
 
 func (a *app) deviceControlView(r *http.Request, rec deviceRecord) deviceControl {
+	// Preserve old records for administrative reassignment, but never instruct
+	// a 1.2 client to run a legacy bundle or an unassigned cached tunnel.
+	if a.tunnels != nil && (rec.AssignmentType != "tunnel" || a.assignmentURL(r, rec) == "") {
+		rec.DesiredState = "stopped"
+		rec.AssignmentType, rec.AssignmentID = "", ""
+	}
 	return deviceControl{
 		Revision: rec.Revision, DesiredState: rec.DesiredState,
 		AssignmentType: rec.AssignmentType, AssignmentID: rec.AssignmentID,
@@ -630,6 +653,10 @@ func (a *app) deviceControlView(r *http.Request, rec deviceRecord) deviceControl
 }
 
 func (a *app) adminDevices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		a.mutationMu.Lock()
+		defer a.mutationMu.Unlock()
+	}
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, a.devices.list())
@@ -658,6 +685,10 @@ func (a *app) adminDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) adminDeviceByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		a.mutationMu.Lock()
+		defer a.mutationMu.Unlock()
+	}
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/api/devices/"), "/")
 	if rest == "" {
 		http.NotFound(w, r)

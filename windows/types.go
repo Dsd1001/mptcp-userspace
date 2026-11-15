@@ -1,13 +1,11 @@
 package main
 
-import "time"
+import (
+	"mptcp-desktop/engine/tunnelconfig"
+	"time"
+)
 
-type Relay struct {
-	Host         string   `json:"host"`
-	Port         int      `json:"port"`
-	DownloadMbps *float64 `json:"download_mbps,omitempty"`
-	UploadMbps   *float64 `json:"upload_mbps,omitempty"`
-}
+type Relay = tunnelconfig.Relay
 
 type LocalProfile struct {
 	ListenPort    int     `json:"listen_port"`
@@ -58,14 +56,17 @@ type managedBundle struct {
 }
 
 type managedDocument struct {
-	Kind      string          `json:"kind"`
-	Profile   *managedProfile `json:"profile,omitempty"`
-	Bundle    *managedBundle  `json:"bundle,omitempty"`
-	FetchedAt time.Time       `json:"fetched_at"`
-	FromCache bool            `json:"from_cache"`
+	Tunnel    *tunnelconfig.ManagedProfile `json:"tunnel,omitempty"`
+	Kind      string                       `json:"kind"`
+	Profile   *managedProfile              `json:"profile,omitempty"`
+	Bundle    *managedBundle               `json:"bundle,omitempty"`
+	FetchedAt time.Time                    `json:"fetched_at"`
+	FromCache bool                         `json:"from_cache"`
 }
 
 type ManagedProfileChoice struct {
+	RouteID            uint32 `json:"route_id"`
+	Weight             int    `json:"weight"`
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
 	ListenPort         int    `json:"listen_port"`
@@ -77,6 +78,7 @@ type ManagedProfileChoice struct {
 }
 
 type ManagedSummary struct {
+	RelayCount      int                    `json:"relay_count"`
 	Configured      bool                   `json:"configured"`
 	DisplayEndpoint string                 `json:"display_endpoint"`
 	Kind            string                 `json:"kind"`
@@ -91,17 +93,21 @@ type ManagedSummary struct {
 }
 
 type SettingsView struct {
-	ConfigurationSource string       `json:"configuration_source"`
-	Profile             LocalProfile `json:"profile"`
-	TransportKeySet     bool         `json:"transport_key_set"`
-	BackgroundResident  bool         `json:"background_resident"`
-	AutomaticUpdates    bool         `json:"automatic_updates"`
-	RemoteEnabled       bool         `json:"remote_enabled"`
-	RemoteServer        string       `json:"remote_server"`
-	RemoteDeviceID      string       `json:"remote_device_id"`
+	Tunnel              tunnelconfig.Config `json:"tunnel"`
+	MigrationRequired   bool                `json:"migration_required"`
+	ConfigurationSource string              `json:"configuration_source"`
+	Profile             LocalProfile        `json:"profile"`
+	TransportKeySet     bool                `json:"transport_key_set"`
+	BackgroundResident  bool                `json:"background_resident"`
+	AutomaticUpdates    bool                `json:"automatic_updates"`
+	RemoteEnabled       bool                `json:"remote_enabled"`
+	RemoteServer        string              `json:"remote_server"`
+	RemoteDeviceID      string              `json:"remote_device_id"`
 }
 
 type EngineEvent struct {
+	Routes                  []RouteMetric    `json:"routes,omitempty"`
+	Inlets                  []InletMetric    `json:"inlets,omitempty"`
 	Kind                    string           `json:"kind"`
 	Message                 string           `json:"message,omitempty"`
 	ProfileID               string           `json:"profile_id,omitempty"`
@@ -210,4 +216,27 @@ type AppState struct {
 	ProfileErrors  map[string]string      `json:"profile_errors"`
 	ProfileEvents  map[string]EngineEvent `json:"profile_events"`
 	Logs           []string               `json:"logs"`
+}
+
+// These metrics describe business routes inside ONE Session. They are not
+// independent transport profiles and must not be summed as Carrier groups.
+type RouteMetric struct {
+	RouteID               uint32 `json:"route_id"`
+	Weight                int    `json:"weight"`
+	Streams               int    `json:"streams"`
+	ReadyDataBytes        int    `json:"ready_data_bytes"`
+	ReceiveAllocated      int    `json:"receive_allocated_bytes"`
+	ReceiveLimit          int    `json:"receive_limit_bytes"`
+	ReceivePressureResets uint64 `json:"receive_pressure_resets"`
+}
+type InletMetric struct {
+	ID               string `json:"id"`
+	RouteID          uint32 `json:"route_id"`
+	ListenPort       int    `json:"listen_port"`
+	Active           int64  `json:"active_connections"`
+	Rejected         uint64 `json:"rejected_connections"`
+	UDPConnections   int    `json:"udp_connections"`
+	UDPSentBytes     uint64 `json:"udp_sent_bytes"`
+	UDPReceivedBytes uint64 `json:"udp_received_bytes"`
+	UDPDropped       uint64 `json:"udp_dropped"`
 }

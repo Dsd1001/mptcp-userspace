@@ -28,7 +28,7 @@ func DialClientWithPolicy(ctx context.Context, addresses []string, token string,
 	return dialClientPolicy(ctx, addresses, token, requested, capacities, false)
 }
 
-func dialClientPolicy(ctx context.Context, addresses []string, token string, requested SchedulerMode, capacities []PathCapacity, productMux bool) (*Session, error) {
+func dialClientPolicy(ctx context.Context, addresses []string, token string, requested SchedulerMode, capacities []PathCapacity, productMux bool, routePolicies ...[]RoutePolicy) (*Session, error) {
 	mode, modeErr := ParseSchedulerMode(string(requested))
 	if modeErr != nil {
 		return nil, modeErr
@@ -61,6 +61,12 @@ func dialClientPolicy(ctx context.Context, addresses []string, token string, req
 	}
 	s := newSession(ctx, id, false, nil, mode)
 	s.productMux = productMux
+	if len(routePolicies) != 0 {
+		if err = s.ConfigureRoutePolicies(routePolicies[0]); err != nil {
+			s.Close()
+			return nil, err
+		}
+	}
 	if mode == SchedulerWeighted {
 		for i, capacity := range capacities {
 			s.pathCapacities[uint64(i+1)] = capacity

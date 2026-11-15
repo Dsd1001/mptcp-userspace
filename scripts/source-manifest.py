@@ -14,12 +14,12 @@ import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FIXED = (
-    'macos/VERSION', 'macos/App.swift', 'macos/Lifecycle.swift', 'macos/Profile.swift', 'macos/KeychainBrokerClient.swift', 'macos/RemoteControl.swift', 'macos/UpdateController.swift', 'macos/Icon.swift',
+    'macos/VERSION', 'macos/App.swift', 'macos/Lifecycle.swift', 'macos/Profile.swift', 'macos/TunnelProfile.swift', 'macos/TunnelView.swift', 'macos/KeychainBrokerClient.swift', 'macos/RemoteControl.swift', 'macos/UpdateController.swift', 'macos/Icon.swift',
     'macos/keychain-broker/KeychainBroker.swift', 'macos/keychain-broker/MPTCPKeychainBroker.v1.b64',
     'macos/Info.plist', 'macos/build.sh', 'macos/README.zh-CN.md',
     'macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt',
-    'macos/VALIDATION.md', 'macos/tcp-profile.example.json', 'docs/README.md',
-    'macos/userspace-profile.example.json', 'macos/engine/go.mod',
+    'macos/VALIDATION.md', 'macos/tunnel.example.json', 'docs/README.md', 'README.md', 'README.zh-CN.md',
+    'macos/engine/go.mod',
     'scripts/build-linux-client.sh', 'scripts/build-userspace-landing.sh', 'scripts/build-provisioning.sh', 'scripts/provisioning-source-manifest.py', 'scripts/package-userspace.py',
     'scripts/source-manifest.py', 'scripts/verify-userspace.py', 'scripts/build-appcast.sh', 'scripts/build-windows-update.sh', 'scripts/release-gates.py', 'scripts/scheduler-gates.py',
     'windows/go.mod', 'windows/go.sum', 'windows/wails.json', 'windows/build.ps1', 'windows/installer.nsi', 'windows/README.zh-CN.md',
@@ -49,10 +49,10 @@ def canonical_source_bytes(path: pathlib.Path, data: bytes) -> bytes:
 def collect(root: pathlib.Path = ROOT) -> dict[str, bytes]:
     names = set(FIXED)
     for directory, pattern in [('macos/engine', '*.go'), ('windows', '*.go'), ('macos/engine/multipath/testdata', '*.json'), ('docs/userspace', '*.md'),
-                               ('tests/userspace', '*.py'), ('tests/userspace', '*.swift'), ('tests/userspace', '*.go'), ('tests/userspace', '*.pl'),
-                               ('provisioning', '*.go'), ('provisioning/web', '*.html')]:
+                               ('tests/userspace', '*.py'), ('tests/userspace', '*.swift'), ('tests/userspace', '*.cjs'), ('tests/userspace', '*.go'), ('tests/userspace', '*.pl'),
+                               ('provisioning', '*.go'), ('provisioning/web', '*.html'), ('examples/shared-tunnel', '*.json'), ('scripts', '*.py'), ('scripts', '*.sh'), ('.github/workflows', '*.yml')]:
         names.update(p.relative_to(root).as_posix() for p in (root/directory).rglob(pattern))
-    names.update({'provisioning/VERSION', 'provisioning/go.mod', 'provisioning/Dockerfile', 'provisioning/docker-compose.example.yml', 'provisioning/.dockerignore', 'provisioning/.gitignore'})
+    names.update({'provisioning/VERSION', 'provisioning/go.mod', 'provisioning/Dockerfile', 'provisioning/docker-compose.example.yml', 'provisioning/.dockerignore', 'provisioning/.gitignore', '.dockerignore'})
     files = {}
     for name in sorted(names):
         path = root/name
