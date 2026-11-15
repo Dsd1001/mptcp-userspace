@@ -1,0 +1,7 @@
+Rendered tunnel-local 2360x2000
+Rendered tunnel-remote 2360x2000
+Rendered tunnel-runtime 2360x2000
+Rendered tunnel-management 2360x2000
+Rendered tunnel-logs 2360x2000
+Rendered tunnel-dark 2360x2000
+PASS: shared tunnel validation, legacy rejection, encrypted remote config, endpoint-bound cache, selected inlets, local-only remote authorization and six offscreen GUI views

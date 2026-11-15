@@ -11,7 +11,7 @@ VERSION=$(cat "$ROOT/macos/VERSION")
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 OUT="$ROOT/dist/userspace-$VERSION"
 mkdir -p "$OUT"
-SOURCE_ID=$(python3 "$ROOT/scripts/source-manifest.py" --id)
+SOURCE_ID=$(python3 "$ROOT/scripts/source-manifest.py" --check-frozen)
 FLAGS="-s -w -buildid= -X mptcp-desktop/engine/multipath.SourceID=$SOURCE_ID"
 
 build_one() {
@@ -29,7 +29,7 @@ build_one() {
     esac
     shasum -a 256 "$out" > "$out.sha256"
     {
-        printf 'Component: mptcp-client\nVersion: %s\nSource-ID: %s\nTarget: linux/%s\nCGO_ENABLED: 0\nProtocol: MPX/4 Protocol Version 4 Stable\nProtocol-Release: protocol-v4.0.0\nProtocol-Source: 44f587fd279ed2238b070dd68114c76822353f4d\nMode: userspace_multipath only\n' "$VERSION" "$SOURCE_ID" "$arch"
+        printf 'Component: mptcp-client\nVersion: %s\nSource-ID: %s\nTarget: linux/%s\nCGO_ENABLED: 0\nProtocol: MPX/4 Protocol Version 4 Stable\nProtocol-Release: protocol-v4.0.0\nProtocol-Source: 44f587fd279ed2238b070dd68114c76822353f4d\nMode: shared_mpx4_tunnel only\n' "$VERSION" "$SOURCE_ID" "$arch"
         "$GO" version
         "$GO" version -m "$out"
     } > "$out.BUILDINFO"
@@ -37,6 +37,6 @@ build_one() {
 
 build_one amd64
 build_one arm64
-[[ $(python3 "$ROOT/scripts/source-manifest.py" --id) == "$SOURCE_ID" ]]
+[[ $(python3 "$ROOT/scripts/source-manifest.py" --check-frozen) == "$SOURCE_ID" ]]
 cat "$OUT/mptcp-client-linux-amd64.sha256"
 cat "$OUT/mptcp-client-linux-arm64.sha256"

@@ -141,20 +141,38 @@ func TestStrictBundleJSON(t *testing.T) {
 	}
 }
 
+func freeTestPorts(t *testing.T, count int) []int {
+	t.Helper()
+	// Keep all reservations open until the entire group has distinct ports.
+	// Repeated bind(:0)/close calls can otherwise recycle the same port, causing
+	// the supervisor to reject its fixture before it starts any child process.
+	var listeners []net.Listener
+	defer func() {
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}()
+	ports := make([]int, 0, count)
+	for i := 0; i < count; i++ {
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		listeners = append(listeners, listener)
+		ports = append(ports, listener.Addr().(*net.TCPAddr).Port)
+	}
+	return ports
+}
+
 func freeTestPort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	return port
+	return freeTestPorts(t, 1)[0]
 }
 
 func TestBundlePortPreflightIsAtomic(t *testing.T) {
-	p1 := bundleProfile("a", "A", freeTestPort(t))
-	p2 := bundleProfile("b", "B", freeTestPort(t))
+	ports := freeTestPorts(t, 2)
+	p1 := bundleProfile("a", "A", ports[0])
+	p2 := bundleProfile("b", "B", ports[1])
 	if err := preflightBundlePorts([]BundleProfile{p1, p2}); err != nil {
 		t.Fatalf("free ports rejected: %v", err)
 	}
@@ -393,10 +411,15 @@ func (s *scriptedBundleLauncherState) count(id string) int {
 	return s.counts[id]
 }
 
-func waitForBundleTest(t *testing.T, timeout time.Duration, condition func() bool, message string) {
+func waitForBundleTest(t *testing.T, timeout time.Duration, done <-chan error, condition func() bool, message string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("%s: supervisor exited before readiness: %v", message, err)
+		default:
+		}
 		if condition() {
 			return
 		}
@@ -428,14 +451,16 @@ func TestBundleProfileRetrySchedule(t *testing.T) {
 }
 
 func TestParallelBundleKeepsHealthyProfileRunningWhenPeerFails(t *testing.T) {
-	p1 := bundleProfile("good", "Good", freeTestPort(t))
-	p2 := bundleProfile("bad", "Bad", freeTestPort(t))
+	ports := freeTestPorts(t, 2)
+	p1 := bundleProfile("good", "Good", ports[0])
+	p2 := bundleProfile("bad", "Bad", ports[1])
 	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-resilient", Revision: "r1", DisplayName: "Resilient", Mode: "parallel", Profiles: []BundleProfile{p1, p2}}
 	launcher := fakeBundleLauncher(map[string]string{
 		"good": "good",
 		"bad":  "bad",
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- runBundleWithLauncher(ctx, b, nil, launcher) }()
 	select {
@@ -456,17 +481,19 @@ func TestParallelBundleKeepsHealthyProfileRunningWhenPeerFails(t *testing.T) {
 }
 
 func TestParallelBundleAllDownRecoversWithoutRestartingBundle(t *testing.T) {
-	p1 := bundleProfile("a", "A", freeTestPort(t))
-	p2 := bundleProfile("b", "B", freeTestPort(t))
+	ports := freeTestPorts(t, 2)
+	p1 := bundleProfile("a", "A", ports[0])
+	p2 := bundleProfile("b", "B", ports[1])
 	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-all-recover", Revision: "r1", DisplayName: "All Recover", Mode: "parallel", Profiles: []BundleProfile{p1, p2}}
 	state, launcher := newScriptedBundleLauncher(map[string][]string{
 		"a": {"bad", "good"},
 		"b": {"bad", "good"},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- runParallelBundleWithLauncherRetry(ctx, b, nil, launcher, fastBundleRetryDelay) }()
-	waitForBundleTest(t, 2*time.Second, func() bool {
+	waitForBundleTest(t, 2*time.Second, done, func() bool {
 		return state.count("a") >= 2 && state.count("b") >= 2
 	}, "all-down Profiles did not retry and recover")
 	select {
@@ -486,17 +513,19 @@ func TestParallelBundleAllDownRecoversWithoutRestartingBundle(t *testing.T) {
 }
 
 func TestParallelBundleFailedPeerRecoversWithoutRestartingHealthyPeer(t *testing.T) {
-	good := bundleProfile("good", "Good", freeTestPort(t))
-	recovering := bundleProfile("recover", "Recover", freeTestPort(t))
+	ports := freeTestPorts(t, 2)
+	good := bundleProfile("good", "Good", ports[0])
+	recovering := bundleProfile("recover", "Recover", ports[1])
 	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-peer-recover", Revision: "r1", DisplayName: "Peer Recover", Mode: "parallel", Profiles: []BundleProfile{good, recovering}}
 	state, launcher := newScriptedBundleLauncher(map[string][]string{
 		"good":    {"good"},
 		"recover": {"bad", "good"},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- runParallelBundleWithLauncherRetry(ctx, b, nil, launcher, fastBundleRetryDelay) }()
-	waitForBundleTest(t, 2*time.Second, func() bool { return state.count("recover") >= 2 }, "failed peer did not retry")
+	waitForBundleTest(t, 2*time.Second, done, func() bool { return state.count("recover") >= 2 }, "failed peer did not retry")
 	if got := state.count("good"); got != 1 {
 		t.Fatalf("healthy peer restarted %d times; want exactly 1 launch", got)
 	}
@@ -513,9 +542,10 @@ func TestParallelBundleRuntimeCrashReconnects(t *testing.T) {
 		"flap": {"flap", "good"},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- runParallelBundleWithLauncherRetry(ctx, b, nil, launcher, fastBundleRetryDelay) }()
-	waitForBundleTest(t, 2*time.Second, func() bool { return state.count("flap") >= 2 }, "runtime crash did not reconnect")
+	waitForBundleTest(t, 2*time.Second, done, func() bool { return state.count("flap") >= 2 }, "runtime crash did not reconnect")
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel result=%v", err)
@@ -529,6 +559,7 @@ func TestParallelBundlePermanentFailureUsesBackoffNotBusyLoop(t *testing.T) {
 		"bad": {"START_ERROR"},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	const delay = 30 * time.Millisecond
 	go func() {
@@ -546,14 +577,16 @@ func TestParallelBundlePermanentFailureUsesBackoffNotBusyLoop(t *testing.T) {
 }
 
 func TestParallelBundleStartFailureDoesNotStopStartedPeer(t *testing.T) {
-	p1 := bundleProfile("good", "Good", freeTestPort(t))
-	p2 := bundleProfile("start-bad", "Start Bad", freeTestPort(t))
+	ports := freeTestPorts(t, 2)
+	p1 := bundleProfile("good", "Good", ports[0])
+	p2 := bundleProfile("start-bad", "Start Bad", ports[1])
 	b := BundlePayload{SchemaVersion: 2, Kind: "bundle", BundleID: "bundle-start-failure", Revision: "r1", DisplayName: "Start Failure", Mode: "parallel", Profiles: []BundleProfile{p1, p2}}
 	launcher := fakeBundleLauncher(map[string]string{
 		"good":      "good",
 		"start-bad": "START_ERROR",
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- runBundleWithLauncher(ctx, b, nil, launcher) }()
 	select {

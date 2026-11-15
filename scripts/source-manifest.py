@@ -8,9 +8,11 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import pathlib
 import re
 import tarfile
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FIXED = (
@@ -86,7 +88,7 @@ def archive(path: pathlib.Path, files: dict[str, bytes]) -> None:
                 entry.mode = 0o755 if name.endswith('.sh') or name == 'mptcp-landing' else 0o644
                 out.addfile(entry, io.BytesIO(data))
     with tarfile.open(path, 'r:gz') as check:
-        if set(check.getnames()) != set(files):
+        if len(check.getnames()) != len(files) or set(check.getnames()) != set(files):
             raise ValueError('Archive inventory differs')
         for entry in check:
             if not entry.isfile() or entry.pax_headers:
@@ -96,10 +98,74 @@ def archive(path: pathlib.Path, files: dict[str, bytes]) -> None:
                 raise ValueError('Archive content differs: '+entry.name)
 
 
+def atomic_bytes(path: pathlib.Path, data: bytes) -> None:
+    """Replace a generated manifest without following an existing symlink."""
+    if path.is_symlink():
+        raise ValueError('Refusing linked manifest: '+str(path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.'+path.name+'.', delete=False) as tmp:
+        temporary = pathlib.Path(tmp.name)
+        try:
+            tmp.write(data)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        temporary.chmod(0o644)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def release_layout(root: pathlib.Path) -> tuple[str, pathlib.Path, str]:
+    version = (root/'macos/VERSION').read_text().strip()
+    if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+        raise ValueError('Invalid release version')
+    return version, root/'dist'/('userspace-'+version), f'MPTCP-Userspace-{version}-source.tar.gz'
+
+
+def check_frozen(root: pathlib.Path = ROOT, files: dict[str, bytes] | None = None) -> str:
+    """Fail closed on drift in either manifest copy or the packaged source."""
+    if files is None:
+        files = collect(root)
+    sums = manifest(files)
+    identity = sha(sums)
+    _, out, name = release_layout(root)
+    generated = {'SOURCE_SHA256SUMS': sums, 'SOURCE_ID': (identity+'\n').encode()}
+    for folder in (root, out):
+        for relative, expected in generated.items():
+            path = folder/relative
+            if path.is_symlink() or not path.is_file():
+                raise ValueError('Missing or linked frozen manifest: '+str(path))
+            actual = canonical_source_bytes(path, path.read_bytes())
+            if actual != expected:
+                raise ValueError('Frozen source drift: '+str(path)+'; explicitly freeze reviewed sources again')
+    archived = dict(files, **generated)
+    archive_path = out/name
+    if archive_path.is_symlink():
+        raise ValueError('Linked source archive is not accepted')
+    with tarfile.open(archive_path, 'r:gz') as source:
+        entries = source.getmembers()
+        if len(entries) != len(archived) or {entry.name for entry in entries} != set(archived):
+            raise ValueError('Frozen archive inventory differs')
+        for entry in entries:
+            if not entry.isfile() or entry.pax_headers:
+                raise ValueError('Frozen archive contains a non-regular entry')
+            stream = source.extractfile(entry)
+            expected = archived[entry.name]
+            if entry.size != len(expected) or stream is None or stream.read() != expected:
+                raise ValueError('Frozen archive content differs: '+entry.name)
+    return identity
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--id', action='store_true')
-    parser.add_argument('--freeze', action='store_true')
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--id', action='store_true')
+    mode.add_argument('--freeze', action='store_true')
+    mode.add_argument('--check-frozen', action='store_true')
     args = parser.parse_args()
     files = collect()
     sums = manifest(files)
@@ -107,19 +173,28 @@ def main() -> None:
     if args.id:
         print(identity)
         return
-    if not args.freeze:
-        parser.error('select --id or --freeze')
-    version = (ROOT/'macos/VERSION').read_text().strip()
-    if not re.fullmatch(r'\d+\.\d+\.\d+', version):
-        raise ValueError('Invalid release version')
-    out = ROOT/'dist'/('userspace-'+version)
+    if args.check_frozen:
+        print(check_frozen(ROOT, files))
+        return
+    version, out, name = release_layout(ROOT)
     out.mkdir(parents=True, exist_ok=True)
-    name = f'MPTCP-Userspace-{version}-source.tar.gz'
-    archive(out/name, dict(files, SOURCE_SHA256SUMS=sums, SOURCE_ID=(identity+'\n').encode()))
-    if manifest(collect()) != sums:
-        raise ValueError('Sources changed during freeze; archive is not a current release')
-    (out/'SOURCE_SHA256SUMS').write_bytes(sums)
-    (out/'SOURCE_ID').write_text(identity+'\n')
+    generated = {'SOURCE_SHA256SUMS': sums, 'SOURCE_ID': (identity+'\n').encode()}
+    temporary = out/(name+'.tmp')
+    try:
+        if temporary.is_symlink() or (out/name).is_symlink():
+            raise ValueError('Refusing linked archive output')
+        archive(temporary, dict(files, **generated))
+        if manifest(collect()) != sums:
+            raise ValueError('Sources changed during freeze; archive is not a current release')
+        os.replace(temporary, out/name)
+        # A partially interrupted freeze is rejected by --check-frozen. Root
+        # identities and packaged identities must always describe the same tree.
+        for folder in (out, ROOT):
+            for relative, data in generated.items():
+                atomic_bytes(folder/relative, data)
+        check_frozen(ROOT)
+    finally:
+        temporary.unlink(missing_ok=True)
     print(json.dumps({'version':version, 'source_id':identity, 'source_files':len(files),
                       'archive':name, 'archive_sha256':sha((out/name).read_bytes()),
                       'scope':'Canonical LF-normalized UTF-8 source bytes plus exact binary assets, including untracked allowlisted source; not a Git commit or authorship assertion'},indent=2))

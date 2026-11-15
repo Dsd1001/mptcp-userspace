@@ -11,7 +11,7 @@ VERSION=$(cat "$ROOT/macos/VERSION")
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 OUT="$ROOT/dist/userspace-$VERSION"
 mkdir -p "$OUT"
-SOURCE_ID=$(python3 "$ROOT/scripts/source-manifest.py" --id)
+SOURCE_ID=$(python3 "$ROOT/scripts/source-manifest.py" --check-frozen)
 FLAGS="-s -w -buildid= -X mptcp-desktop/engine/multipath.SourceID=$SOURCE_ID"
 
 build_one() {
@@ -39,6 +39,6 @@ build_one() {
 
 build_one amd64
 build_one arm64
-[[ $(python3 "$ROOT/scripts/source-manifest.py" --id) == "$SOURCE_ID" ]]
+[[ $(python3 "$ROOT/scripts/source-manifest.py" --check-frozen) == "$SOURCE_ID" ]]
 cat "$OUT/mptcp-landing.sha256"
 cat "$OUT/mptcp-landing-linux-arm64.sha256"

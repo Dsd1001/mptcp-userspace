@@ -1,0 +1,8 @@
+ok  	mptcp-desktop/engine	6.267s
+ok  	mptcp-desktop/engine/cmd/mptcp-landing	2.474s
+ok  	mptcp-desktop/engine/multipath	25.627s
+ok  	mptcp-desktop/engine/tunnelconfig	0.184s
+ok  	mptcp-desktop/engine	11.569s
+ok  	mptcp-desktop/engine/cmd/mptcp-landing	3.659s
+ok  	mptcp-desktop/engine/multipath	27.925s
+ok  	mptcp-desktop/engine/tunnelconfig	1.177s

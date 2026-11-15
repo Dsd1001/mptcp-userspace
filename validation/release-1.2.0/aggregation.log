@@ -1,0 +1,28 @@
+=== RUN   TestRoutedControlledAggregation
+=== RUN   TestRoutedControlledAggregation/paths_1
+    routed_performance_test.go:58: ROUTED_MEASUREMENT paths=1 payload_bytes=8388608 elapsed_seconds=4.069341 goodput_mbps=16.491 per_path_limit_mibps=2 scope=single-stream-loopback-echo
+=== RUN   TestRoutedControlledAggregation/paths_2
+    routed_performance_test.go:58: ROUTED_MEASUREMENT paths=2 payload_bytes=8388608 elapsed_seconds=2.284758 goodput_mbps=29.372 per_path_limit_mibps=2 scope=single-stream-loopback-echo
+=== RUN   TestRoutedControlledAggregation/paths_6
+    routed_performance_test.go:58: ROUTED_MEASUREMENT paths=6 payload_bytes=8388608 elapsed_seconds=0.882039 goodput_mbps=76.084 per_path_limit_mibps=2 scope=single-stream-loopback-echo
+=== NAME  TestRoutedControlledAggregation
+    routed_performance_test.go:65: ROUTED_SPEEDUP two_paths=1.781x six_paths=4.614x
+--- PASS: TestRoutedControlledAggregation (8.56s)
+    --- PASS: TestRoutedControlledAggregation/paths_1 (4.72s)
+    --- PASS: TestRoutedControlledAggregation/paths_2 (2.74s)
+    --- PASS: TestRoutedControlledAggregation/paths_6 (1.11s)
+=== RUN   TestRoutedControlledAggregation
+=== RUN   TestRoutedControlledAggregation/paths_1
+    routed_performance_test.go:58: ROUTED_MEASUREMENT paths=1 payload_bytes=8388608 elapsed_seconds=4.055788 goodput_mbps=16.546 per_path_limit_mibps=2 scope=single-stream-loopback-echo
+=== RUN   TestRoutedControlledAggregation/paths_2
+    routed_performance_test.go:58: ROUTED_MEASUREMENT paths=2 payload_bytes=8388608 elapsed_seconds=2.252692 goodput_mbps=29.791 per_path_limit_mibps=2 scope=single-stream-loopback-echo
+=== RUN   TestRoutedControlledAggregation/paths_6
+    routed_performance_test.go:58: ROUTED_MEASUREMENT paths=6 payload_bytes=8388608 elapsed_seconds=0.873080 goodput_mbps=76.865 per_path_limit_mibps=2 scope=single-stream-loopback-echo
+=== NAME  TestRoutedControlledAggregation
+    routed_performance_test.go:65: ROUTED_SPEEDUP two_paths=1.800x six_paths=4.645x
+--- PASS: TestRoutedControlledAggregation (8.61s)
+    --- PASS: TestRoutedControlledAggregation/paths_1 (4.81s)
+    --- PASS: TestRoutedControlledAggregation/paths_2 (2.72s)
+    --- PASS: TestRoutedControlledAggregation/paths_6 (1.09s)
+PASS
+ok  	mptcp-desktop/engine/multipath	17.309s

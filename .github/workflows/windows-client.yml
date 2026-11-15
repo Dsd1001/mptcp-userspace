@@ -12,7 +12,7 @@ on:
       - "docs/**"
       - "README*"
       - ".dockerignore"
-      - "macos/engine/**"
+      - "macos/**"
       - "scripts/source-manifest.py"
       - ".github/workflows/windows-client.yml"
   push:
@@ -25,7 +25,7 @@ on:
       - "docs/**"
       - "README*"
       - ".dockerignore"
-      - "macos/engine/**"
+      - "macos/**"
       - "scripts/source-manifest.py"
       - ".github/workflows/windows-client.yml"
 
@@ -42,13 +42,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
-          cache-dependency-path: |
-            windows/go.sum
-            macos/engine/go.sum
+          cache-dependency-path: windows/go.sum
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+
+      - name: Freeze and record source identity
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force validation/current-windows | Out-Null
+          python scripts/source-manifest.py --freeze | Tee-Object validation/current-windows/source.json
+          if ($LASTEXITCODE -ne 0) { throw "Source freeze failed" }
+          git rev-parse HEAD | Out-File validation/current-windows/COMMIT -Encoding ascii
 
       - name: Install NSIS
         shell: powershell
@@ -57,25 +63,35 @@ jobs:
       - name: Test shared MPX engine on Windows
         working-directory: macos/engine
         shell: powershell
-        run: go test . -count=1
+        run: |
+          go test . ./multipath ./tunnelconfig -count=1 -timeout=240s | Tee-Object ../../validation/current-windows/engine-tests.log
+          if ($LASTEXITCODE -ne 0) { throw "Native Windows engine tests failed" }
 
       - name: Test Windows Desk
         working-directory: windows
         shell: powershell
-        run: go test . -count=1
+        run: |
+          go test . -count=1 -timeout=120s | Tee-Object ../validation/current-windows/client-tests.log
+          if ($LASTEXITCODE -ne 0) { throw "Native Windows client tests failed" }
 
       - name: Test cross-platform Source-ID canonicalization
         shell: powershell
-        run: python -m unittest tests/userspace/source_manifest_test.py
+        run: |
+          python -m unittest tests/userspace/source_manifest_test.py
+          if ($LASTEXITCODE -ne 0) { throw "Source manifest tests failed" }
 
       - name: Check frontend JavaScript syntax
         shell: powershell
-        run: node --check windows/frontend/dist/app.js
+        run: |
+          node --check windows/frontend/dist/app.js
           if ($LASTEXITCODE -ne 0) { throw "Frontend syntax failed" }
 
       - name: Build Windows Desk, engine, portable ZIP and installer
         shell: powershell
-        run: ./windows/build.ps1
+        run: |
+          ./windows/build.ps1
+          python scripts/source-manifest.py --check-frozen
+          if ($LASTEXITCODE -ne 0) { throw "Source identity changed during Windows build" }
 
       - name: Silent-install smoke test
         shell: powershell
@@ -92,6 +108,20 @@ jobs:
           if (-not (Test-Path (Join-Path $installDir "mptcp-engine.exe"))) { throw "Engine was not installed" }
           & (Join-Path $installDir "mptcp-engine.exe") version
           if ($LASTEXITCODE -ne 0) { throw "Installed engine version command failed" }
+          $gui = Start-Process -FilePath (Join-Path $installDir "MPTCP-Desk-Windows.exe") -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 100; $i++) {
+              Start-Sleep -Milliseconds 200
+              $gui.Refresh()
+              if ($gui.HasExited) { throw "Installed GUI exited early" }
+              if ($gui.MainWindowHandle -ne 0 -and $gui.Responding) { $ready = $true; break }
+            }
+            if (-not $ready) { throw "Installed GUI did not expose a responsive native window" }
+            @{ passed = $true; version = $version; source_id = (Get-Content SOURCE_ID -Raw).Trim(); native_window = $true } | ConvertTo-Json | Out-File validation/current-windows/installer-gui.json -Encoding utf8
+          } finally {
+            if (-not $gui.HasExited) { Stop-Process -Id $gui.Id -Force }
+          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -99,6 +129,9 @@ jobs:
           name: mptcp-desk-windows
           if-no-files-found: error
           path: |
+            validation/current-windows
+            SOURCE_ID
+            SOURCE_SHA256SUMS
             windows/build/bin/MPTCP-Desk-Windows.exe
             windows/build/bin/mptcp-engine.exe
             windows/build/bin/MPTCP-Desk-Windows.BUILDINFO
