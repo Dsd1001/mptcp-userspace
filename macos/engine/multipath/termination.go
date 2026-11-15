@@ -263,6 +263,15 @@ func (s *Session) handleFinalLocked(c *carrier, f frame) error {
 		return err
 	}
 	st.hasFIN, st.rxFIN = true, f.offset
+	// FIN may overtake DATA and charge holes without allocating pages. Apply
+	// the same local route budget to that new commitment; otherwise final
+	// metadata could pin another route's protected receive headroom.
+	if !st.receiveStopped && !st.closed {
+		if err := st.checkRouteReceiveLocked(0); err != nil {
+			s.resetLocked(st, mpx4ErrResourceLimit, true)
+			st.err = err
+		}
+	}
 	if st.receiveStopped || st.closed {
 		st.discardReceiveLocked()
 	} else if st.rxRead == st.rxFIN {

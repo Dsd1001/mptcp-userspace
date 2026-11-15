@@ -61,18 +61,22 @@ type clientUOTFlow struct {
 // Carriers. A failed association discards pending datagrams; none is replayed
 // into a replacement Stream or Session.
 type UOTClient struct {
-	session                 *Session
-	ctx                     context.Context
-	cancel                  context.CancelFunc
-	listener                *net.UDPConn
-	mu                      sync.Mutex
-	flows                   map[netip.AddrPort]*clientUOTFlow
-	queuedBytes             int
-	sent, received, dropped uint64
-	err                     error
-	wg                      sync.WaitGroup
-	stopOnce                sync.Once
-	done                    chan struct{}
+	sentBytes, receivedBytes uint64
+	externalInput            bool
+	routeID                  uint32
+	maxFlows                 int
+	session                  *Session
+	ctx                      context.Context
+	cancel                   context.CancelFunc
+	listener                 *net.UDPConn
+	mu                       sync.Mutex
+	flows                    map[netip.AddrPort]*clientUOTFlow
+	queuedBytes              int
+	sent, received, dropped  uint64
+	err                      error
+	wg                       sync.WaitGroup
+	stopOnce                 sync.Once
+	done                     chan struct{}
 }
 
 func StartClientUOT(s *Session, listen string) (*UOTClient, error) {
@@ -105,8 +109,15 @@ func StartClientUOT(s *Session, listen string) (*UOTClient, error) {
 func (u *UOTClient) Addr() net.Addr        { return u.listener.LocalAddr() }
 func (u *UOTClient) Done() <-chan struct{} { return u.done }
 func (u *UOTClient) Err() error            { u.mu.Lock(); defer u.mu.Unlock(); return u.err }
-func (u *UOTClient) stop()                 { u.stopOnce.Do(func() { u.cancel(); u.listener.Close() }) }
-func (u *UOTClient) Close() error          { u.stop(); <-u.done; return nil }
+func (u *UOTClient) stop() {
+	u.stopOnce.Do(func() {
+		u.cancel()
+		if !u.externalInput {
+			u.listener.Close()
+		}
+	})
+}
+func (u *UOTClient) Close() error { u.stop(); <-u.done; return nil }
 func (u *UOTClient) Snapshot() UDPStats {
 	paths := u.session.Snapshot().Paths
 	u.mu.Lock()
@@ -145,9 +156,19 @@ func (u *UOTClient) enqueue(address netip.AddrPort, packet []byte) {
 	}
 	flow := u.flows[address]
 	if flow == nil {
-		if len(u.flows) >= udpFlowsMax {
+		if len(u.flows) >= u.flowLimit() {
 			u.dropped++
 			return
+		}
+		if u.routeID != 0 {
+			u.session.mu.Lock()
+			if u.session.closed || u.session.uotClientFlows >= MaxStreams/2 {
+				u.session.mu.Unlock()
+				u.dropped++
+				return
+			}
+			u.session.uotClientFlows++
+			u.session.mu.Unlock()
 		}
 		ctx, cancel := context.WithCancel(u.ctx)
 		flow = &clientUOTFlow{address: address, ctx: ctx, cancel: cancel, packets: make(chan []byte, uotQueuePackets)}
@@ -157,6 +178,10 @@ func (u *UOTClient) enqueue(address netip.AddrPort, packet []byte) {
 		go u.runFlow(flow)
 	}
 	if flow.ctx.Err() != nil || len(flow.packets) >= uotQueuePackets {
+		u.dropped++
+		return
+	}
+	if !u.reserveSessionQueueLocked(cost) {
 		u.dropped++
 		return
 	}
@@ -173,17 +198,29 @@ func (u *UOTClient) runFlow(flow *clientUOTFlow) {
 		u.mu.Lock()
 		defer u.mu.Unlock()
 		delete(u.flows, flow.address)
+		if u.routeID != 0 {
+			u.session.mu.Lock()
+			u.session.uotClientFlows--
+			u.session.mu.Unlock()
+		}
 		for {
 			select {
 			case packet := <-flow.packets:
 				u.queuedBytes -= len(packet) + 2
+				u.releaseSessionQueueLocked(len(packet) + 2)
 				u.dropped++
 			default:
 				return
 			}
 		}
 	}()
-	st, err := u.session.openProductService(flow.ctx, productServiceUOT)
+	var st *Stream
+	var err error
+	if u.routeID != 0 {
+		st, err = u.session.OpenRoutedUOT(flow.ctx, u.routeID)
+	} else {
+		st, err = u.session.openProductService(flow.ctx, productServiceUOT)
+	}
 	if err != nil {
 		return
 	}
@@ -210,6 +247,7 @@ func (u *UOTClient) runFlow(flow *clientUOTFlow) {
 				u.dropped++
 			} else {
 				u.received++
+				u.receivedBytes += uint64(len(packet))
 			}
 			u.mu.Unlock()
 		}
@@ -224,10 +262,12 @@ func (u *UOTClient) runFlow(flow *clientUOTFlow) {
 			err = writeUOTDatagram(st, packet)
 			u.mu.Lock()
 			u.queuedBytes -= len(packet) + 2
+			u.releaseSessionQueueLocked(len(packet) + 2)
 			if err != nil {
 				u.dropped++
 			} else {
 				u.sent++
+				u.sentBytes += uint64(len(packet))
 			}
 			u.mu.Unlock()
 			if err != nil {
@@ -321,4 +361,92 @@ func serveUOTBackend(parent context.Context, st *Stream, conn *net.UDPConn) {
 			}
 		}
 	}
+}
+
+// StartRoutedClientUOT attaches one UDP inlet to an existing shared Session.
+// It does not open native UDP Relay paths or another MPX Session. The caller
+// transfers ownership of an already-bound socket, allowing atomic inlet bind.
+func StartRoutedClientUOT(s *Session, listener *net.UDPConn, routeID uint32, maxFlows int) (*UOTClient, error) {
+	return startRoutedClientUOT(s, listener, routeID, maxFlows, false)
+}
+
+// AttachRoutedClientUOT leaves the bound socket owned by the inlet runtime.
+// That runtime keeps reading during reconnection, dropping rather than
+// replaying stale datagrams into a replacement Session.
+func AttachRoutedClientUOT(s *Session, listener *net.UDPConn, routeID uint32, maxFlows int) (*UOTClient, error) {
+	return startRoutedClientUOT(s, listener, routeID, maxFlows, true)
+}
+func startRoutedClientUOT(s *Session, listener *net.UDPConn, routeID uint32, maxFlows int, external bool) (*UOTClient, error) {
+	if listener == nil {
+		return nil, errors.New("missing UDP inlet")
+	}
+	s.mu.Lock()
+	allowed := !s.closed && !s.server && s.productMux && s.routeGroups[routeID] != nil && routeID != 0
+	s.mu.Unlock()
+	if !allowed {
+		return nil, ErrRouteNotFound
+	}
+	if maxFlows <= 0 {
+		maxFlows = 512
+	}
+	if maxFlows > MaxStreams {
+		return nil, errors.New("UoT flow limit exceeds Session stream limit")
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	u := &UOTClient{externalInput: external, session: s, ctx: ctx, cancel: cancel, listener: listener, routeID: routeID, maxFlows: maxFlows,
+		flows: make(map[netip.AddrPort]*clientUOTFlow), done: make(chan struct{})}
+	u.wg.Add(1)
+	if !external {
+		u.wg.Add(1)
+		go u.readLocal()
+	}
+	go u.monitor()
+	go func() { u.wg.Wait(); close(u.done) }()
+	return u, nil
+}
+func (u *UOTClient) flowLimit() int {
+	if u.maxFlows > 0 {
+		return u.maxFlows
+	}
+	return udpFlowsMax
+}
+
+func (u *UOTClient) ReceiveDatagram(address netip.AddrPort, packet []byte) {
+	u.enqueue(address, packet)
+}
+
+// The route client already holds u.mu; no Session path acquires u.mu while
+// holding Session.mu. Frame bytes (including empty datagrams) count once.
+func (u *UOTClient) reserveSessionQueueLocked(cost int) bool {
+	if u.routeID == 0 {
+		return true
+	}
+	if u.queuedBytes+cost > 2<<20 {
+		return false
+	}
+	s := u.session
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.uotQueuedBytes+cost > uotQueueBytes {
+		return false
+	}
+	s.uotQueuedBytes += cost
+	return true
+}
+func (u *UOTClient) releaseSessionQueueLocked(cost int) {
+	if u.routeID == 0 {
+		return
+	}
+	s := u.session
+	s.mu.Lock()
+	s.uotQueuedBytes -= cost
+	s.mu.Unlock()
+}
+
+// PayloadSnapshot avoids recursively scanning the entire Session for each
+// inlet. Existing Snapshot() keeps legacy datagram counters for core tests.
+func (u *UOTClient) PayloadSnapshot() (connections int, sent, received, dropped uint64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.flows), u.sentBytes, u.receivedBytes, u.dropped
 }

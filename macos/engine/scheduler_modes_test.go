@@ -56,7 +56,7 @@ func TestSchedulerConfigCompatibility(t *testing.T) {
 	}
 }
 
-// A real child invokes the production main/readConfig/runClient path. The
+// A real child invokes the production tunnel-only main/config/runtime path. The
 // synthetic key only enters stdin; no Keychain or user profile is accessed.
 func TestSchedulerProcessHelper(t *testing.T) {
 	if os.Getenv("MPX_SCHEDULER_CHILD") != "1" {
@@ -92,7 +92,7 @@ func TestSchedulerModesThroughActualStdin(t *testing.T) {
 				}
 			}()
 			key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-			server, err := multipath.NewServerWithScheduler(ctx, key, backend.Addr().String(), 2, multipath.SchedulerMode(mode))
+			server, err := multipath.NewRoutedServerWithScheduler(ctx, key, []multipath.TCPRoute{{ID: 1, Backend: backend.Addr().String()}}, 2, multipath.SchedulerMode(mode))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -137,7 +137,7 @@ func TestSchedulerModesThroughActualStdin(t *testing.T) {
 					relays[i].UploadMbps = &up
 				}
 			}
-			config := Config{SchemaVersion: 3, Mode: "userspace_multipath", SchedulerMode: &mode, ListenPort: port, TransportKey: key, Relays: relays}
+			config := SharedTunnelConfig{SchemaVersion: 1, Kind: sharedTunnelKind, Tunnel: SharedTunnelTransport{SchedulerMode: mode, TransportKey: key, Relays: relays}, Inlets: []SharedTunnelInlet{{ID: "test", ListenPort: port, RouteID: 1}}}
 			input, _ := json.Marshal(config)
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSchedulerProcessHelper$")
 			cmd.Env = append(os.Environ(), "MPX_SCHEDULER_CHILD=1")

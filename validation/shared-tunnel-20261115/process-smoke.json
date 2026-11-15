@@ -1,0 +1,40 @@
+{
+  "scope": "compiled processes on loopback, not WAN",
+  "platform": "macOS-27.3-arm64-arm-64bit",
+  "source_id": "shared-tunnel-experimental-20261115",
+  "sessions": 1,
+  "carriers": 6,
+  "relay_accept_counts": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "transfers": [
+    {
+      "route_id": 1,
+      "verified_bytes": 1048576,
+      "sha256": "eedf1c072623792fa3cee13b3d82360a1bbb6fb673e70c485ab5fa06c94cf51e"
+    },
+    {
+      "route_id": 2,
+      "verified_bytes": 1048576,
+      "sha256": "c7ee2e1287dcbac0c9d61044b6c6635700649240057b22f91e157f2e26723992"
+    },
+    {
+      "route_id": 3,
+      "verified_bytes": 1048576,
+      "sha256": "19b73741007b0c05f056e33525e3dd8dce02eb75d6156b6207843cc5f47e55f2"
+    }
+  ],
+  "client_sha256": "c6f99424b6eab61fe5fa788f5751fe3724652c9c03da6985c3318d48629d6e7f",
+  "egress_sha256": "b99424ce6f8365183b87633e867611bfbe87e5c9b543ff8fb2971c22fdef1f5e",
+  "validate_exit": 0,
+  "shutdown_exit_codes": [
+    0,
+    0
+  ],
+  "passed": true
+}

@@ -17,6 +17,9 @@ STABLE_LOCAL_IDENTITY='MPTCP Desk Stable Local Code Signing'
 STABLE_LOCAL_CERT="$ROOT/macos/signing/MPTCP-Desk-Stable-Local-Code-Signing.crt"
 CODESIGN_IDENTITY=${MPTCP_CODESIGN_IDENTITY:-$STABLE_LOCAL_IDENTITY}
 CODESIGN_STYLE=${MPTCP_CODESIGN_STYLE:-local}
+# Explicit keychain support avoids changing HOME or global keychain search lists
+# in isolated build environments. No private key is exported by this script.
+CODESIGN_KEYCHAIN=${MPTCP_CODESIGN_KEYCHAIN:-}
 NOTARY_PROFILE=${MPTCP_NOTARY_PROFILE:-}
 PROTOCOL_RELEASE=protocol-v4.0.0
 PROTOCOL_SOURCE=44f587fd279ed2238b070dd68114c76822353f4d
@@ -37,14 +40,16 @@ case "$CODESIGN_STYLE" in
     *) echo "Unsupported MPTCP_CODESIGN_STYLE: $CODESIGN_STYLE" >&2; exit 1 ;;
 esac
 if [[ "$CODESIGN_STYLE" == local ]]; then
+    CODESIGN_KEYCHAIN=${CODESIGN_KEYCHAIN:-"$HOME/Library/Keychains/login.keychain-db"}
+    [[ -f "$CODESIGN_KEYCHAIN" ]] || { echo 'Set MPTCP_CODESIGN_KEYCHAIN to the existing signing keychain' >&2; exit 1; }
     [[ "$CODESIGN_IDENTITY" == "$STABLE_LOCAL_IDENTITY" ]] || { echo "local signing must use $STABLE_LOCAL_IDENTITY" >&2; exit 1; }
     [[ -f "$STABLE_LOCAL_CERT" ]] || { echo "Pinned local signing certificate missing: $STABLE_LOCAL_CERT" >&2; exit 1; }
     pinned_sha256=$(openssl x509 -in "$STABLE_LOCAL_CERT" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d :)
-    keychain_pem=$(security find-certificate -p -c "$STABLE_LOCAL_IDENTITY" "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true)
+    keychain_pem=$(security find-certificate -p -c "$STABLE_LOCAL_IDENTITY" "$CODESIGN_KEYCHAIN" 2>/dev/null || true)
     [[ -n "$keychain_pem" ]] || { echo "Stable local signing identity is not installed in the login Keychain" >&2; exit 1; }
     keychain_sha256=$(printf '%s\n' "$keychain_pem" | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d :)
     [[ "$keychain_sha256" == "$pinned_sha256" ]] || { echo "Stable local signing certificate fingerprint differs from repository pin" >&2; exit 1; }
-    security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" | grep -F "$STABLE_LOCAL_IDENTITY" >/dev/null || {
+    security find-identity -v -p codesigning "$CODESIGN_KEYCHAIN" | grep -F "$STABLE_LOCAL_IDENTITY" >/dev/null || {
         echo "Stable local signing certificate exists but is not trusted/usable for code signing." >&2
         echo "Open Keychain Access, trust this certificate for Code Signing, then retry." >&2
         exit 1
@@ -57,11 +62,17 @@ fi
 
 sign_target() {
     local target="$1"
+    shift
+    local args=(--force)
+    if [[ $# -gt 0 ]]; then args+=("$@"); fi
     case "$CODESIGN_STYLE" in
-        adhoc) codesign --force --sign - "$target" ;;
-        local) codesign --force --sign "$CODESIGN_IDENTITY" "$target" ;;
-        developer-id) codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$target" ;;
+        adhoc) args+=(--sign -) ;;
+        local|developer-id)
+            if [[ -n "$CODESIGN_KEYCHAIN" ]]; then args+=(--keychain "$CODESIGN_KEYCHAIN"); fi
+            if [[ "$CODESIGN_STYLE" == developer-id ]]; then args+=(--options runtime --timestamp); fi
+            args+=(--sign "$CODESIGN_IDENTITY") ;;
     esac
+    codesign "${args[@]}" "$target"
 }
 mkdir -p "$BUILD/vendor"
 if [[ ! -f "$SPARKLE_ARCHIVE" ]]; then
@@ -78,7 +89,7 @@ PLIST_VERSION=$(plutil -extract CFBundleShortVersionString raw -o - "$ROOT/macos
 [[ "$PLIST_VERSION" == "$VERSION" ]] || { printf 'Info.plist version %s does not match VERSION %s\n' "$PLIST_VERSION" "$VERSION" >&2; exit 1; }
 OUT="$ROOT/dist/userspace-$VERSION"
 mkdir -p "$BUILD" "$OUT"
-SOURCE_ID=$(python3 "$ROOT/scripts/source-manifest.py" --id)
+SOURCE_ID=$(python3 "$ROOT/scripts/source-manifest.py" --check-frozen)
 SDK=$(xcrun --sdk macosx --show-sdk-path)
 FLAGS="-s -w -buildid= -X mptcp-desktop/engine/multipath.SourceID=$SOURCE_ID"
 for arch in arm64 amd64; do
@@ -86,7 +97,7 @@ for arch in arm64 amd64; do
     [[ $arch != amd64 ]] || swift_arch=x86_64
     xcrun swiftc -O -swift-version 5 -parse-as-library -target "$swift_arch-apple-macosx13.0" \
         -module-cache-path /tmp/mptcp-swift-cache -debug-prefix-map "$ROOT"=. \
-        -F "$SPARKLE_VENDOR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks         "$ROOT/macos/Lifecycle.swift" "$ROOT/macos/Profile.swift" "$ROOT/macos/KeychainBrokerClient.swift" "$ROOT/macos/RemoteControl.swift" "$ROOT/macos/UpdateController.swift" "$ROOT/macos/App.swift" -o "$BUILD/MPTCPDesk-$arch"
+        -F "$SPARKLE_VENDOR" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks         "$ROOT/macos/Lifecycle.swift" "$ROOT/macos/Profile.swift" "$ROOT/macos/TunnelProfile.swift" "$ROOT/macos/TunnelView.swift" "$ROOT/macos/KeychainBrokerClient.swift" "$ROOT/macos/RemoteControl.swift" "$ROOT/macos/UpdateController.swift" "$ROOT/macos/App.swift" -o "$BUILD/MPTCPDesk-$arch"
     (
         cd "$ROOT/macos/engine"
         CGO_ENABLED=1 GOOS=darwin GOARCH=$arch CC="clang -arch $swift_arch -isysroot $SDK -mmacosx-version-min=13.0" \
@@ -111,24 +122,29 @@ cp "$BROKER_RESOURCE" "$APP/Contents/Resources/MPTCPKeychainBroker.v1.b64"
 xcrun swiftc "$ROOT/macos/Icon.swift" -module-cache-path /tmp/mptcp-swift-cache -o "$BUILD/icon-generator"
 "$BUILD/icon-generator" "$APPROOT/AppIcon.iconset"
 iconutil -c icns "$APPROOT/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
-for name in README.zh-CN.md VALIDATION.md tcp-profile.example.json userspace-profile.example.json; do
+for name in README.zh-CN.md VALIDATION.md tunnel.example.json; do
     cp "$ROOT/macos/$name" "$APP/Contents/Resources/$name"
     cp "$ROOT/macos/$name" "$STAGE/$name"
 done
 mkdir -p "$APP/Contents/Resources/docs/userspace" "$STAGE/docs/userspace"
-for name in DEPLOYMENT.zh-CN.md PROTOCOL.md PROVISIONING.md VALIDATION.md ADAPTIVE-FLOW-CONTROL.md MPX3-CREDIT.md SCHEDULER-MODES.md REV2-SHARED-CREDIT.md; do
+for name in SHARED-TUNNEL-1.2.2.zh-CN.md RELEASE-1.2.2.zh-CN.md PROTOCOL.md PROVISIONING.md; do
     cp "$ROOT/docs/userspace/$name" "$APP/Contents/Resources/docs/userspace/"
     cp "$ROOT/docs/userspace/$name" "$STAGE/docs/userspace/"
 done
 mkdir -p "$APP/Contents/Resources/Licenses"
 mv "$APP/Contents/Resources/Licenses-sparkle.tmp" "$APP/Contents/Resources/Licenses/sparkle.txt"
-cp -f "$("$GO" env GOROOT)/LICENSE" "$APP/Contents/Resources/Licenses/go.txt"
+# The upstream Go distribution keeps LICENSE in GOROOT. Homebrew keeps it
+# beside libexec instead. Never omit a third-party notice merely because a
+# package manager uses a different layout.
+GO_ROOT=$("$GO" env GOROOT)
+GO_LICENSE="$GO_ROOT/LICENSE"
+if [[ ! -f "$GO_LICENSE" ]]; then
+    GO_LICENSE="$(dirname "$GO_ROOT")/LICENSE"
+fi
+[[ -f "$GO_LICENSE" ]] || { echo "Go license notice not found; packaging aborted" >&2; exit 1; }
+cp -f "$GO_LICENSE" "$APP/Contents/Resources/Licenses/go.txt"
 sign_target "$APP/Contents/Resources/mptcp-desktop-engine"
-case "$CODESIGN_STYLE" in
-    adhoc) codesign --force --deep --sign - "$APP" ;;
-    local) codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP" ;;
-    developer-id) codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP" ;;
-esac
+sign_target "$APP" --deep
 codesign --verify --deep --strict "$APP"
 DESIGNATED_REQUIREMENT=$(codesign -d -r- "$APP" 2>&1 | sed -n -E 's/^#?[[:space:]]*designated => //p')
 [[ -n "$DESIGNATED_REQUIREMENT" ]] || { echo 'Unable to read App designated requirement' >&2; exit 1; }
@@ -148,6 +164,8 @@ done
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 printf '%s\n' "$SOURCE_ID" > "$STAGE/SOURCE_ID"
+python3 "$ROOT/scripts/source-manifest.py" --check-frozen >/dev/null
+[[ "$(cat "$ROOT/SOURCE_ID")" == "$SOURCE_ID" ]] || { echo "Source identity changed during build; refusing release packaging" >&2; exit 1; }
 hdiutil create -ov -volname 'MPTCP Desk' -srcfolder "$STAGE" -format UDZO "$OUT/MPTCP-Desk-$VERSION-universal.dmg"
 hdiutil verify "$OUT/MPTCP-Desk-$VERSION-universal.dmg"
 if [[ -n "$NOTARY_PROFILE" ]]; then
@@ -155,7 +173,7 @@ if [[ -n "$NOTARY_PROFILE" ]]; then
     xcrun stapler staple "$OUT/MPTCP-Desk-$VERSION-universal.dmg"
     xcrun stapler validate "$OUT/MPTCP-Desk-$VERSION-universal.dmg"
 fi
-[[ $(python3 "$ROOT/scripts/source-manifest.py" --id) == "$SOURCE_ID" ]]
+[[ $(python3 "$ROOT/scripts/source-manifest.py" --check-frozen) == "$SOURCE_ID" ]]
 {
     case "$CODESIGN_STYLE" in
         adhoc) signing='ad-hoc, not notarized' ;;

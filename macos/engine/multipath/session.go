@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,52 +46,61 @@ type PathStats struct {
 }
 
 type Stats struct {
+	Routes []RouteStats `json:"routes,omitempty"`
 	SchedulerStats
-	Paths               int            `json:"paths"`
-	Connections         int            `json:"connections"`
-	Sent                uint64         `json:"sent"`
-	Received            uint64         `json:"received"`
-	Retransmits         uint64         `json:"retransmits"`
-	WindowWaits         uint64         `json:"window_waits"`
-	ReorderBytes        int            `json:"reorder_bytes"`
-	ReorderPeak         int            `json:"reorder_peak"`
-	PendingBytes        int            `json:"pending_bytes"`
-	BufferedBytes       int            `json:"buffered_bytes"`
-	ReceiveAllocated    int            `json:"receive_allocated_bytes"`
-	PathStats           []PathStats    `json:"path_stats"`
-	ReceiveCredit       int            `json:"receive_credit_bytes"`
-	WindowTarget        int            `json:"max_stream_window_target"`
-	WarmTarget          int            `json:"max_stream_warm_target_bytes"`
-	StandbyWindow       int            `json:"standby_window_bytes"`
-	WindowSeed          int            `json:"window_seed_bytes"`
-	WindowSeedAgeMS     float64        `json:"window_seed_age_ms"`
-	CreditRTTMS         float64        `json:"credit_rtt_ms"`
-	CreditBaseRTTMS     float64        `json:"credit_base_rtt_ms"`
-	DemandStreams       int            `json:"active_demand_streams"`
-	BulkStreams         int            `json:"active_bulk_streams"`
-	BulkWindowFloor     int            `json:"bulk_window_floor_bytes"`
-	ReceivePressure     int            `json:"receive_pressure_percent"`
-	StreamAllowance     int            `json:"stream_allowance_bytes"`
-	SessionRefillTarget int            `json:"session_refill_target_bytes"`
-	ReadyFrames         int            `json:"ready_frames"`
-	Resources           ResourceStats  `json:"resources"`
-	Lifecycle           LifecycleStats `json:"lifecycle"`
+	Paths                   int            `json:"paths"`
+	Connections             int            `json:"connections"`
+	Sent                    uint64         `json:"sent"`
+	Received                uint64         `json:"received"`
+	Retransmits             uint64         `json:"retransmits"`
+	WindowWaits             uint64         `json:"window_waits"`
+	ReorderBytes            int            `json:"reorder_bytes"`
+	ReorderPeak             int            `json:"reorder_peak"`
+	PendingBytes            int            `json:"pending_bytes"`
+	BufferedBytes           int            `json:"buffered_bytes"`
+	ReceiveAllocated        int            `json:"receive_allocated_bytes"`
+	FirstDataPriorityFrames uint64         `json:"first_data_priority_frames"`
+	FirstDataFairFallbacks  uint64         `json:"first_data_fair_fallbacks"`
+	FirstDataTokens         int            `json:"first_data_tokens_bytes"`
+	FirstDataReady          int            `json:"first_data_ready_streams"`
+	PathStats               []PathStats    `json:"path_stats"`
+	ReceiveCredit           int            `json:"receive_credit_bytes"`
+	WindowTarget            int            `json:"max_stream_window_target"`
+	WarmTarget              int            `json:"max_stream_warm_target_bytes"`
+	StandbyWindow           int            `json:"standby_window_bytes"`
+	WindowSeed              int            `json:"window_seed_bytes"`
+	WindowSeedAgeMS         float64        `json:"window_seed_age_ms"`
+	CreditRTTMS             float64        `json:"credit_rtt_ms"`
+	CreditBaseRTTMS         float64        `json:"credit_base_rtt_ms"`
+	DemandStreams           int            `json:"active_demand_streams"`
+	BulkStreams             int            `json:"active_bulk_streams"`
+	BulkWindowFloor         int            `json:"bulk_window_floor_bytes"`
+	ReceivePressure         int            `json:"receive_pressure_percent"`
+	StreamAllowance         int            `json:"stream_allowance_bytes"`
+	SessionRefillTarget     int            `json:"session_refill_target_bytes"`
+	ReadyFrames             int            `json:"ready_frames"`
+	Resources               ResourceStats  `json:"resources"`
+	Lifecycle               LifecycleStats `json:"lifecycle"`
 }
 
 type outbound struct {
-	f               frame
-	ready           *list.Element
-	path            *carrier
-	generation      uint64
-	sentAt, created time.Time
-	cost            int
-	attempts        int
+	f                     frame
+	ready                 *list.Element
+	path                  *carrier
+	generation            uint64
+	sentAt, created       time.Time
+	cost                  int
+	attempts              int
+	firstDataTokenCharged bool
 }
 
 type dataReadyQueue struct {
-	stream uint64
-	frames list.List
-	entry  *list.Element
+	route      *routeGroup
+	routeEntry *list.Element
+	stream     uint64
+	frames     list.List
+	entry      *list.Element
+	fastEntry  *list.Element
 }
 
 type sendTask struct {
@@ -99,14 +109,17 @@ type sendTask struct {
 }
 
 type carrier struct {
-	generation                        uint64
-	scheduler                         schedulerPathState
-	id                                uint64
-	address                           string
-	conn                              *secureConn
-	active                            bool
-	done                              chan struct{}
-	queue                             chan sendTask
+	generation uint64
+	scheduler  schedulerPathState
+	id         uint64
+	address    string
+	conn       *secureConn
+	active     bool
+	done       chan struct{}
+	queue      chan sendTask
+	// At most two 32KiB first-DATA frames bypass the ordinary Carrier
+	// DATA queue. This is still owned by the existing single Socket writer.
+	priorityDATA                      chan sendTask
 	control                           chan frame
 	reliableControl                   chan sendTask
 	controlOutstanding, controlQueued int
@@ -134,11 +147,25 @@ type carrier struct {
 	penaltyUntil                      time.Time
 	sent, received, errors            uint64
 	lastError                         string
+	// Set only while this Carrier writer is inside writeFrames. Atomic read
+	// avoids taking Session.mu from the Socket I/O goroutine.
+	writeStartedNS atomic.Int64
+	// Weighted-only DATA flight controller; derived from base RTT and bounded
+	// delivered capacity. This never changes Aggregate's learned budget.
+	weightedAdaptiveBudget int
+	weightedAdaptiveAt     time.Time
 }
 
 // All stream, ledger and carrier accounting lives under one mutex. Network I/O
 // and backend I/O never hold it. Readers cannot block unrelated logical flows.
 type Session struct {
+	uotClientFlows                                   int
+	uotQueuedBytes                                   int
+	routeLogicalProtected, routePhysicalProtected    int
+	routeGroups                                      map[uint32]*routeGroup
+	routeReady                                       list.List
+	routeReadyWeight                                 int
+	pathSelection                                    PathSelectionStats
 	credit                                           connectionCredit
 	closing                                          map[uint64]*Stream
 	terminal                                         map[uint64]terminalStream
@@ -166,6 +193,10 @@ type Session struct {
 	ready                                            map[uint64]*dataReadyQueue
 	readyStreams                                     list.List
 	bulkReady                                        *dataReadyQueue
+	fastReady                                        list.List
+	firstDataTokens                                  int
+	firstDataTokensInitialized                       bool
+	firstDataPromoted, firstDataFairFallbacks        uint64
 	readyFrames, readyDataBytes, queueAdmissionLimit int
 	queueAdmissionWaiters                            int
 	receiveCredit, windowSeed                        int
@@ -205,6 +236,7 @@ type Session struct {
 	receiveGrowth                                    int
 	dataPendingFrames, controlPendingFrames          int
 	dataPendingBytes, controlPendingBytes            int
+	weightedHerdGuard                                bool
 	windowBlockedWriters                             int
 	pendingWaiters, creditWaiters, writerTurnWaiters int
 	bootstrapWriters                                 int
@@ -212,6 +244,24 @@ type Session struct {
 	dispatchRuns, dispatchFrames, dispatchNS         uint64
 	dispatchMaxNS, writerTurnScanSteps               uint64
 	localConnections                                 int
+}
+
+// maxDataPayloadLocked is the effective payload size for locally generated
+// DATA. A zero peer limit is retained for pre-handshake/unit-test Sessions and
+// means the local default. frameHeader conservatively bounds DATA's encoded
+// type, length, and stream fields so each chunk fits in one Secure Record.
+func (s *Session) maxDataPayloadLocked() int {
+	limit := uint64(MaxPayload)
+	if s.peerMaxFrame > 0 {
+		limit = min(limit, s.peerMaxFrame)
+	}
+	if s.peerMaxRecord > 0 {
+		if s.peerMaxRecord <= uint64(frameHeader) {
+			return 1
+		}
+		limit = min(limit, s.peerMaxRecord-uint64(frameHeader))
+	}
+	return max(1, int(limit))
 }
 
 func newSession(parent context.Context, id sessionID, server bool, onOpen func(*Stream), modes ...SchedulerMode) *Session {
@@ -394,12 +444,14 @@ func (s *Session) stop(err error) {
 	}
 	for _, st := range s.streams {
 		st.closed = true
+		st.pendingData = 0
 		s.closedStreams++
 		st.err = err
 		st.releaseReceiveLocked()
 	}
 	for _, st := range s.closing {
 		st.closed = true
+		st.pendingData = 0
 		st.err = err
 		st.releaseReceiveLocked()
 	}
@@ -412,6 +464,9 @@ func (s *Session) stop(err error) {
 	s.pending = make(map[uint64]*outbound)
 	s.ready = make(map[uint64]*dataReadyQueue)
 	s.readyStreams.Init()
+	s.fastReady.Init()
+	s.firstDataTokens = 0
+	s.firstDataTokensInitialized = false
 	s.bulkReady = nil
 	s.readyFrames = 0
 	s.controlReady.Init()
@@ -423,6 +478,16 @@ func (s *Session) stop(err error) {
 	s.pendingBytes = 0
 	s.bufferedBytes = 0
 	s.readyDataBytes = 0
+	s.routeReady.Init()
+	s.routeReadyWeight = 0
+	s.routeLogicalProtected, s.routePhysicalProtected = 0, 0
+	for _, r := range s.routeGroups {
+		r.ready.Init()
+		r.entry = nil
+		r.deficit = 0
+		r.readyBytes = 0
+		r.receiveUsed, r.receiveAllocated = 0, 0
+	}
 	s.wakeLocked()
 }
 
@@ -517,7 +582,7 @@ func (s *Session) addCarrier(id uint64, address string, conn *secureConn) error 
 		}
 		s.effectiveCarrierLimit = min(s.localMaxCarriers, s.peerMaxCarriers)
 	}
-	c := &carrier{id: id, generation: conn.generation, address: address, conn: conn, active: true, done: make(chan struct{}), queue: make(chan sendTask, carrierQueue), control: make(chan frame, 512), reliableControl: make(chan sendTask, controlCarrierQueue), rtt: 50 * time.Millisecond, goodput: 4 << 20, configuredRateBPS: conn.configuredRateBPS, sampleAt: time.Now()}
+	c := &carrier{id: id, generation: conn.generation, address: address, conn: conn, active: true, done: make(chan struct{}), queue: make(chan sendTask, carrierQueue), priorityDATA: make(chan sendTask, 2), control: make(chan frame, 512), reliableControl: make(chan sendTask, controlCarrierQueue), rtt: 50 * time.Millisecond, goodput: 4 << 20, configuredRateBPS: conn.configuredRateBPS, sampleAt: time.Now()}
 	c.scheduler.role = RoleLearning
 	c.scheduler.lastRoleReason = "awaiting_3_delivery_samples"
 	// Fill the bounded capacity history with the explicit startup prior, not
@@ -815,7 +880,7 @@ func (s *Session) controlLocked(c *carrier, f frame) bool {
 	// DATA backlog. Control has its own bounded queue, NOT the DATA flight gate.
 	now := time.Now()
 	var best *carrier
-	bestTier, bestScore := 4, 1e30
+	bestTier, bestScore := 8, 1e30
 	for _, p := range s.paths {
 		if p == c || !p.active || len(p.control) >= cap(p.control) {
 			continue
@@ -826,6 +891,11 @@ func (s *Session) controlLocked(c *carrier, f frame) bool {
 			if s.scheduler.effective != SchedulerProtect || p.scheduler.role == RoleActive {
 				tier = 0
 			}
+		}
+		// Only generic control may move. A directed ACK stays on the
+		// receiving Carrier for correct MPX delivery/RTT attribution.
+		if s.controlWriterStalled(p, now) {
+			tier += 4
 		}
 		rate := max(p.goodput, 65536)
 		debt := p.outstanding + p.controlOutstanding + 64*len(p.control)
@@ -882,6 +952,9 @@ func (s *Session) queueLocked(f frame) *outbound {
 	if f.kind == kindData {
 		s.dataPendingFrames++
 		s.dataPendingBytes += cost
+		if st := s.streamForCreditLocked(f.stream); st != nil {
+			st.pendingData++
+		}
 	} else {
 		s.controlPendingFrames++
 		s.controlPendingBytes += cost
@@ -905,10 +978,22 @@ func (s *Session) removePendingLocked(p *outbound) {
 	if s.readyDataBytes < readyBefore {
 		s.signalQueueAdmissionLocked(readyBefore - s.readyDataBytes)
 	}
+	// Refund only a token charged to DATA still waiting in a Socket queue.
+	// Never refund sent bytes on reset/reinjection; no reset-driven burst.
+	if p.firstDataTokenCharged {
+		if p.sentAt.IsZero() && s.scheduler.configured == SchedulerWeighted {
+			s.initFirstDataTokensLocked()
+			s.firstDataTokens = min(s.firstDataTokenCapLocked(), s.firstDataTokens+p.cost)
+		}
+		p.firstDataTokenCharged = false
+	}
 	s.pendingBytes -= p.cost
 	if p.f.kind == kindData {
 		s.dataPendingFrames--
 		s.dataPendingBytes -= p.cost
+		if st := s.streamForCreditLocked(p.f.stream); st != nil && st.pendingData > 0 {
+			st.pendingData--
+		}
 		s.signalPendingWriterLocked()
 	} else {
 		s.controlPendingFrames--
@@ -974,6 +1059,7 @@ func (s *Session) ackLocked(c *carrier, f frame) error {
 		if p.attempts == 1 {
 			c.observeDelivery(now, p, f.offset)
 			s.schedulerReceiptLocked(c, p, now)
+			s.firstDataOnReceiptLocked(p)
 		}
 	}
 	kind := p.f.kind
@@ -1271,8 +1357,25 @@ func (s *Session) accept(st *Stream) bool {
 }
 
 func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
+	// Independent of per-Carrier budgets: never allow the sum of all
+	// configured Weighted flights to grow beyond a bounded Session envelope.
+	// The 48 MiB cap still accommodates six 300ms-one-way paths at 92Mbps.
+	herdGuard := s.weightedHerdGuardLocked()
+	if s.scheduler.configured == SchedulerWeighted {
+		totalFlight := 0
+		for _, path := range s.paths {
+			if path.active {
+				totalFlight += path.outstanding
+			}
+		}
+		if totalFlight >= 48<<20 {
+			s.pathSelection.FlightBudget++
+			return nil
+		}
+	}
 	var best *carrier
 	bestScore, earliest := 1e30, 1e30
+	var roleBlocked, penaltyBlocked, budgetBlocked, queueBlocked, writerStallBlocked, activeCount int
 	healthy := false
 	for _, c := range s.paths {
 		if restricted && !s.schedulerPathEligibleLocked(c) {
@@ -1284,10 +1387,16 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		}
 	}
 	for _, c := range s.paths {
-		if restricted && !s.schedulerPathEligibleLocked(c) {
+		if !c.active {
 			continue
 		}
-		if !c.active || (healthy && now.Before(c.penaltyUntil)) {
+		activeCount++
+		if restricted && !s.schedulerPathEligibleLocked(c) {
+			roleBlocked++
+			continue
+		}
+		if healthy && now.Before(c.penaltyUntil) {
+			penaltyBlocked++
 			continue
 		}
 		rate := max(c.goodput, 65536)
@@ -1306,13 +1415,27 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		// budget. Filling a slow carrier's OS send buffer creates avoidable HOL.
 		budget := c.flightBudget()
 		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
-			budget = weightedFlightBudget(c, c.configuredRateBPS)
+			if herdGuard {
+				budget = weightedFlightBudget(c, c.configuredRateBPS)
+			} else {
+				budget = weightedAdaptiveFlightBudget(c, c.configuredRateBPS, now)
+			}
 		}
 		if c.outstanding >= budget {
 			c.budgetLimited = true
 			c.sampleBudgetLimited = true
+			budgetBlocked++
+		}
+		if len(c.queue) >= carrierQueue {
+			queueBlocked++
 		}
 		if len(c.queue) >= carrierQueue || c.outstanding >= budget {
+			continue
+		}
+		// A blocked Socket writer is not an available DATA path even when
+		// the application queue has spare slots. Control routing is unchanged.
+		if s.scheduler.configured == SchedulerWeighted && !herdGuard && s.controlWriterStalled(c, now) {
+			writerStallBlocked++
 			continue
 		}
 		if best == nil || score < bestScore || (score == bestScore && c.id < best.id) {
@@ -1320,12 +1443,35 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 			bestScore = score
 		}
 	}
-	// Waiting briefly for the earliest route can beat sending immediately over
-	// a high-delay path merely because another writer's tiny queue is full.
-	if best != nil && bestScore > earliest+.025 {
+	// Weighted DATA selection is work-conserving: only paths able to send
+	// DATA participate in cost ordering. Preserve legacy deferral semantics
+	// for the other scheduler modes.
+	if (s.scheduler.configured != SchedulerWeighted || (herdGuard && s.routeGroups == nil)) && best != nil && bestScore > earliest+.025 {
+		s.pathSelection.CostDeferral++
 		return nil
 	}
-	return best
+	if best != nil {
+		return best
+	}
+	// Attribute one dominant reason to each failed selection. This avoids
+	// counting multiple unavailable Carriers as multiple dispatch stalls.
+	switch {
+	case budgetBlocked > 0:
+		s.pathSelection.FlightBudget++
+	case queueBlocked > 0:
+		s.pathSelection.CarrierQueue++
+	case writerStallBlocked > 0:
+		s.pathSelection.WriterStall++
+	case roleBlocked > 0:
+		s.pathSelection.RoleRestricted++
+	case penaltyBlocked > 0:
+		s.pathSelection.Penalty++
+	case activeCount == 0:
+		s.pathSelection.NoActive++
+	default:
+		s.pathSelection.Other++
+	}
+	return nil
 }
 
 func (s *Session) sweepLocked(now time.Time) {
@@ -1435,6 +1581,10 @@ func (s *Session) Snapshot() Stats {
 	defer s.mu.Unlock()
 	out := Stats{Connections: len(s.streams), Sent: s.sent, Received: s.received, Retransmits: s.retransmits, WindowWaits: s.windowWaits, ReorderPeak: s.reorderPeak, PendingBytes: s.pendingBytes, BufferedBytes: s.bufferedBytes, ReceiveAllocated: s.receiveAllocated}
 	out.SchedulerStats = s.schedulerSnapshotLocked()
+	out.FirstDataPriorityFrames = s.firstDataPromoted
+	out.FirstDataFairFallbacks = s.firstDataFairFallbacks
+	out.FirstDataTokens = s.firstDataTokens
+	out.FirstDataReady = s.fastReady.Len()
 	out.ReceiveCredit = s.receiveCredit
 	now := time.Now()
 	out.WindowSeed = s.windowSeed
@@ -1452,6 +1602,7 @@ func (s *Session) Snapshot() Stats {
 	out.SessionRefillTarget = s.sessionRefillTargetLocked()
 	out.StandbyWindow = s.standbyWindowLocked()
 	out.Resources = s.resourceSnapshotLocked()
+	out.Routes = s.routeSnapshotLocked()
 	out.Lifecycle = s.lifecycleSnapshotLocked()
 	out.ReadyFrames = s.controlReady.Len() + s.readyFrames
 	for _, st := range s.streams {
@@ -1466,7 +1617,14 @@ func (s *Session) Snapshot() Stats {
 		measured, validSamples := schedulerMeasuredRate(c)
 		budget := c.flightBudget()
 		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
-			budget = weightedFlightBudget(c, c.configuredRateBPS)
+			if s.weightedHerdGuard {
+				budget = weightedFlightBudget(c, c.configuredRateBPS)
+			} else {
+				budget = c.weightedAdaptiveBudget
+				if budget <= 0 {
+					budget = weightedAdaptiveTargetBudget(c, c.configuredRateBPS, now)
+				}
+			}
 		}
 		out.PathStats = append(out.PathStats, PathStats{MeasuredDeliveryBPS: measured, ValidDeliverySamples: validSamples, Role: c.scheduler.role, RoleReason: c.scheduler.lastRoleReason, DeliverySamples: c.deliverySamples, SchedulerProbeCount: c.scheduler.probeCount, SchedulerProbeBytes: c.scheduler.probeBytes, SchedulerProbeDebtPeak: c.scheduler.probeDebtPeak, SchedulerDataACKs: c.scheduler.dataACKs, ID: int(c.id), Address: c.address, Connected: c.active, Sent: c.sent, Received: c.received, RTTMS: float64(c.rtt) / float64(time.Millisecond), GoodputBPS: c.goodput, ConfiguredRateBPS: c.configuredRateBPS, Outstanding: c.outstanding, Queue: c.queued, Errors: c.errors, LastError: c.lastError, Budget: budget, DialAttempts: c.dialAttempts, Connections: c.connects, ConnectedAt: c.connectedAt, DisconnectedAt: c.disconnectedAt, ControlOutstanding: c.controlOutstanding, ControlQueue: c.controlQueued + 64*len(c.control)})
 	}

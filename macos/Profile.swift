@@ -210,6 +210,8 @@ struct LifecycleMetric: Decodable {
     var events: [TransportEventMetric]?
 }
 struct EngineEvent: Decodable {
+    var routes: [TunnelRouteMetric]?
+    var inlets: [TunnelInletMetric]?
     var profile_id: String?
     var profile_name: String?
     var bundle_id: String?
@@ -358,6 +360,7 @@ struct RelayProvisioningBundlePayload: Codable {
 }
 
 enum RelayProvisioningDocument {
+    case tunnel(ManagedTunnelProfile)
     case profile(RelayProvisioningPayload)
     case bundle(RelayProvisioningBundlePayload)
 }
@@ -538,7 +541,7 @@ private extension Data {
 
 enum RelayProvisioningClient {
     static let maximumProfileResponseBytes = 64 * 1024
-    static let maximumResponseBytes = 512 * 1024
+    static let maximumResponseBytes = 128 * 1024
 
 
     private static func base64URLData(_ value: String) -> Data? {
@@ -549,7 +552,7 @@ enum RelayProvisioningClient {
     }
 
     private static func decryptEnvelope(_ data: Data, url: URL) throws -> Data {
-        guard let envelope = try? JSONDecoder().decode(RelayProvisioningEncryptedEnvelope.self, from: data) else { return data }
+        guard let envelope = try? JSONDecoder().decode(RelayProvisioningEncryptedEnvelope.self, from: data) else { throw ProfileError("1.2.0 需要经过认证加密的远端隧道配置") }
         guard envelope.v == 1 else { throw ProfileError("Provisioning 加密封装版本不受支持") }
         guard let token = url.pathComponents.last, token.count == 64, let tokenData = Data(hexString: token), tokenData.count == 32 else {
             throw ProfileError("Provisioning 加密响应需要有效的 API Secret")
@@ -576,7 +579,7 @@ enum RelayProvisioningClient {
         guard !value.isEmpty, var parts = URLComponents(string: value), let scheme = parts.scheme?.lowercased(), let host = parts.host?.lowercased() else {
             throw ProfileError("请输入有效的 Provisioning API URL")
         }
-        guard parts.user == nil, parts.password == nil, parts.fragment == nil else {
+        guard parts.user == nil, parts.password == nil, parts.fragment == nil, parts.query == nil else {
             throw ProfileError("Provisioning URL 不能包含账号密码或 fragment")
         }
         let loopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
@@ -585,6 +588,9 @@ enum RelayProvisioningClient {
         }
         parts.scheme = scheme
         guard let url = parts.url else { throw ProfileError("Provisioning API URL 无效") }
+        guard let token = url.pathComponents.last, token.utf8.count == 64, let secret = Data(hexString: token), secret.count == 32 else {
+            throw ProfileError("Provisioning URL 必须包含末尾的 64 位 API Secret")
+        }
         return url
     }
 
@@ -593,23 +599,9 @@ enum RelayProvisioningClient {
         guard !data.isEmpty, data.count <= maximumResponseBytes else { throw ProfileError("Provisioning API 响应为空或超过 512 KiB") }
         let payloadData = try decryptEnvelope(data, url: url)
         guard !payloadData.isEmpty, payloadData.count <= maximumResponseBytes else { throw ProfileError("Provisioning 解密配置为空或超过 512 KiB") }
-        struct Header: Decodable { var schema_version: Int; var kind: String? }
-        do {
-            let header = try JSONDecoder().decode(Header.self, from: payloadData)
-            if header.schema_version == 1 {
-                guard payloadData.count <= maximumProfileResponseBytes else { throw ProfileError("单 Profile Provisioning 响应超过 64 KiB") }
-                let payload = try JSONDecoder().decode(RelayProvisioningPayload.self, from: payloadData)
-                _ = try payload.validatedProfile()
-                return .profile(payload)
-            }
-            if header.schema_version == 2, header.kind == "bundle" {
-                let bundle = try JSONDecoder().decode(RelayProvisioningBundlePayload.self, from: payloadData)
-                try bundle.validate()
-                return .bundle(bundle)
-            }
-            throw ProfileError("Provisioning API schema/kind 不受支持")
-        } catch let error as ProfileError { throw error }
-        catch { throw ProfileError("Provisioning API JSON 无效：(error.localizedDescription)") }
+        do { return .tunnel(try ManagedTunnelProfile.decode(payloadData)) }
+        catch let error as ProfileError { throw error }
+        catch { throw ProfileError("远端隧道 JSON 无效") }
     }
 
     static func fetchWithResponse(endpoint: String) async throws -> RelayProvisioningFetchResult {
@@ -629,9 +621,14 @@ enum RelayProvisioningClient {
         let delegate = RelayProvisioningNoRedirectDelegate()
         let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        let (data, response) = try await session.data(for: request)
+        let (stream, response) = try await session.bytes(for: request)
+        var data = Data()
+        for try await byte in stream {
+            guard data.count < maximumResponseBytes else { throw ProfileError("Provisioning 响应超过 128 KiB") }
+            data.append(byte)
+        }
         guard let http = response as? HTTPURLResponse else { throw ProfileError("Provisioning API 返回的不是 HTTP 响应") }
-        guard http.statusCode == 200 else { throw ProfileError("Provisioning API HTTP (http.statusCode)") }
+        guard http.statusCode == 200 else { throw ProfileError("Provisioning API HTTP \(http.statusCode)") }
         let document = try decodeResponse(data, endpoint: endpoint)
         return RelayProvisioningFetchResult(document: document, responseData: data)
     }

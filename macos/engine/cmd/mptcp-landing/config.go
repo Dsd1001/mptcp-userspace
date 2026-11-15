@@ -17,21 +17,24 @@ import (
 )
 
 type Config struct {
-	SchemaVersion int    `json:"schema_version"`
-	ListenTCP     string `json:"listen_tcp"`
-	ListenUDP     string `json:"listen_udp"`
-	BackendTCP    string `json:"backend_tcp"`
-	BackendUDP    string `json:"backend_udp"`
-	UDPEnabled    bool   `json:"udp_enabled"`
-	UOTEnabled    bool   `json:"uot_enabled,omitempty"`
-	TransportKey  string `json:"transport_key"`
-	MaxSessions   int    `json:"max_sessions"`
-	SchedulerMode string `json:"scheduler_mode,omitempty"`
+	Kind          string               `json:"kind"`
+	TCPRoutes     []multipath.TCPRoute `json:"routes"`
+	SchemaVersion int                  `json:"schema_version"`
+	ListenTCP     string               `json:"listen_tcp"`
+	ListenUDP     string               `json:"-"`
+	BackendTCP    string               `json:"-"`
+	BackendUDP    string               `json:"-"`
+	UDPEnabled    bool                 `json:"-"`
+	UOTEnabled    bool                 `json:"-"`
+	TransportKey  string               `json:"transport_key"`
+	MaxSessions   int                  `json:"max_sessions"`
+	SchedulerMode string               `json:"scheduler_mode,omitempty"`
 }
 
 func defaultConfig() (Config, error) {
 	key, err := multipath.NewKey()
-	return Config{SchemaVersion: 1, ListenTCP: "0.0.0.0:24001", ListenUDP: "0.0.0.0:24001", BackendTCP: "127.0.0.1:8388", BackendUDP: "127.0.0.1:8388", UDPEnabled: true, TransportKey: key, MaxSessions: 4, SchedulerMode: string(multipath.SchedulerAuto)}, err
+	return Config{SchemaVersion: 2, Kind: "mpx4_tunnel_egress", ListenTCP: "0.0.0.0:24001", TransportKey: key, MaxSessions: 8, SchedulerMode: "auto",
+		TCPRoutes: []multipath.TCPRoute{{ID: 1, Name: "default", Backend: "127.0.0.1:8388", UDPBackend: "127.0.0.1:8388"}}}, err
 }
 
 func endpoint(address string, listen bool) error {
@@ -53,43 +56,8 @@ func endpoint(address string, listen bool) error {
 	}
 	return nil
 }
-func (c Config) validate() error {
-	if c.SchemaVersion != 1 {
-		return errors.New("Landing 仅接受 schema_version=1")
-	}
-	if _, err := multipath.ParseKey(c.TransportKey); err != nil {
-		return err
-	}
-	if c.MaxSessions < 1 || c.MaxSessions > 16 {
-		return errors.New("max_sessions 必须为 1..16")
-	}
-	if _, err := multipath.ParseSchedulerMode(c.SchedulerMode); err != nil {
-		return fmt.Errorf("scheduler_mode: %w", err)
-	}
-	if c.UOTEnabled {
-		if err := endpoint(c.BackendUDP, false); err != nil {
-			return fmt.Errorf("UoT backend_udp: %w", err)
-		}
-	}
-	pairs := [][2]string{{c.ListenTCP, c.BackendTCP}}
-	if c.UDPEnabled {
-		pairs = append(pairs, [2]string{c.ListenUDP, c.BackendUDP})
-	}
-	for _, pair := range pairs {
-		if err := endpoint(pair[0], true); err != nil {
-			return err
-		}
-		if err := endpoint(pair[1], false); err != nil {
-			return err
-		}
-		lh, lp, _ := net.SplitHostPort(pair[0])
-		bh, bp, _ := net.SplitHostPort(pair[1])
-		if lp == bp && (net.ParseIP(lh).IsUnspecified() || lh == bh) {
-			return errors.New("聚合监听端口与 backend 可能形成回环；必须使用独立端口")
-		}
-	}
-	return nil
-}
+func (c Config) validate() error { return c.validateRouted() }
+
 func decodeConfig(b []byte) (Config, error) {
 	var c Config
 	if len(b) > 64<<10 {
@@ -135,38 +103,23 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 	if err := c.validate(); err != nil {
 		return err
 	}
-	srv, err := multipath.NewServerWithScheduler(ctx, c.TransportKey, c.BackendTCP, c.MaxSessions, multipath.SchedulerMode(c.SchedulerMode))
+	srv, err := multipath.NewRoutedServerWithScheduler(ctx, c.TransportKey, c.TCPRoutes, c.MaxSessions, multipath.SchedulerMode(c.SchedulerMode))
 	if err != nil {
 		return err
 	}
 	defer srv.Close()
-	if c.UOTEnabled {
-		if err := srv.EnableUOT(c.BackendUDP); err != nil {
-			return err
-		}
-	}
 	listener, err := multipath.PlainListen(ctx, c.ListenTCP)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	var udp *multipath.UDPServer
-	var udpDone <-chan struct{}
-	if c.UDPEnabled {
-		udp, err = multipath.StartUDPServer(srv, c.ListenUDP, c.BackendUDP)
-		if err != nil {
-			return err
-		}
-		defer udp.Close()
-		udpDone = udp.Done()
-	}
 	stopped := make(chan error, 1)
 	go func() { stopped <- srv.Serve(listener) }()
 	if err = notifyReady(); err != nil {
 		return err
 	}
 	mode, _ := multipath.ParseSchedulerMode(c.SchedulerMode)
-	fmt.Fprintf(out, "MPTCP Landing %s：Userspace TCP=%s 原生UDP=%t UoT=%t；Scheduler=%s（本地策略）；不使用内核 MPTCP。\n", multipath.Version, listener.Addr(), c.UDPEnabled, c.UOTEnabled, mode)
+	fmt.Fprintf(out, "MPTCP Tunnel Egress %s: TCP=%s routes=%d scheduler=%s; UDP uses routed UoT, no native UDP listener.\n", multipath.Version, listener.Addr(), len(c.TCPRoutes), mode)
 	started := time.Now()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -178,18 +131,11 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 			return nil
 		case err := <-stopped:
 			return err
-		case <-udpDone:
-			if ctx.Err() != nil {
-				return nil
-			}
-			if udp.Err() != nil {
-				return udp.Err()
-			}
-			return errors.New("UDP listener unexpectedly stopped")
 		case <-ticker.C:
 			if statusFile != "" {
 				status := struct {
-					UOTEnabled    bool                     `json:"uot_enabled"`
+					Kind          string                   `json:"kind"`
+					RouteCount    int                      `json:"route_count"`
 					Version       string                   `json:"version"`
 					SourceID      string                   `json:"source_id"`
 					WireProtocol  int                      `json:"wire_protocol"`
@@ -198,10 +144,7 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 					UptimeSeconds int64                    `json:"uptime_seconds"`
 					TCP           []multipath.Stats        `json:"tcp"`
 					UDP           []multipath.UDPStats     `json:"udp,omitempty"`
-				}{UOTEnabled: c.UOTEnabled, Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Admission: srv.AdmissionSnapshot(), Updated: time.Now().UTC().Format(time.RFC3339), UptimeSeconds: int64(time.Since(started).Seconds()), TCP: srv.Snapshots()}
-				if udp != nil {
-					status.UDP = udp.Snapshots()
-				}
+				}{Kind: c.Kind, RouteCount: len(c.TCPRoutes), Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Admission: srv.AdmissionSnapshot(), Updated: time.Now().UTC().Format(time.RFC3339), UptimeSeconds: int64(time.Since(started).Seconds()), TCP: srv.Snapshots()}
 				b, e := json.MarshalIndent(status, "", "  ")
 				if e == nil {
 					e = atomicFile(statusFile, append(b, '\n'), 0600)

@@ -1,0 +1,11 @@
+/dist/
+/macos/build/
+/windows/build/bin/
+/windows/wailsjs/
+/provisioning-data/
+/provisioning/provisioning-data/
+/provisioning/SOURCE_ID
+/provisioning/SOURCE_SHA256SUMS
+/validation/current-*/
+**/__pycache__/
+*.test

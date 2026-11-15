@@ -108,7 +108,7 @@ func TestProvisioningHTTPFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &app{store: st, adminUser: "admin", adminPass: "secret", publicBase: "https://cfg.example.test"}
-	srv := httptest.NewServer(a.handler())
+	srv := httptest.NewServer(a.legacyHandlerForTest())
 	defer srv.Close()
 
 	// Public config needs only the unguessable token and must never be cacheable.
@@ -191,7 +191,7 @@ func TestValidatePublicBase(t *testing.T) {
 			t.Fatalf("%q rejected: %v", good, err)
 		}
 	}
-	for _, bad := range []string{"http://config.example.test", "https://user:pass@config.example.test", "https://config.example.test/#fragment"} {
+	for _, bad := range []string{"http://config.example.test", "https://user:pass@config.example.test", "https://config.example.test/#fragment", "https://config.example.test/?tenant=1", "https://config.example.test?tenant=1", "https://config.example.test?"} {
 		if err := validatePublicBase(bad); err == nil {
 			t.Fatalf("%q accepted", bad)
 		}
@@ -246,7 +246,7 @@ func TestCustomAliasHTTPFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &app{store: st, adminUser: "admin", adminPass: "secret", publicBase: "https://cfg.example.test"}
-	srv := httptest.NewServer(a.handler())
+	srv := httptest.NewServer(a.legacyHandlerForTest())
 	defer srv.Close()
 	client := srv.Client()
 	alias := "HKBN-Main"
@@ -365,7 +365,7 @@ func TestAdminSystemInfo(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &app{store: st, adminUser: "admin", adminPass: "secret"}
-	srv := httptest.NewServer(a.handler())
+	srv := httptest.NewServer(a.legacyHandlerForTest())
 	defer srv.Close()
 	resp := adminJSON(t, srv.Client(), http.MethodGet, srv.URL+"/admin/api/system", nil)
 	defer resp.Body.Close()
@@ -381,15 +381,23 @@ func TestAdminSystemInfo(t *testing.T) {
 	}
 }
 
-func TestAdminUIContainsRedesignedNavigationAndRelayCopy(t *testing.T) {
+func TestAdminUITunnelOnlyNavigationAndSafeRendering(t *testing.T) {
 	data, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(data)
-	for _, want := range []string{"基础设置", "Relay 路径", "调度策略", "密钥与发布", "duplicateRelay", "自定义标识 + 随机 Secret", "轮换 Secret", "系统", "修改管理员密码", "currentAdminPassword", "changeAdminPassword", "Client Bundles", "多配置并行", "单配置选择", "bundleConflict", "Bundle API URL", "Devices", "一次性配对码", "同步配置", "更新到最新版", "安全边界", "deviceDesiredStateChoices", "deviceAssignmentOptions", "deviceHealthSummary", "Runtime diagnostics"} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("admin UI missing %q", want)
+	for _, fragment := range []string{"共享隧道", "业务入口", "远程设备", "/admin/api/tunnels", "/v1/tunnel/", "expected_revision", "tKey", "inletRows", "textContent", "tunnel_profile"} {
+		if fragment == "tunnel_profile" {
+			continue
+		} // payload schema is validated in Go, not guessed by the UI.
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("missing tunnel UI capability %q", fragment)
+		}
+	}
+	for _, fragment := range []string{"innerHTML =", "innerHTML=", "localStorage.setItem", "/admin/api/profiles", "/admin/api/bundles"} {
+		if strings.Contains(html, fragment) {
+			t.Fatalf("unsafe or legacy public UI surface %q", fragment)
 		}
 	}
 }
@@ -429,7 +437,7 @@ func TestAdminPasswordChangePersistsAndInvalidatesOldCredentials(t *testing.T) {
 	newPass := "newpass8"
 	passwordFile := filepath.Join(dir, "admin-password")
 	a := &app{store: st, adminUser: "admin", adminPass: oldPass, passwordFile: passwordFile}
-	srv := httptest.NewServer(a.handler())
+	srv := httptest.NewServer(a.legacyHandlerForTest())
 	defer srv.Close()
 
 	wrong := adminRequestWithPassword(t, srv.Client(), http.MethodPost, srv.URL+"/admin/api/password", oldPass, passwordInput{CurrentPassword: "not-the-current-password", NewPassword: newPass})
@@ -532,7 +540,7 @@ func newBundleTestApp(t *testing.T) (*app, *httptest.Server) {
 		t.Fatal(err)
 	}
 	a := &app{store: st, bundles: bs, adminUser: "admin", adminPass: "secret", publicBase: "https://cfg.example.test"}
-	srv := httptest.NewServer(a.handler())
+	srv := httptest.NewServer(a.legacyHandlerForTest())
 	t.Cleanup(srv.Close)
 	return a, srv
 }

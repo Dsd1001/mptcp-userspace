@@ -36,3 +36,7 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 )
+
+require mptcp-desktop/engine v0.0.0
+
+replace mptcp-desktop/engine => ../macos/engine

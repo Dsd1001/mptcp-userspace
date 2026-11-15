@@ -38,11 +38,16 @@ func (s *Session) sharedCreditSnapshotLocked() SharedCreditStats {
 		TXUsed: fc.txUsed, TXBootstrap: fc.txUsed - fc.txGrowth, TXGrowth: fc.txGrowth,
 		ClosingStreams: len(s.closing), OccupiedSlots: len(s.streams) + len(s.closing), TerminalStreams: len(s.terminal),
 		ReceivePages: s.receiveAllocated / receivePageCost, ActualRXPeak: fc.peakRX, ActualTXPeak: fc.peakTX, ActualGrowthPeak: fc.peakGrowth,
-		WriteWaits: make(map[string]creditWait, len(fc.waits)-1),
+		WriteWaits: make(map[string]creditWait, len(fc.waits)+1),
 	}
 	for i := 1; i < len(fc.waits); i++ {
 		r.WriteWaits[creditWaitNames[i]] = fc.waits[i]
 	}
+	// Keep the historical key as a backwards-compatible aggregate, while
+	// exposing stream_open and stream_window as disjoint reasons in v1.1.4.
+	// Do not include the alias when summing per-reason waits.
+	stream, opening := fc.waits[waitStreamWindow], fc.waits[waitStreamOpen]
+	r.WriteWaits["stream_window_or_open"] = creditWait{Count: stream.Count + opening.Count, NS: stream.NS + opening.NS}
 	now := time.Now()
 	for _, st := range s.streams {
 		if st.rxLimit >= st.rxRead {

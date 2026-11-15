@@ -1,0 +1,40 @@
+{
+  "scope": "compiled processes on loopback, not WAN",
+  "platform": "macOS-27.3-arm64-arm-64bit",
+  "source_id": "a8fb64c53c76ea8249856625b321c673a783eba2465375ec42f975e3c3c00a0f",
+  "sessions": 1,
+  "carriers": 6,
+  "relay_accept_counts": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "transfers": [
+    {
+      "route_id": 1,
+      "verified_bytes": 1048576,
+      "sha256": "f525446cacd08cef30b975e87c5bb60eddc54650037cdd0b12ca886f543aa9c1"
+    },
+    {
+      "route_id": 2,
+      "verified_bytes": 1048576,
+      "sha256": "71851a2b21bfa7ae49845059f446302d50dcbd4e4fbdaac70f0f74d5302e5ea4"
+    },
+    {
+      "route_id": 3,
+      "verified_bytes": 1048576,
+      "sha256": "699847eb192d21b9ad43e37ba4fbd25eb62ef00c25a247d0a2a639f4d8bfdc03"
+    }
+  ],
+  "client_sha256": "a5f91d6be6aef113a46c28179eeae6d55d5bf68c50240143b3eda98089b9376d",
+  "egress_sha256": "23ae14d98a03065d2f02d072270dd00f3f2857acf041aafd91e02cf211c4fb7a",
+  "validate_exit": 0,
+  "shutdown_exit_codes": [
+    0,
+    0
+  ],
+  "passed": true
+}

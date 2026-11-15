@@ -388,6 +388,20 @@ func (a *App) remoteLoop(ctx context.Context, base *url.URL, credential remoteCr
 
 func (a *App) applyRemoteDesired(desired remoteDesiredState) {
 	a.mu.Lock()
+	if !a.settings.RemoteEnabled || desired.Revision < a.settings.RemoteRevision {
+		a.mu.Unlock()
+		return
+	}
+	if desired.DesiredState != "running" && desired.DesiredState != "stopped" {
+		a.mu.Unlock()
+		return
+	}
+	if desired.DesiredState == "running" && (desired.AssignmentType != "tunnel" || strings.TrimSpace(desired.ProvisioningURL) == "") {
+		a.mu.Unlock()
+		_ = a.Stop()
+		a.setProblem("1.2.0 只运行已分配的共享隧道，拒绝旧 Profile/Bundle 或未分配配置")
+		return
+	}
 	if desired.Revision >= a.settings.RemoteRevision {
 		a.settings.RemoteRevision = desired.Revision
 	}
@@ -410,10 +424,13 @@ func (a *App) applyRemoteDesired(desired remoteDesiredState) {
 		current := ""
 		a.mu.Lock()
 		current, _ = unprotectString(a.settings.ProvisioningCipher)
+		managed := a.settings.ConfigurationSource == "managed"
 		a.mu.Unlock()
-		if current != desired.ProvisioningURL {
+		if current != desired.ProvisioningURL || !managed {
 			if err := a.SetProvisioningURL(desired.ProvisioningURL); err != nil {
 				a.setProblem("远程配置分配失败：" + err.Error())
+				_ = a.Stop()
+				return
 			}
 		}
 	}
@@ -448,14 +465,9 @@ func (a *App) applyRemoteDesired(desired remoteDesiredState) {
 func (a *App) remoteReport(base *url.URL, credential remoteCredential) error {
 	a.mu.Lock()
 	revision, bundleID := "", ""
-	if a.managed != nil {
-		if a.managed.Profile != nil {
-			revision = a.managed.Profile.Revision
-		}
-		if a.managed.Bundle != nil {
-			revision = a.managed.Bundle.Revision
-			bundleID = a.managed.Bundle.BundleID
-		}
+	if a.managed != nil && a.managed.Tunnel != nil {
+		revision = a.managed.Tunnel.Revision
+		bundleID = a.managed.Tunnel.ProfileID
 	}
 	report := remoteDeviceReport{
 		AppVersion:        appVersion,

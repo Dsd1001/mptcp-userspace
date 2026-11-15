@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"mptcp-desktop/engine/tunnelconfig"
 )
 
 type App struct {
@@ -60,6 +59,9 @@ func NewApp() *App {
 	}
 	if err != nil {
 		a.state.Problem = "读取设置失败：" + err.Error()
+	}
+	if settings.MigrationRequired {
+		a.state.Problem = "1.2.0 只保留共享隧道。旧设置已备份且不会自动运行，请配置共同出口与业务入口"
 	}
 	a.loadManagedCacheLocked()
 	a.refreshSettingsViewLocked()
@@ -165,42 +167,57 @@ func (a *App) Quit() {
 	}
 }
 
+// Old Wails clients receive an explicit error, never an implicit migration.
 func (a *App) SaveLocalProfile(profile LocalProfile) error {
+	return errors.New("1.2.0 仅支持共享隧道；请使用一组 Relay 和多个业务入口")
+}
+
+func (a *App) SaveTunnelConfig(configuration tunnelconfig.Config) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.state.Running || a.state.Busy {
-		return errors.New("转发运行中，请先停止后再修改本地配置")
+		return errors.New("请先停止隧道再修改配置")
 	}
-	oldCipher := a.settings.TransportKeyCipher
-	key := strings.TrimSpace(profile.TransportKey)
-	profile.TransportKey = ""
-	if key != "" {
-		if err := validateTransportKey(key); err != nil {
-			return err
-		}
-		cipher, err := protectString(key)
+	key := strings.TrimSpace(configuration.Tunnel.TransportKey)
+	if key == "" && !a.settings.MigrationRequired {
+		var err error
+		key, err = unprotectString(a.settings.TransportKeyCipher)
 		if err != nil {
-			return fmt.Errorf("保护 Transport Key 失败: %w", err)
+			return errors.New("本地密钥解密失败")
 		}
-		oldCipher = cipher
 	}
-	if oldCipher == "" {
-		return errors.New("请填写 Transport Key")
-	}
-	if err := validateLocalProfile(profile, true); err != nil {
+	configuration.Tunnel.TransportKey = key
+	if err := configuration.Validate(); err != nil {
 		return err
 	}
-	a.settings.Profile = profile
-	a.settings.TransportKeyCipher = oldCipher
-	a.settings.ConfigurationSource = "local"
-	if err := saveSettings(a.settings); err != nil {
+	cipher, err := protectString(key)
+	if err != nil {
 		return err
 	}
+	next := a.settings
+	configuration.Tunnel.TransportKey = ""
+	next.SchemaVersion = 2
+	next.Tunnel = configuration
+	next.TransportKeyCipher = cipher
+	next.ConfigurationSource = "local"
+	next.MigrationRequired = false
+	if err := saveSettings(next); err != nil {
+		return err
+	}
+	a.settings = next
 	a.refreshSettingsViewLocked()
 	a.state.Problem = ""
-	a.appendLogLocked("本地 Userspace Profile 已保存")
+	a.appendLogLocked("共享隧道已保存；密钥由 Windows DPAPI 保护")
 	go a.emitState()
 	return nil
+}
+
+func (a *App) ImportTunnelJSON(raw string) error {
+	c, err := tunnelconfig.Decode(strings.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	return a.SaveTunnelConfig(c)
 }
 
 func (a *App) SetConfigurationSource(source string) error {
@@ -309,8 +326,14 @@ func (a *App) SyncProvisioning() (ManagedSummary, error) {
 	}
 
 	a.mu.Lock()
+	currentEndpoint, _ := unprotectString(a.settings.ProvisioningCipher)
+	if currentEndpoint != endpoint {
+		a.mu.Unlock()
+		return ManagedSummary{}, errors.New("配置地址已变化，丢弃旧同步结果")
+	}
 	a.managed = doc
 	a.settings.ManagedCacheCipher = cacheCipher
+	a.settings.MigrationRequired = false
 	a.reconcileManagedSelectionLocked()
 	if err := saveSettings(a.settings); err != nil {
 		a.mu.Unlock()
@@ -333,44 +356,25 @@ func (a *App) SetManagedSelection(ids []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.state.Running || a.state.Busy {
-		return errors.New("转发运行中，请先停止后再修改 Bundle 选择")
+		return errors.New("请先停止隧道再更改业务入口选择")
 	}
-	if a.managed == nil || a.managed.Bundle == nil {
-		return errors.New("当前 Provisioning 不是 Bundle")
+	if a.managed == nil || a.managed.Tunnel == nil {
+		return errors.New("尚未同步共享隧道配置")
 	}
-	allowed := map[string]bool{}
-	for _, p := range a.managed.Bundle.Profiles {
-		allowed[p.ProfileID] = true
+	if len(ids) == 0 {
+		return errors.New("至少选择一个业务入口")
 	}
-	seen := map[string]bool{}
-	clean := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if !allowed[id] {
-			return fmt.Errorf("Bundle 不包含 Profile %s", id)
-		}
-		if !seen[id] {
-			seen[id] = true
-			clean = append(clean, id)
-		}
-	}
-	if a.managed.Bundle.Mode == "single_select" && len(clean) != 1 {
-		return errors.New("single_select Bundle 必须选择一个 Profile")
-	}
-	if len(clean) == 0 {
-		return errors.New("至少选择一个 Profile")
-	}
-	sort.Strings(clean)
-	a.settings.SelectedProfileIDs = clean
-	if err := saveSettings(a.settings); err != nil {
+	if _, err := a.managed.Tunnel.Config.Select(ids); err != nil {
 		return err
 	}
+	next := a.settings
+	next.SelectedProfileIDs = append([]string(nil), ids...)
+	if err := saveSettings(next); err != nil {
+		return err
+	}
+	a.settings = next
 	a.refreshManagedSummaryLocked()
-	resident := a.effectiveBackgroundResidentLocked()
-	remote := a.settings.RemoteEnabled
-	go func() {
-		_ = setAutostart(resident || remote)
-		a.emitState()
-	}()
+	go a.emitState()
 	return nil
 }
 
@@ -431,7 +435,10 @@ func (a *App) refreshSettingsViewLocked() {
 	if credential, err := a.remoteCredentialLocked(); err == nil && credential != nil {
 		remoteDeviceID = credential.DeviceID
 	}
+	configuration := a.settings.Tunnel
+	configuration.Tunnel.TransportKey = ""
 	a.state.Settings = SettingsView{
+		Tunnel: configuration, MigrationRequired: a.settings.MigrationRequired,
 		ConfigurationSource: a.settings.ConfigurationSource,
 		Profile:             profile,
 		TransportKeySet:     a.settings.TransportKeyCipher != "",

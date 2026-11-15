@@ -30,6 +30,8 @@ type receivePage struct {
 // Stream satisfies net.Conn and TCP-style CloseWrite. Both byte credit and
 // actual allocated receive pages have independent hard bounds.
 type Stream struct {
+	routeID                                      uint32 // guarded by Session.mu; immutable after service selection
+	routeConfirmed                               bool   // private service response validated; guarded by Session.mu
 	receivedReset                                bool
 	finalConsumedQueued                          bool
 	writeEntry                                   *list.Element
@@ -72,6 +74,10 @@ type Stream struct {
 	productReplyErr                              error
 	bulkActive                                   bool
 	warmSeedUsed, warmHistoryUsed                bool
+	// pendingData tracks reliable DATA transmissions for this Stream.  It is
+	// maintained while the Session mutex is held so CloseWrite and the FIN
+	// acknowledgement path do not need to scan the session-wide ledger.
+	pendingData int
 }
 
 var _ net.Conn = (*Stream)(nil)
@@ -194,6 +200,10 @@ func (st *Stream) prepareReceiveLocked(offset uint64, data []byte) (receiveWork,
 			missing++
 		}
 	}
+	if err := st.checkRouteReceiveLocked(missing); err != nil {
+		st.rxMu.Unlock()
+		return receiveWork{}, err
+	}
 	if missing > (MaxBuffered-st.s.receiveAllocated)/receivePageCost {
 		st.rxMu.Unlock()
 		return receiveWork{}, st.s.resourceLocked(LimitReceiveAllocated, false)
@@ -202,6 +212,7 @@ func (st *Stream) prepareReceiveLocked(offset uint64, data []byte) (receiveWork,
 		if st.pages[index] == nil {
 			st.pages[index] = &receivePage{}
 			st.s.receiveAllocated += receivePageCost
+			st.routeReceiveAccountLocked(0, receivePageCost)
 		}
 	}
 	return receiveWork{offset: offset, data: data, active: true}, nil
@@ -370,6 +381,12 @@ func (st *Stream) consumeProductReplyLocked() error {
 	st.productReplyPending = false
 	st.productReplyDeadline = time.Time{}
 	st.productReplyErr = err
+	if err == nil && (st.productReplyKind == productServiceRoutedTCP || st.productReplyKind == productServiceRoutedUOT) {
+		st.s.mu.Lock()
+		st.routeConfirmed = true
+		st.s.signalStreamWriterLocked(st)
+		st.s.mu.Unlock()
+	}
 	if err != nil {
 		st.Close()
 	}
@@ -457,6 +474,7 @@ func (st *Stream) readRaw(p []byte) (int, error) {
 				return 0, protocolViolation("receive storage changed before consume")
 			}
 			s.receiveAllocated -= freedPages * receivePageCost
+			st.routeReceiveAccountLocked(0, -freedPages*receivePageCost)
 			s.bufferedBytes -= n
 			s.received += uint64(n)
 			st.lastActivity = time.Now()
@@ -582,12 +600,7 @@ func (st *Stream) Write(p []byte) (int, error) {
 // The session mutex must be held. A FIN receipt does not cumulatively ACK
 // DATA: another carrier may still have preceding payload queued or in flight.
 func (st *Stream) hasPendingDataLocked() bool {
-	for _, p := range st.s.pending {
-		if p.f.stream == st.id && p.f.kind == kindData {
-			return true
-		}
-	}
-	return false
+	return st.pendingData > 0
 }
 
 func (st *Stream) CloseWrite() error {
@@ -659,6 +672,7 @@ func (st *Stream) releaseReceiveLocked() {
 	st.rxMu.Lock()
 	st.s.bufferedBytes -= st.buffered
 	st.buffered = 0
+	st.routeReceiveAccountLocked(0, -len(st.pages)*receivePageCost)
 	st.s.receiveAllocated -= len(st.pages) * receivePageCost
 	st.pages = nil
 	st.rxMu.Unlock()

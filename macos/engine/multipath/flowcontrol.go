@@ -670,12 +670,17 @@ func (s *Session) readyLocked(p *outbound, front bool) {
 	}
 	s.readyFrames++
 	s.readyDataBytes += p.cost
+	s.routeReadyLocked(rq, p.cost)
 	if wasEmpty {
 		if front {
 			rq.entry = s.readyStreams.PushFront(rq)
 		} else {
 			rq.entry = s.readyStreams.PushBack(rq)
 		}
+	}
+	if s.scheduler.configured == SchedulerWeighted && p.f.offset == 0 && p.generation == 0 &&
+		rq.fastEntry == nil && rq.frames.Front() != nil && rq.frames.Front().Value == p {
+		rq.fastEntry = s.fastReady.PushBack(rq)
 	}
 	if rq.frames.Len() >= 4 {
 		s.bulkReady = rq
@@ -697,7 +702,16 @@ func (s *Session) unreadyLocked(p *outbound) {
 		return
 	}
 	rq.frames.Remove(p.ready)
+	s.routeUnreadyLocked(rq, p.cost)
 	p.ready = nil
+	if rq.fastEntry != nil {
+		top := rq.frames.Front()
+		if top == nil || top.Value.(*outbound).f.offset != 0 ||
+			top.Value.(*outbound).generation != 0 {
+			s.fastReady.Remove(rq.fastEntry)
+			rq.fastEntry = nil
+		}
+	}
 	if s.readyFrames > 0 {
 		s.readyFrames--
 	}
@@ -738,15 +752,23 @@ func (s *Session) dispatchLocked(now time.Time) {
 		}
 	}()
 
-	dispatchOne := func(rq *dataReadyQueue, advanceFair bool) bool {
+	dispatchOne := func(rq *dataReadyQueue, advanceFair, fast bool) bool {
 		if rq == nil || rq.frames.Len() == 0 {
 			return true
 		}
-		c := s.pathLocked(now)
+		p := rq.frames.Front().Value.(*outbound)
+		var c *carrier
+		priority := false
+		if fast {
+			c = s.firstDataCarrierLocked(p, now)
+			priority = c != nil
+		}
+		if c == nil {
+			c = s.pathLocked(now)
+		}
 		if c == nil {
 			return false
 		}
-		p := rq.frames.Front().Value.(*outbound)
 		s.unreadyLocked(p)
 		p.path = c
 		p.generation++
@@ -766,8 +788,21 @@ func (s *Session) dispatchLocked(now time.Time) {
 		}
 		c.outstanding += p.cost
 		c.queued += p.cost
+		// Only a committed priority channel slot consumes Session Tokens.
+		// Regular DATA still uses the original 4-slot Carrier queue.
+		targetQueue := c.queue
+		if priority {
+			targetQueue = c.priorityDATA
+		}
 		select {
-		case c.queue <- sendTask{p: p, generation: p.generation}:
+		case targetQueue <- sendTask{p: p, generation: p.generation}:
+			if priority {
+				s.firstDataTokens -= p.cost
+				p.firstDataTokenCharged = true
+				s.firstDataPromoted++
+				s.recordSelectedPathLocked(c)
+			}
+			s.routeDispatchedLocked(rq, p)
 			s.schedulerAllocatedLocked(c, p, now)
 			if advanceFair {
 				s.dispatchSequence++
@@ -790,25 +825,29 @@ func (s *Session) dispatchLocked(now time.Time) {
 	}
 
 	for dispatched < dataDispatchBatch && s.readyStreams.Len() != 0 {
-		e := s.readyStreams.Front()
-		rq, _ := e.Value.(*dataReadyQueue)
-		if rq == nil || rq.frames.Len() == 0 {
-			if rq != nil {
-				delete(s.ready, rq.stream)
-				rq.entry = nil
+		// Shared routes retain byte fairness; the legacy global fast lane
+		// cannot allow a many-connection route to bypass the route ring.
+		if s.routeGroups == nil {
+			if fastRQ, charge := s.firstDataCandidateLocked(); fastRQ != nil && charge > 0 {
+				if !dispatchOne(fastRQ, true, true) {
+					return
+				}
+				continue
 			}
-			s.readyStreams.Remove(e)
-			continue
 		}
-		if !dispatchOne(rq, true) {
+		rq := s.nextDataReadyLocked()
+		if rq == nil {
+			return
+		}
+		if !dispatchOne(rq, true, false) {
 			return
 		}
 		// Preserve the old bounded bulk bonus without scanning every ready
 		// Stream. A sustained backlog becomes the current O(1) bulk hint and
 		// receives one extra turn per eight fair dispatches.
-		if s.dispatchSequence%8 == 0 && s.bulkReady != nil && s.bulkReady.frames.Len() >= 4 {
+		if s.routeGroups == nil && s.dispatchSequence%8 == 0 && s.bulkReady != nil && s.bulkReady.frames.Len() >= 4 {
 			bonus := s.bulkReady
-			if !dispatchOne(bonus, false) {
+			if !dispatchOne(bonus, false, false) {
 				return
 			}
 		}

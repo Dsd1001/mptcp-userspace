@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "kind": "shared_mpx4_tunnel",
+  "tunnel": {
+    "transport_key": "REPLACE_WITH_64_HEX_CHARACTERS",
+    "scheduler_mode": "auto",
+    "relays": [
+      {
+        "host": "192.0.2.1",
+        "port": 24001
+      },
+      {
+        "host": "192.0.2.2",
+        "port": 24001
+      },
+      {
+        "host": "192.0.2.3",
+        "port": 24001
+      },
+      {
+        "host": "192.0.2.4",
+        "port": 24001
+      },
+      {
+        "host": "192.0.2.5",
+        "port": 24001
+      },
+      {
+        "host": "192.0.2.6",
+        "port": 24001
+      }
+    ]
+  },
+  "inlets": [
+    {
+      "id": "hkbn",
+      "name": "HKBN",
+      "listen_port": 1081,
+      "route_id": 1,
+      "weight": 1,
+      "max_connections": 512,
+      "tcp_enabled": true,
+      "uot_enabled": true
+    },
+    {
+      "id": "hkt",
+      "name": "HKT",
+      "listen_port": 1082,
+      "route_id": 2,
+      "weight": 1,
+      "max_connections": 512,
+      "tcp_enabled": true,
+      "uot_enabled": true
+    },
+    {
+      "id": "icable",
+      "name": "iCable",
+      "listen_port": 1083,
+      "route_id": 3,
+      "weight": 1,
+      "max_connections": 512,
+      "tcp_enabled": true,
+      "uot_enabled": true
+    }
+  ]
+}

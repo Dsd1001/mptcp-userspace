@@ -196,6 +196,23 @@ func (s *deviceStore) saveLocked() error {
 	return os.Rename(tmp, s.path)
 }
 
+// The store lock keeps an uncommitted record invisible to readers. Preserve the
+// previous value if persistence fails, so a rejected control operation cannot
+// take effect in memory or invalidate a still-persisted device credential.
+func (s *deviceStore) saveRecordLocked(rec deviceRecord) error {
+	previous, existed := s.records[rec.ID]
+	s.records[rec.ID] = rec
+	if err := s.saveLocked(); err != nil {
+		if existed {
+			s.records[rec.ID] = previous
+		} else {
+			delete(s.records, rec.ID)
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *deviceStore) signalLocked() {
 	close(s.notify)
 	s.notify = make(chan struct{})
@@ -222,10 +239,13 @@ func randomPairingCode() (string, error) {
 }
 
 func appendDeviceAudit(rec *deviceRecord, actor, action, detail string) {
-	rec.Audit = append(rec.Audit, deviceAudit{At: time.Now().UTC(), Actor: actor, Action: action, Detail: detail})
-	if len(rec.Audit) > 80 {
-		rec.Audit = append([]deviceAudit(nil), rec.Audit[len(rec.Audit)-80:]...)
+	// deviceRecord copies share slices. Build a new audit before changing the
+	// candidate so failed saves also leave the previous backing array untouched.
+	history := rec.Audit
+	if len(history) >= 80 {
+		history = history[len(history)-79:]
 	}
+	rec.Audit = append(append([]deviceAudit(nil), history...), deviceAudit{At: time.Now().UTC(), Actor: actor, Action: action, Detail: detail})
 }
 
 func validateDesiredState(value string) error {
@@ -238,6 +258,15 @@ func validateDesiredState(value string) error {
 func (a *app) validateDeviceAssignment(kind, id string) error {
 	kind, id = strings.TrimSpace(kind), strings.TrimSpace(id)
 	if kind == "" && id == "" {
+		return nil
+	}
+	if a.tunnels != nil {
+		if kind != "tunnel" {
+			return errors.New("1.2.0 assignment_type must be tunnel or empty; legacy Profile/Bundle assignments require reconfiguration")
+		}
+		if _, ok := a.tunnels.get(id); !ok {
+			return errors.New("assigned tunnel does not exist")
+		}
 		return nil
 	}
 	if kind == "profile" {
@@ -280,9 +309,7 @@ func (s *deviceStore) create(name, assignmentType, assignmentID, desiredState st
 	}
 	appendDeviceAudit(&rec, "admin", "device_created", "")
 	s.mu.Lock()
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
-		delete(s.records, id)
+	if err := s.saveRecordLocked(rec); err != nil {
 		s.mu.Unlock()
 		return adminDevice{}, err
 	}
@@ -352,8 +379,7 @@ func (s *deviceStore) update(id string, in adminDeviceInput) (adminDevice, error
 		rec.UpdatedAt = time.Now().UTC()
 		appendDeviceAudit(&rec, "admin", "desired_state_updated", fmt.Sprintf("state=%s assignment=%s:%s", rec.DesiredState, rec.AssignmentType, rec.AssignmentID))
 	}
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	if changed {
@@ -382,8 +408,7 @@ func (s *deviceStore) newPairing(id string) (adminDevice, error) {
 	rec.Revision++
 	rec.UpdatedAt = now
 	appendDeviceAudit(&rec, "admin", "pairing_rotated", "")
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	s.signalLocked()
@@ -395,11 +420,13 @@ func (s *deviceStore) newPairing(id string) (adminDevice, error) {
 func (s *deviceStore) delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.records[id]; !ok {
+	previous, ok := s.records[id]
+	if !ok {
 		return os.ErrNotExist
 	}
 	delete(s.records, id)
 	if err := s.saveLocked(); err != nil {
+		s.records[id] = previous
 		return err
 	}
 	s.signalLocked()
@@ -417,8 +444,7 @@ func (s *deviceStore) bumpRestart(id string) (adminDevice, error) {
 	rec.Revision++
 	rec.UpdatedAt = time.Now().UTC()
 	appendDeviceAudit(&rec, "admin", "restart_requested", fmt.Sprintf("generation=%d", rec.RestartGeneration))
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	s.signalLocked()
@@ -436,8 +462,7 @@ func (s *deviceStore) bumpSync(id string) (adminDevice, error) {
 	rec.Revision++
 	rec.UpdatedAt = time.Now().UTC()
 	appendDeviceAudit(&rec, "admin", "config_sync_requested", fmt.Sprintf("generation=%d", rec.SyncGeneration))
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	s.signalLocked()
@@ -463,8 +488,7 @@ func (s *deviceStore) bumpUpdate(id, version string) (adminDevice, error) {
 	rec.Revision++
 	rec.UpdatedAt = time.Now().UTC()
 	appendDeviceAudit(&rec, "admin", "update_requested", fmt.Sprintf("generation=%d version=%s", rec.UpdateGeneration, version))
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	s.signalLocked()
@@ -499,8 +523,7 @@ func (s *deviceStore) pair(code, deviceName, appVersion string) (devicePairRespo
 		rec.LastSeen = &now
 		rec.Observed.AppVersion = strings.TrimSpace(appVersion)
 		appendDeviceAudit(&rec, "device", "paired", "")
-		s.records[id] = rec
-		if err := s.saveLocked(); err != nil {
+		if err := s.saveRecordLocked(rec); err != nil {
 			return devicePairResponse{}, err
 		}
 		s.signalLocked()
@@ -544,8 +567,7 @@ func (s *deviceStore) touch(id string, observed *deviceObserved) (deviceRecord, 
 		needSave = true
 	}
 	if needSave {
-		s.records[id] = rec
-		if err := s.saveLocked(); err != nil {
+		if err := s.saveRecordLocked(rec); err != nil {
 			return deviceRecord{}, err
 		}
 	} else {
@@ -568,8 +590,7 @@ func (s *deviceStore) revokeFromDevice(id string) error {
 	rec.Revision++
 	rec.UpdatedAt = time.Now().UTC()
 	appendDeviceAudit(&rec, "device", "unpaired", "")
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return err
 	}
 	s.signalLocked()
@@ -586,6 +607,14 @@ func deviceCredentials(r *http.Request) (string, string) {
 }
 
 func (a *app) assignmentURL(r *http.Request, rec deviceRecord) string {
+	if a.tunnels != nil {
+		if rec.AssignmentType == "tunnel" {
+			if p, ok := a.tunnels.get(rec.AssignmentID); ok {
+				return a.tunnelView(r, p).APIURL
+			}
+		}
+		return ""
+	}
 	switch rec.AssignmentType {
 	case "profile":
 		if p, ok := a.store.get(rec.AssignmentID); ok {
@@ -608,6 +637,12 @@ func (a *app) assignmentURL(r *http.Request, rec deviceRecord) string {
 }
 
 func (a *app) deviceControlView(r *http.Request, rec deviceRecord) deviceControl {
+	// Preserve old records for administrative reassignment, but never instruct
+	// a 1.2 client to run a legacy bundle or an unassigned cached tunnel.
+	if a.tunnels != nil && (rec.AssignmentType != "tunnel" || a.assignmentURL(r, rec) == "") {
+		rec.DesiredState = "stopped"
+		rec.AssignmentType, rec.AssignmentID = "", ""
+	}
 	return deviceControl{
 		Revision: rec.Revision, DesiredState: rec.DesiredState,
 		AssignmentType: rec.AssignmentType, AssignmentID: rec.AssignmentID,
@@ -618,6 +653,10 @@ func (a *app) deviceControlView(r *http.Request, rec deviceRecord) deviceControl
 }
 
 func (a *app) adminDevices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		a.mutationMu.Lock()
+		defer a.mutationMu.Unlock()
+	}
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, a.devices.list())
@@ -646,6 +685,10 @@ func (a *app) adminDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) adminDeviceByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		a.mutationMu.Lock()
+		defer a.mutationMu.Unlock()
+	}
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/api/devices/"), "/")
 	if rest == "" {
 		http.NotFound(w, r)

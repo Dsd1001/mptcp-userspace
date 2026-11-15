@@ -12,7 +12,7 @@ if [[ $SCOPE == suite ]]; then
     SUITE_VERSION=$(cat "$ROOT/macos/VERSION")
     [[ $VERSION == "$SUITE_VERSION" ]]
     OUT="$ROOT/dist/userspace-$VERSION"
-    SOURCE_ID=$(python3 "$ROOT/scripts/source-manifest.py" --id)
+    SOURCE_ID=$(python3 "$ROOT/scripts/source-manifest.py" --check-frozen)
 else
     [[ $SCOPE == standalone ]]
     OUT="$ROOT/dist/provisioning-$VERSION"
@@ -40,9 +40,9 @@ build_one() {
         amd64) file "$out" | grep -E 'ELF 64-bit.*x86-64.*statically linked' ;;
         arm64) file "$out" | grep -E 'ELF 64-bit.*ARM aarch64.*statically linked' ;;
     esac
-    shasum -a 256 "$out" > "$out.sha256"
+    (cd "$OUT" && shasum -a 256 "$(basename "$out")") > "$out.sha256"
     {
-        printf 'Component: mpx-provision\nVersion: %s\nSource-ID: %s\nTarget: linux/%s\nCGO_ENABLED: 0\nAPI: Profile schema 1 + Bundle schema 2\n' "$VERSION" "$SOURCE_ID" "$arch"
+        printf 'Component: mpx-provision\nVersion: %s\nSource-ID: %s\nTarget: linux/%s\nCGO_ENABLED: 0\nAPI: tunnel_profile schema 4 (tunnel-only)\n' "$VERSION" "$SOURCE_ID" "$arch"
         "$GO" version
         "$GO" version -m "$out"
     } > "$out.BUILDINFO"
@@ -51,7 +51,7 @@ build_one() {
 build_one amd64
 build_one arm64
 if [[ $SCOPE == suite ]]; then
-    [[ $(python3 "$ROOT/scripts/source-manifest.py" --id) == "$SOURCE_ID" ]]
+    [[ $(python3 "$ROOT/scripts/source-manifest.py" --check-frozen) == "$SOURCE_ID" ]]
     cat "$OUT/mpx-provision.sha256"
     cat "$OUT/mpx-provision-linux-arm64.sha256"
 else

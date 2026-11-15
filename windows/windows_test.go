@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"mptcp-desktop/engine/tunnelconfig"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,7 +104,10 @@ func TestDPAPIRoundTrip(t *testing.T) {
 func TestProvisioningEncryptedEnvelope(t *testing.T) {
 	tokenBytes := bytesRepeat(0x23, 32)
 	token := hex.EncodeToString(tokenBytes)
-	profile := validWindowsProfile("encrypted")
+	config := defaultTunnelConfig()
+	config.Tunnel.TransportKey = strings.Repeat("11", 32)
+	config.Tunnel.Relays = []Relay{{Host: "192.0.2.1", Port: 24001}, {Host: "192.0.2.2", Port: 24001}}
+	profile := tunnelconfig.ManagedProfile{SchemaVersion: 4, Kind: "tunnel_profile", ProfileID: "encrypted", Revision: "r1", DisplayName: "Tunnel", Config: config}
 	payload, err := json.Marshal(profile)
 	if err != nil {
 		t.Fatal(err)
@@ -119,11 +123,11 @@ func TestProvisioningEncryptedEnvelope(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	doc, _, err := fetchManagedDocument(srv.URL + "/v1/config/" + token)
+	doc, _, err := fetchManagedDocument(srv.URL + "/v1/tunnel/" + token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Profile == nil || doc.Profile.ProfileID != "encrypted" || doc.Profile.Mode != "userspace_multipath" {
+	if doc.Tunnel == nil || doc.Tunnel.ProfileID != "encrypted" || doc.Tunnel.Config.Kind != "shared_mpx4_tunnel" {
 		t.Fatalf("unexpected document: %+v", doc)
 	}
 }

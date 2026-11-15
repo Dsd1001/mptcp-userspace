@@ -33,11 +33,11 @@ func main() {
 	app.backgroundLaunch = background
 
 	err := wails.Run(&options.App{
-		Title:             "MPTCP Desk",
+		Title:             "MPTCP Tunnel",
 		Width:             1040,
 		Height:            760,
-		MinWidth:          900,
-		MinHeight:         640,
+		MinWidth:          1040,
+		MinHeight:         740,
 		StartHidden:       background,
 		HideWindowOnClose: true,
 		BackgroundColour:  &options.RGBA{R: 246, G: 247, B: 249, A: 255},

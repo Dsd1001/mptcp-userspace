@@ -27,14 +27,11 @@ import (
 	"time"
 
 	"mptcp-desktop/engine/multipath"
+	"mptcp-desktop/engine/tunnelconfig"
 )
 
-type Relay struct {
-	Host         string   `json:"host"`
-	Port         int      `json:"port"`
-	DownloadMbps *float64 `json:"download_mbps,omitempty"`
-	UploadMbps   *float64 `json:"upload_mbps,omitempty"`
-}
+type Relay = tunnelconfig.Relay
+
 type Config struct {
 	SchedulerMode *string `json:"scheduler_mode,omitempty"`
 	SchemaVersion int     `json:"schema_version"`
@@ -129,19 +126,21 @@ func (c Config) weightedCapacities() ([]multipath.PathCapacity, error) {
 }
 
 type Event struct {
-	CapabilityRevision   int    `json:"capability_revision,omitempty"`
-	ProfileID            string `json:"profile_id,omitempty"`
-	ProfileName          string `json:"profile_name,omitempty"`
-	BundleID             string `json:"bundle_id,omitempty"`
-	BundleName           string `json:"bundle_name,omitempty"`
-	ListenPort           int    `json:"listen_port,omitempty"`
-	TotalProfiles        int    `json:"total_profiles,omitempty"`
-	ActiveProfiles       int    `json:"active_profiles,omitempty"`
-	ConnectingProfiles   int    `json:"connecting_profiles,omitempty"`
-	ReconnectingProfiles int    `json:"reconnecting_profiles,omitempty"`
-	FailedProfiles       int    `json:"failed_profiles,omitempty"`
-	RetryAfterSeconds    int    `json:"retry_after_seconds,omitempty"`
-	RetryAttempt         int    `json:"retry_attempt,omitempty"`
+	Routes               []multipath.RouteStats `json:"routes,omitempty"`
+	Inlets               []SharedInletStats     `json:"inlets,omitempty"`
+	CapabilityRevision   int                    `json:"capability_revision,omitempty"`
+	ProfileID            string                 `json:"profile_id,omitempty"`
+	ProfileName          string                 `json:"profile_name,omitempty"`
+	BundleID             string                 `json:"bundle_id,omitempty"`
+	BundleName           string                 `json:"bundle_name,omitempty"`
+	ListenPort           int                    `json:"listen_port,omitempty"`
+	TotalProfiles        int                    `json:"total_profiles,omitempty"`
+	ActiveProfiles       int                    `json:"active_profiles,omitempty"`
+	ConnectingProfiles   int                    `json:"connecting_profiles,omitempty"`
+	ReconnectingProfiles int                    `json:"reconnecting_profiles,omitempty"`
+	FailedProfiles       int                    `json:"failed_profiles,omitempty"`
+	RetryAfterSeconds    int                    `json:"retry_after_seconds,omitempty"`
+	RetryAttempt         int                    `json:"retry_attempt,omitempty"`
 	multipath.SchedulerStats
 	Kind                string                    `json:"kind"`
 	Message             string                    `json:"message,omitempty"`
@@ -189,7 +188,7 @@ func (c Config) validate() error { return c.validateForOS(runtime.GOOS) }
 
 func (c Config) validateForOS(_ string) error {
 	if !c.userspace() {
-		return errors.New("v1.1.2 客户端只支持 schema_version=3、mode=userspace_multipath；请重新配置已移除的 Native MPTCP")
+		return errors.New("v1.1.6 客户端只支持 schema_version=3、mode=userspace_multipath；请重新配置已移除的 Native MPTCP")
 	}
 	{
 		mode, err := c.schedulerMode()
@@ -1242,67 +1241,8 @@ func runClient(ctx context.Context, c Config) error {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
-	var err error
-	switch {
-	case len(os.Args) == 2 && (os.Args[1] == "doctor-userspace" || os.Args[1] == "doctor"):
-
-		err = ensureUserspaceFileLimit()
-		if err == nil {
-			emit(Event{Kind: "ready", Mode: "userspace_multipath", Message: userspaceEnvironmentMessage()})
-		}
-	case len(os.Args) == 2 && os.Args[1] == "version":
-		name := "mptcp-desktop-engine"
-		message := name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") userspace-only client"
-		switch runtime.GOOS {
-		case "linux":
-			name = "mptcp-client"
-			message = name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") userspace client"
-		case "windows":
-			name = "mptcp-client-windows"
-			message = name + " " + multipath.Version + " MPX/4 Protocol Version 4 Stable (" + multipath.ProtocolRelease + ") userspace-only client"
-		}
-		emit(Event{Kind: "ready", Version: multipath.Version, SourceID: multipath.SourceID, WireProtocol: multipath.WireProtocol, Message: message})
-	case len(os.Args) == 2 && (os.Args[1] == "run-managed" || os.Args[1] == "validate-managed"):
-		var in ManagedInput
-		in, err = readManagedInput(os.Stdin)
-		if err == nil {
-			err = runManaged(ctx, in, os.Args[1] == "validate-managed")
-		}
-	case len(os.Args) >= 2 && os.Args[1] == "run-bundle":
-		var b BundlePayload
-		b, err = readBundle(os.Stdin)
-		if err == nil {
-			err = runBundle(ctx, b, os.Args[2:])
-		}
-	case len(os.Args) >= 2 && os.Args[1] == "validate-bundle":
-		var b BundlePayload
-		b, err = readBundle(os.Stdin)
-		if err == nil {
-			var selected []BundleProfile
-			selected, err = b.selected(os.Args[2:])
-			if err == nil {
-				err = validateSelectedForRuntime(selected)
-			}
-		}
-		if err == nil {
-			emit(Event{Kind: "ready", Message: "Bundle 配置与所选 Profile 有效"})
-		}
-	case len(os.Args) == 2 && os.Args[1] == "run":
-		var c Config
-		c, err = readConfig(os.Stdin)
-		if err == nil {
-			err = runClient(ctx, c)
-		}
-	case len(os.Args) == 2 && os.Args[1] == "validate":
-		_, err = readConfig(os.Stdin)
-		if err == nil {
-			emit(Event{Kind: "ready", Message: "TCP 转发配置有效"})
-		}
-	default:
-		err = fmt.Errorf("usage: mptcp-client doctor-userspace | version | run | validate | run-managed | validate-managed | run-bundle [profile-id...] | validate-bundle [profile-id...] (JSON stdin)")
-	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		emit(Event{Kind: "error", Message: err.Error()})
+	if err := runTunnelCommand(ctx, os.Args[1:], os.Stdin); err != nil && !errors.Is(err, context.Canceled) {
+		emit(Event{Kind: "error", Mode: sharedTunnelKind, Message: err.Error()})
 		os.Exit(1)
 	}
 }

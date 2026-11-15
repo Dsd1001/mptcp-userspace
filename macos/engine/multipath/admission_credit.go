@@ -11,6 +11,9 @@ func (s *Session) openBlockReasonLocked() string {
 	if len(s.streams)+len(s.closing) >= MaxStreams {
 		return LimitStreams
 	}
+	if s.peerMaxStreams > 0 && uint64(len(s.streams)+len(s.closing)) >= s.peerMaxStreams {
+		return LimitStreams
+	}
 	if s.controlPendingFrames >= MaxControlPending {
 		return LimitControlFrames
 	}
@@ -163,6 +166,11 @@ func growthOf(outstanding int) int { return max(0, outstanding-StreamWindow) }
 func (st *Stream) grantCreditLocked(desired uint64) {
 	if st.rxRead > ^uint64(0)-MaxStreamWindow {
 		return
+	}
+	if st.s.routeGroups != nil {
+		target := st.routeWindowTargetLocked()
+		st.windowTarget, st.initialWindow = target, target
+		desired = min(desired, st.rxRead+uint64(target))
 	}
 	desired = min(desired, st.rxRead+MaxStreamWindow)
 	if desired > st.rxLimit {

@@ -176,6 +176,10 @@ def check_stable_release(tests: dict, scheduler: dict, identity: str, version: s
 
 
 def main() -> None:
+    # Tunnel releases use the complete, fail-closed multi-platform gate.
+    if (ROOT/'macos/VERSION').read_text().strip().startswith('1.2.'):
+        module('tunnel_suite', ROOT/'scripts/tunnel-suite.py').main()
+        return
     parser=argparse.ArgumentParser()
     parser.add_argument('--require-live',action='store_true',help='Require 128/256/512/1024/2048 x 30s x 2 AND the source-matched 180s App/Surge mixed run')
     parser.add_argument('--engineering',action='store_true',help='Package explicitly unpromoted engineering artifacts; never marks failed performance/runtime gates passed')
@@ -189,7 +193,7 @@ def main() -> None:
     args=parser.parse_args()
     gates.require(sum(bool(x) for x in [args.engineering,args.require_live,args.untested_release,args.preview_release,args.background_release,args.feature_release,args.stable_release,args.stable_candidate,args.stable_patch]) <= 1,'Select at most one packaging mode')
     version=(ROOT/'macos/VERSION').read_text().strip()
-    gates.require(version in {'0.9.8','0.10.0','0.10.1','0.10.2','0.10.3','0.10.4','0.10.5','0.10.6','0.10.7','0.10.8','0.10.9','0.10.10','0.10.11','0.10.12','1.0.0','1.0.1','1.0.2','1.0.3','1.0.4','1.0.5','1.1.0','1.1.1','1.1.2'},'Unsupported release version for this packaging script')
+    gates.require(version in {'0.9.8','0.10.0','0.10.1','0.10.2','0.10.3','0.10.4','0.10.5','0.10.6','0.10.7','0.10.8','0.10.9','0.10.10','0.10.11','0.10.12','1.0.0','1.0.1','1.0.2','1.0.3','1.0.4','1.0.5','1.1.0','1.1.1','1.1.2','1.1.3','1.1.4','1.1.5','1.1.6'},'Unsupported release version for this packaging script')
     if args.feature_release: gates.require(version.startswith('0.10.'),'--feature-release is defined for 0.10.x')
     if args.stable_release: gates.require(version==STABLE_VERSION,'--stable-release is defined for 1.0.0')
     if args.stable_candidate: gates.require(version==STABLE_VERSION,'--stable-candidate is defined for 1.0.0')
