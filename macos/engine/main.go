@@ -129,19 +129,21 @@ func (c Config) weightedCapacities() ([]multipath.PathCapacity, error) {
 }
 
 type Event struct {
-	CapabilityRevision   int    `json:"capability_revision,omitempty"`
-	ProfileID            string `json:"profile_id,omitempty"`
-	ProfileName          string `json:"profile_name,omitempty"`
-	BundleID             string `json:"bundle_id,omitempty"`
-	BundleName           string `json:"bundle_name,omitempty"`
-	ListenPort           int    `json:"listen_port,omitempty"`
-	TotalProfiles        int    `json:"total_profiles,omitempty"`
-	ActiveProfiles       int    `json:"active_profiles,omitempty"`
-	ConnectingProfiles   int    `json:"connecting_profiles,omitempty"`
-	ReconnectingProfiles int    `json:"reconnecting_profiles,omitempty"`
-	FailedProfiles       int    `json:"failed_profiles,omitempty"`
-	RetryAfterSeconds    int    `json:"retry_after_seconds,omitempty"`
-	RetryAttempt         int    `json:"retry_attempt,omitempty"`
+	Routes               []multipath.RouteStats `json:"routes,omitempty"`
+	Inlets               []SharedInletStats     `json:"inlets,omitempty"`
+	CapabilityRevision   int                    `json:"capability_revision,omitempty"`
+	ProfileID            string                 `json:"profile_id,omitempty"`
+	ProfileName          string                 `json:"profile_name,omitempty"`
+	BundleID             string                 `json:"bundle_id,omitempty"`
+	BundleName           string                 `json:"bundle_name,omitempty"`
+	ListenPort           int                    `json:"listen_port,omitempty"`
+	TotalProfiles        int                    `json:"total_profiles,omitempty"`
+	ActiveProfiles       int                    `json:"active_profiles,omitempty"`
+	ConnectingProfiles   int                    `json:"connecting_profiles,omitempty"`
+	ReconnectingProfiles int                    `json:"reconnecting_profiles,omitempty"`
+	FailedProfiles       int                    `json:"failed_profiles,omitempty"`
+	RetryAfterSeconds    int                    `json:"retry_after_seconds,omitempty"`
+	RetryAttempt         int                    `json:"retry_attempt,omitempty"`
 	multipath.SchedulerStats
 	Kind                string                    `json:"kind"`
 	Message             string                    `json:"message,omitempty"`
@@ -1287,6 +1289,15 @@ func main() {
 		if err == nil {
 			emit(Event{Kind: "ready", Message: "Bundle 配置与所选 Profile 有效"})
 		}
+	case len(os.Args) == 2 && (os.Args[1] == "run-tunnel" || os.Args[1] == "validate-tunnel"):
+		var c SharedTunnelConfig
+		c, err = readSharedTunnel(os.Stdin)
+		if err == nil && os.Args[1] == "run-tunnel" {
+			err = runSharedTunnel(ctx, c)
+		}
+		if err == nil && os.Args[1] == "validate-tunnel" {
+			emit(Event{Kind: "ready", Mode: sharedTunnelKind, Message: "shared tunnel configuration is valid"})
+		}
 	case len(os.Args) == 2 && os.Args[1] == "run":
 		var c Config
 		c, err = readConfig(os.Stdin)
@@ -1299,7 +1310,7 @@ func main() {
 			emit(Event{Kind: "ready", Message: "TCP 转发配置有效"})
 		}
 	default:
-		err = fmt.Errorf("usage: mptcp-client doctor-userspace | version | run | validate | run-managed | validate-managed | run-bundle [profile-id...] | validate-bundle [profile-id...] (JSON stdin)")
+		err = fmt.Errorf("usage: mptcp-client doctor-userspace | version | run | validate | run-tunnel | validate-tunnel | run-managed | validate-managed | run-bundle [profile-id...] | validate-bundle [profile-id...] (JSON stdin)")
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		emit(Event{Kind: "error", Message: err.Error()})

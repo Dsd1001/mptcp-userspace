@@ -670,6 +670,7 @@ func (s *Session) readyLocked(p *outbound, front bool) {
 	}
 	s.readyFrames++
 	s.readyDataBytes += p.cost
+	s.routeReadyLocked(rq, p.cost)
 	if wasEmpty {
 		if front {
 			rq.entry = s.readyStreams.PushFront(rq)
@@ -697,6 +698,7 @@ func (s *Session) unreadyLocked(p *outbound) {
 		return
 	}
 	rq.frames.Remove(p.ready)
+	s.routeUnreadyLocked(rq, p.cost)
 	p.ready = nil
 	if s.readyFrames > 0 {
 		s.readyFrames--
@@ -768,6 +770,7 @@ func (s *Session) dispatchLocked(now time.Time) {
 		c.queued += p.cost
 		select {
 		case c.queue <- sendTask{p: p, generation: p.generation}:
+			s.routeDispatchedLocked(rq, p)
 			s.schedulerAllocatedLocked(c, p, now)
 			if advanceFair {
 				s.dispatchSequence++
@@ -790,15 +793,9 @@ func (s *Session) dispatchLocked(now time.Time) {
 	}
 
 	for dispatched < dataDispatchBatch && s.readyStreams.Len() != 0 {
-		e := s.readyStreams.Front()
-		rq, _ := e.Value.(*dataReadyQueue)
-		if rq == nil || rq.frames.Len() == 0 {
-			if rq != nil {
-				delete(s.ready, rq.stream)
-				rq.entry = nil
-			}
-			s.readyStreams.Remove(e)
-			continue
+		rq := s.nextDataReadyLocked()
+		if rq == nil {
+			return
 		}
 		if !dispatchOne(rq, true) {
 			return
@@ -806,7 +803,7 @@ func (s *Session) dispatchLocked(now time.Time) {
 		// Preserve the old bounded bulk bonus without scanning every ready
 		// Stream. A sustained backlog becomes the current O(1) bulk hint and
 		// receives one extra turn per eight fair dispatches.
-		if s.dispatchSequence%8 == 0 && s.bulkReady != nil && s.bulkReady.frames.Len() >= 4 {
+		if s.routeGroups == nil && s.dispatchSequence%8 == 0 && s.bulkReady != nil && s.bulkReady.frames.Len() >= 4 {
 			bonus := s.bulkReady
 			if !dispatchOne(bonus, false) {
 				return

@@ -239,6 +239,21 @@ func productServiceResponseError(kind byte, response []byte) error {
 	if response[5] == 0 {
 		return nil
 	}
+	if kind == productServiceRouteProbe {
+		return ErrRoutedUnsupported
+	}
+	if kind == productServiceRoutedTCP {
+		switch response[5] {
+		case 3:
+			return ErrRouteDial
+		case 4:
+			return ErrRouteBusy
+		case 5:
+			return ErrRouteNotFound
+		default:
+			return ErrRoutedUnsupported
+		}
+	}
 	if response[5] == 1 && (kind == productServiceProbe || kind == productServiceUOT) {
 		return ErrUOTUnsupported
 	}
@@ -257,7 +272,7 @@ func (s *Session) openProductService(parent context.Context, kind byte) (*Stream
 	}
 	deadline, _ := ctx.Deadline()
 	replyDeadline := time.Time{}
-	if kind == productServiceProbe {
+	if kind == productServiceProbe || kind == productServiceRouteProbe {
 		replyDeadline = deadline
 	}
 	st.armProductReply(kind, replyDeadline)
@@ -265,7 +280,7 @@ func (s *Session) openProductService(parent context.Context, kind byte) (*Stream
 	request := []byte{'M', 'P', 'S', '1', kind, 0}
 	err = writeAll(st, request)
 	st.SetWriteDeadline(time.Time{})
-	if err == nil && kind == productServiceProbe {
+	if err == nil && (kind == productServiceProbe || kind == productServiceRouteProbe) {
 		err = st.waitProductReply()
 	}
 	if err != nil {
@@ -300,7 +315,19 @@ func (srv *Server) openProductBackend(st *Stream) {
 			st.Read(end[:])
 		}
 	}
+	if len(srv.tcpRoutes) != 0 && kind != productServiceRoutedTCP && kind != productServiceRouteProbe {
+		finish(2)
+		return
+	}
 	switch kind {
+	case productServiceRouteProbe:
+		if len(srv.tcpRoutes) == 0 {
+			finish(2)
+		} else {
+			finish(0)
+		}
+	case productServiceRoutedTCP:
+		srv.openRoutedBackend(st, finish)
 	case productServiceProbe:
 		if srv.uotBackend == nil {
 			finish(1)

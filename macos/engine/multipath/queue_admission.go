@@ -45,7 +45,7 @@ func (s *Session) queueAdmissionRoomLocked(st *Stream) int {
 		return MaxPayload
 	}
 	// Account for the per-frame pending cost in the same units as readyDataBytes.
-	return max(0, s.queueAdmissionCeilingLocked(st)-s.readyDataBytes-64)
+	return min(max(0, s.queueAdmissionCeilingLocked(st)-s.readyDataBytes-64), s.routeAdmissionRoomLocked(st))
 }
 
 // Called after successful dispatch or removal of unscheduled DATA. Notify

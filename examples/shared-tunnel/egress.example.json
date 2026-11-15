@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "listen_tcp": "0.0.0.0:24002",
+  "transport_key": "REPLACE_WITH_64_HEX_CHARACTERS",
+  "max_sessions": 4,
+  "scheduler_mode": "aggregate",
+  "tcp_routes": [
+    {
+      "id": 1,
+      "name": "HKBN",
+      "backend": "hkbn.example.invalid:8388",
+      "weight": 1,
+      "max_connections": 512
+    },
+    {
+      "id": 2,
+      "name": "HKT",
+      "backend": "hkt.example.invalid:8388",
+      "weight": 1,
+      "max_connections": 512
+    },
+    {
+      "id": 3,
+      "name": "iCable",
+      "backend": "icable.example.invalid:8388",
+      "weight": 1,
+      "max_connections": 512
+    }
+  ]
+}

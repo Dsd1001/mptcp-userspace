@@ -1,5 +1,7 @@
 # MPTCP Userspace
 
+> **Experimental development branch:** Shared MPX/4 routed TCP core; GUI/remote Bundle integration and production WAN acceptance are not complete. See [implementation scope](docs/userspace/SHARED-TUNNEL-EXPERIMENTAL.zh-CN.md). This is not a production release.
+
 MPTCP Userspace is an application-layer multipath transport for macOS and Linux. It combines multiple ordinary TCP Carrier connections into one authenticated **MPX/4 Protocol Version 4 Stable** Session, multiplexes many application Streams over those Carriers, and can retransmit or reinject reliable data when a path slows down or disappears.
 
 Current release: **v1.1.1**

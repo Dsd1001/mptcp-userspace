@@ -45,6 +45,7 @@ type PathStats struct {
 }
 
 type Stats struct {
+	Routes []RouteStats `json:"routes,omitempty"`
 	SchedulerStats
 	Paths               int            `json:"paths"`
 	Connections         int            `json:"connections"`
@@ -88,9 +89,11 @@ type outbound struct {
 }
 
 type dataReadyQueue struct {
-	stream uint64
-	frames list.List
-	entry  *list.Element
+	route      *routeGroup
+	routeEntry *list.Element
+	stream     uint64
+	frames     list.List
+	entry      *list.Element
 }
 
 type sendTask struct {
@@ -139,6 +142,9 @@ type carrier struct {
 // All stream, ledger and carrier accounting lives under one mutex. Network I/O
 // and backend I/O never hold it. Readers cannot block unrelated logical flows.
 type Session struct {
+	routeGroups                                      map[uint32]*routeGroup
+	routeReady                                       list.List
+	routeReadyWeight                                 int
 	credit                                           connectionCredit
 	closing                                          map[uint64]*Stream
 	terminal                                         map[uint64]terminalStream
@@ -1452,6 +1458,7 @@ func (s *Session) Snapshot() Stats {
 	out.SessionRefillTarget = s.sessionRefillTargetLocked()
 	out.StandbyWindow = s.standbyWindowLocked()
 	out.Resources = s.resourceSnapshotLocked()
+	out.Routes = s.routeSnapshotLocked()
 	out.Lifecycle = s.lifecycleSnapshotLocked()
 	out.ReadyFrames = s.controlReady.Len() + s.readyFrames
 	for _, st := range s.streams {

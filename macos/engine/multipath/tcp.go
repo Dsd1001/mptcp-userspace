@@ -187,6 +187,7 @@ func (s *Session) maintainCarrier(id uint64, address string, key []byte) {
 
 // Server owns a session registry shared with the independent UDP listener.
 type Server struct {
+	tcpRoutes                            map[uint32]*routedBackend // immutable after construction
 	udpStarted                           bool
 	ctx                                  context.Context
 	cancel                               context.CancelFunc
@@ -218,6 +219,13 @@ func NewServer(ctx context.Context, token, backend string, maxSessions int) (*Se
 // modes in Core. A RECEIVE_CAPACITY_HINT may still let Auto select Weighted
 // behavior for server-to-client traffic without changing Core semantics.
 func NewServerWithScheduler(ctx context.Context, token, backend string, maxSessions int, requested SchedulerMode) (*Server, error) {
+	if _, _, err := net.SplitHostPort(backend); err != nil {
+		return nil, err
+	}
+	return newServerWithScheduler(ctx, token, backend, maxSessions, requested)
+}
+
+func newServerWithScheduler(ctx context.Context, token, backend string, maxSessions int, requested SchedulerMode) (*Server, error) {
 	mode, err := ParseSchedulerMode(string(requested))
 	if err != nil {
 		return nil, err
@@ -228,9 +236,6 @@ func NewServerWithScheduler(ctx context.Context, token, backend string, maxSessi
 	}
 	if maxSessions < 1 || maxSessions > 16 {
 		return nil, errors.New("max_sessions must be 1-16")
-	}
-	if _, _, err = net.SplitHostPort(backend); err != nil {
-		return nil, err
 	}
 	child, cancel := context.WithCancel(ctx)
 	return &Server{ctx: child, cancel: cancel, key: key, backend: backend, maxSessions: maxSessions, schedulerDefault: mode, sessions: make(map[sessionID]*Session), handshakes: make(map[net.Conn]bool)}, nil
@@ -322,6 +327,9 @@ func (srv *Server) Serve(listener net.Listener) error {
 
 func (srv *Server) attach(c net.Conn) error {
 	carrier, productMux, err := readProductCarrier(c)
+	if err == nil && len(srv.tcpRoutes) != 0 && !productMux {
+		return ErrRoutedUnsupported
+	}
 	key := srv.key
 	if productMux {
 		key = productServiceKey(key)
@@ -430,6 +438,18 @@ func (srv *Server) attach(c net.Conn) error {
 		}
 		s = newSession(srv.ctx, h.id, true, handler, serverMode)
 		s.productMux = productMux
+		if len(srv.tcpRoutes) != 0 {
+			policies := make([]RoutePolicy, 0, len(srv.tcpRoutes))
+			for _, route := range srv.tcpRoutes {
+				policies = append(policies, RoutePolicy{ID: route.config.ID, Weight: route.config.Weight})
+			}
+			if e := s.ConfigureRoutePolicies(policies); e != nil {
+				srv.mu.Unlock()
+				s.Close()
+				sc.Close()
+				return e
+			}
+		}
 		srv.sessions[h.id] = s
 		srv.handshakeOutcomeLocked("session_created")
 	} else {

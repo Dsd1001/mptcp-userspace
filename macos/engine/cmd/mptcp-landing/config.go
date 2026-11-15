@@ -17,16 +17,17 @@ import (
 )
 
 type Config struct {
-	SchemaVersion int    `json:"schema_version"`
-	ListenTCP     string `json:"listen_tcp"`
-	ListenUDP     string `json:"listen_udp"`
-	BackendTCP    string `json:"backend_tcp"`
-	BackendUDP    string `json:"backend_udp"`
-	UDPEnabled    bool   `json:"udp_enabled"`
-	UOTEnabled    bool   `json:"uot_enabled,omitempty"`
-	TransportKey  string `json:"transport_key"`
-	MaxSessions   int    `json:"max_sessions"`
-	SchedulerMode string `json:"scheduler_mode,omitempty"`
+	TCPRoutes     []multipath.TCPRoute `json:"tcp_routes,omitempty"`
+	SchemaVersion int                  `json:"schema_version"`
+	ListenTCP     string               `json:"listen_tcp"`
+	ListenUDP     string               `json:"listen_udp"`
+	BackendTCP    string               `json:"backend_tcp"`
+	BackendUDP    string               `json:"backend_udp"`
+	UDPEnabled    bool                 `json:"udp_enabled"`
+	UOTEnabled    bool                 `json:"uot_enabled,omitempty"`
+	TransportKey  string               `json:"transport_key"`
+	MaxSessions   int                  `json:"max_sessions"`
+	SchedulerMode string               `json:"scheduler_mode,omitempty"`
 }
 
 func defaultConfig() (Config, error) {
@@ -54,6 +55,9 @@ func endpoint(address string, listen bool) error {
 	return nil
 }
 func (c Config) validate() error {
+	if len(c.TCPRoutes) != 0 {
+		return c.validateRouted()
+	}
 	if c.SchemaVersion != 1 {
 		return errors.New("Landing 仅接受 schema_version=1")
 	}
@@ -135,7 +139,13 @@ func runServer(ctx context.Context, c Config, statusFile string, out io.Writer) 
 	if err := c.validate(); err != nil {
 		return err
 	}
-	srv, err := multipath.NewServerWithScheduler(ctx, c.TransportKey, c.BackendTCP, c.MaxSessions, multipath.SchedulerMode(c.SchedulerMode))
+	var srv *multipath.Server
+	var err error
+	if len(c.TCPRoutes) != 0 {
+		srv, err = multipath.NewRoutedServerWithScheduler(ctx, c.TransportKey, c.TCPRoutes, c.MaxSessions, multipath.SchedulerMode(c.SchedulerMode))
+	} else {
+		srv, err = multipath.NewServerWithScheduler(ctx, c.TransportKey, c.BackendTCP, c.MaxSessions, multipath.SchedulerMode(c.SchedulerMode))
+	}
 	if err != nil {
 		return err
 	}

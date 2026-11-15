@@ -261,6 +261,14 @@ func (st *Stream) writeAllowanceLocked() (int, int) {
 	n := min(st.writeRemaining, MaxPayload,
 		int(min(uint64(MaxStreamWindow), st.peerLimit-st.txNext)),
 		int(min(uint64(MaxPayload), fc.peerLimit-fc.txCommitted)))
+	// A bounded early-data allowance avoids filling the Session while the
+	// route backend is connecting. A private reply pump wakes this writer.
+	if st.routeID != 0 && !s.server && !st.routeConfirmed {
+		if st.txNext >= routedEarlyDataLimit {
+			return 0, waitStreamWindow
+		}
+		n = min(n, routedEarlyDataLimit-int(st.txNext))
+	}
 	// Delay commitment of new DATA when unscheduled work is already deep.
 	// MPX/4 Stream/Session WINDOWs remain the authoritative credit limits.
 	if s.queueAdmissionLimit > 0 && s.queueAdmissionRoomLocked(st) < n {

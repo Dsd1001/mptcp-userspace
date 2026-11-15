@@ -30,6 +30,8 @@ type receivePage struct {
 // Stream satisfies net.Conn and TCP-style CloseWrite. Both byte credit and
 // actual allocated receive pages have independent hard bounds.
 type Stream struct {
+	routeID                                      uint32 // guarded by Session.mu; immutable after service selection
+	routeConfirmed                               bool   // private service response validated; guarded by Session.mu
 	receivedReset                                bool
 	finalConsumedQueued                          bool
 	writeEntry                                   *list.Element
@@ -370,6 +372,12 @@ func (st *Stream) consumeProductReplyLocked() error {
 	st.productReplyPending = false
 	st.productReplyDeadline = time.Time{}
 	st.productReplyErr = err
+	if err == nil && st.productReplyKind == productServiceRoutedTCP {
+		st.s.mu.Lock()
+		st.routeConfirmed = true
+		st.s.signalStreamWriterLocked(st)
+		st.s.mu.Unlock()
+	}
 	if err != nil {
 		st.Close()
 	}

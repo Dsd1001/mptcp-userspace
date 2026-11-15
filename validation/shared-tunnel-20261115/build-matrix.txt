@@ -1,0 +1,9 @@
+go version go1.27.2 darwin/arm64
+.scratch/shared-tunnel-20261115/bin/mptcp-client-shared-darwin-amd64:      Mach-O 64-bit executable x86_64
+.scratch/shared-tunnel-20261115/bin/mptcp-client-shared-darwin-arm64:      Mach-O 64-bit executable arm64
+.scratch/shared-tunnel-20261115/bin/mptcp-client-shared-linux-amd64:       ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, Go BuildID=S9ZJYXuwiK68wkmXVIDK/j7JPJV2qhaGzu490I2vj/iEwUxC0FM5sQuTlXyVcz/Yp-5Hx4AQi4dr2w7pPwi, BuildID[sha1]=f4579f971a808284c86dfd9e92ad519fea8b3bf6, with debug_info, not stripped
+.scratch/shared-tunnel-20261115/bin/mptcp-client-shared-linux-arm64:       ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, Go BuildID=bYarH8QfU9ULDt6mdtdz/CYo-OXm6Ii_CCjrceBc4/NL3DGamgdlGRxdQC-jIt/bEzV871u6lnDumDp_5p-, BuildID[sha1]=77d19eefef9e48fa13143f5c3aab8b83744d85b4, with debug_info, not stripped
+.scratch/shared-tunnel-20261115/bin/mptcp-client-shared-windows-amd64.exe: PE32+ executable (console) x86-64, for MS Windows
+.scratch/shared-tunnel-20261115/bin/mptcp-egress-shared-darwin-arm64:      Mach-O 64-bit executable arm64
+.scratch/shared-tunnel-20261115/bin/mptcp-egress-shared-linux-amd64:       ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, Go BuildID=NyTFmNul6bMPwBK5mBxs/0H-6guOmlgEzCRscZQVs/6SCnv2EFrQS339SiRBQ9/LIWgxPIsXyv31D0r_RHG, BuildID[sha1]=cc7a5213c197aa948ecb6817628c226418484ec6, with debug_info, not stripped
+.scratch/shared-tunnel-20261115/bin/mptcp-egress-shared-linux-arm64:       ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, Go BuildID=r9X7iOOeu5x7J5fQGmIW/tk7rlTMPiMTTXe0mciWf/7tI1uxB0NWTkrislvcGG/r2-Vb4uYK40VdEOF6gep, BuildID[sha1]=1447456558f79fed79f277fd17ce23981b39c816, with debug_info, not stripped

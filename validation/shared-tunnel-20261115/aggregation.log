@@ -1,0 +1,15 @@
+=== RUN   TestRoutedControlledAggregation
+=== RUN   TestRoutedControlledAggregation/paths_1
+    routed_performance_test.go:58: ROUTED_MEASUREMENT paths=1 payload_bytes=8388608 elapsed_seconds=4.136166 goodput_mbps=16.225 per_path_limit_mibps=2 scope=single-stream-loopback-echo
+=== RUN   TestRoutedControlledAggregation/paths_2
+    routed_performance_test.go:58: ROUTED_MEASUREMENT paths=2 payload_bytes=8388608 elapsed_seconds=2.186212 goodput_mbps=30.696 per_path_limit_mibps=2 scope=single-stream-loopback-echo
+=== RUN   TestRoutedControlledAggregation/paths_6
+    routed_performance_test.go:58: ROUTED_MEASUREMENT paths=6 payload_bytes=8388608 elapsed_seconds=0.864493 goodput_mbps=77.628 per_path_limit_mibps=2 scope=single-stream-loopback-echo
+=== NAME  TestRoutedControlledAggregation
+    routed_performance_test.go:65: ROUTED_SPEEDUP two_paths=1.892x six_paths=4.784x
+--- PASS: TestRoutedControlledAggregation (8.60s)
+    --- PASS: TestRoutedControlledAggregation/paths_1 (4.89s)
+    --- PASS: TestRoutedControlledAggregation/paths_2 (2.65s)
+    --- PASS: TestRoutedControlledAggregation/paths_6 (1.07s)
+PASS
+ok  	mptcp-desktop/engine/multipath	8.728s

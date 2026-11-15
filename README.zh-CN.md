@@ -1,5 +1,7 @@
 # MPTCP Userspace
 
+> **实验开发分支**：本分支增加 MPX/4 多目标共享隧道核心，尚未接入 GUI/远端 Bundle，也未通过生产 WAN 验收。请先阅读 [实现边界与验证说明](docs/userspace/SHARED-TUNNEL-EXPERIMENTAL.zh-CN.md)，不要当作正式发布安装。
+
 MPTCP Userspace 是一套运行在 macOS / Linux 上的**应用层多路径传输系统**。它把多条普通 TCP 连接组织成一个经过认证的 **MPX/4 Protocol Version 4 Stable** Session，在 Session 内承载多个应用 Stream，并在路径变慢、丢包或断开时支持跨 Carrier 重传与 reinjection。
 
 当前正式版：**v1.1.2**

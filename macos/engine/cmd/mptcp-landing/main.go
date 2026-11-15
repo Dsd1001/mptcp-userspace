@@ -51,6 +51,9 @@ func (t *terminal) confirm(label string) (bool, error) {
 	return v == "yes", e
 }
 func (t *terminal) configure(c Config) (Config, error) {
+	if len(c.TCPRoutes) != 0 {
+		return c, errors.New("routed tunnel configuration must be edited through JSON config --source; interactive fixed-backend editing is disabled")
+	}
 	var err error
 	fmt.Fprintln(t.out, "请使用独立于旧 Native MPTCP 和 SS backend 的新聚合端口。传输密钥不是 SS 密码。")
 	if c.ListenTCP, err = t.line("TCP 聚合监听", c.ListenTCP); err != nil {
@@ -301,15 +304,30 @@ func doctor(ctx context.Context, m *manager, c Config, out io.Writer) error {
 	fmt.Fprintf(out, "版本 %s；主机 %s/%s；配置有效；传输密钥已隐藏。\n", multipath.Version, runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintln(out, "运行协议为应用层 MPX/4 Protocol Version 4 Stable（protocol-v4.0.0）；Client/Landing 建议使用同一 1.0.0 套件。无需启用内核 MPTCP，不修改防火墙、路由或 SS 配置。")
 	var failures []error
-	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
-	backend, err := multipath.PlainDial(probe, c.BackendTCP)
-	cancel()
-	if err != nil {
-		fmt.Fprintf(out, "TCP backend 不可连接：%v\n", err)
-		failures = append(failures, err)
+	if len(c.TCPRoutes) != 0 {
+		for _, route := range c.TCPRoutes {
+			probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+			conn, err := multipath.PlainDial(probe, route.Backend)
+			cancel()
+			if err != nil {
+				failures = append(failures, fmt.Errorf("route %d: %w", route.ID, err))
+				fmt.Fprintf(out, "TCP route %d unavailable: %v\n", route.ID, err)
+			} else {
+				conn.Close()
+				fmt.Fprintf(out, "TCP route %d accepts connections; application authentication not tested\n", route.ID)
+			}
+		}
 	} else {
-		backend.Close()
-		fmt.Fprintln(out, "TCP backend 接受连接；尚未验证 SS 密码、算法或应用请求。")
+		probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+		backend, err := multipath.PlainDial(probe, c.BackendTCP)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(out, "TCP backend 不可连接：%v\n", err)
+			failures = append(failures, err)
+		} else {
+			backend.Close()
+			fmt.Fprintln(out, "TCP backend 接受连接；尚未验证 SS 密码、算法或应用请求。")
+		}
 	}
 	if c.UOTEnabled {
 		fmt.Fprintln(out, "UoT 已启用：复用 TCP 聚合监听；客户端需选择 UoT，不需要 Relay 的 UDP 转发端口。")

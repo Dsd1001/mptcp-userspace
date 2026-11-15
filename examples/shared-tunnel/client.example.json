@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "shared_mpx4_tunnel",
+  "tunnel": {
+    "transport_key": "REPLACE_WITH_64_HEX_CHARACTERS",
+    "scheduler_mode": "aggregate",
+    "relays": [
+      {
+        "host": "198.51.100.11",
+        "port": 24002
+      },
+      {
+        "host": "198.51.100.12",
+        "port": 24002
+      },
+      {
+        "host": "198.51.100.13",
+        "port": 24002
+      },
+      {
+        "host": "198.51.100.14",
+        "port": 24002
+      },
+      {
+        "host": "198.51.100.15",
+        "port": 24002
+      },
+      {
+        "host": "198.51.100.16",
+        "port": 24002
+      }
+    ]
+  },
+  "inlets": [
+    {
+      "id": "hkbn",
+      "name": "HKBN",
+      "listen_port": 1081,
+      "route_id": 1,
+      "weight": 1,
+      "max_connections": 512
+    },
+    {
+      "id": "hkt",
+      "name": "HKT",
+      "listen_port": 1082,
+      "route_id": 2,
+      "weight": 1,
+      "max_connections": 512
+    },
+    {
+      "id": "icable",
+      "name": "iCable",
+      "listen_port": 1083,
+      "route_id": 3,
+      "weight": 1,
+      "max_connections": 512
+    }
+  ]
+}
