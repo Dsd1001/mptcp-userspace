@@ -191,7 +191,7 @@ func TestValidatePublicBase(t *testing.T) {
 			t.Fatalf("%q rejected: %v", good, err)
 		}
 	}
-	for _, bad := range []string{"http://config.example.test", "https://user:pass@config.example.test", "https://config.example.test/#fragment"} {
+	for _, bad := range []string{"http://config.example.test", "https://user:pass@config.example.test", "https://config.example.test/#fragment", "https://config.example.test/?tenant=1", "https://config.example.test?tenant=1", "https://config.example.test?"} {
 		if err := validatePublicBase(bad); err == nil {
 			t.Fatalf("%q accepted", bad)
 		}

@@ -196,6 +196,23 @@ func (s *deviceStore) saveLocked() error {
 	return os.Rename(tmp, s.path)
 }
 
+// The store lock keeps an uncommitted record invisible to readers. Preserve the
+// previous value if persistence fails, so a rejected control operation cannot
+// take effect in memory or invalidate a still-persisted device credential.
+func (s *deviceStore) saveRecordLocked(rec deviceRecord) error {
+	previous, existed := s.records[rec.ID]
+	s.records[rec.ID] = rec
+	if err := s.saveLocked(); err != nil {
+		if existed {
+			s.records[rec.ID] = previous
+		} else {
+			delete(s.records, rec.ID)
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *deviceStore) signalLocked() {
 	close(s.notify)
 	s.notify = make(chan struct{})
@@ -222,10 +239,13 @@ func randomPairingCode() (string, error) {
 }
 
 func appendDeviceAudit(rec *deviceRecord, actor, action, detail string) {
-	rec.Audit = append(rec.Audit, deviceAudit{At: time.Now().UTC(), Actor: actor, Action: action, Detail: detail})
-	if len(rec.Audit) > 80 {
-		rec.Audit = append([]deviceAudit(nil), rec.Audit[len(rec.Audit)-80:]...)
+	// deviceRecord copies share slices. Build a new audit before changing the
+	// candidate so failed saves also leave the previous backing array untouched.
+	history := rec.Audit
+	if len(history) >= 80 {
+		history = history[len(history)-79:]
 	}
+	rec.Audit = append(append([]deviceAudit(nil), history...), deviceAudit{At: time.Now().UTC(), Actor: actor, Action: action, Detail: detail})
 }
 
 func validateDesiredState(value string) error {
@@ -280,9 +300,7 @@ func (s *deviceStore) create(name, assignmentType, assignmentID, desiredState st
 	}
 	appendDeviceAudit(&rec, "admin", "device_created", "")
 	s.mu.Lock()
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
-		delete(s.records, id)
+	if err := s.saveRecordLocked(rec); err != nil {
 		s.mu.Unlock()
 		return adminDevice{}, err
 	}
@@ -352,8 +370,7 @@ func (s *deviceStore) update(id string, in adminDeviceInput) (adminDevice, error
 		rec.UpdatedAt = time.Now().UTC()
 		appendDeviceAudit(&rec, "admin", "desired_state_updated", fmt.Sprintf("state=%s assignment=%s:%s", rec.DesiredState, rec.AssignmentType, rec.AssignmentID))
 	}
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	if changed {
@@ -382,8 +399,7 @@ func (s *deviceStore) newPairing(id string) (adminDevice, error) {
 	rec.Revision++
 	rec.UpdatedAt = now
 	appendDeviceAudit(&rec, "admin", "pairing_rotated", "")
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	s.signalLocked()
@@ -395,11 +411,13 @@ func (s *deviceStore) newPairing(id string) (adminDevice, error) {
 func (s *deviceStore) delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.records[id]; !ok {
+	previous, ok := s.records[id]
+	if !ok {
 		return os.ErrNotExist
 	}
 	delete(s.records, id)
 	if err := s.saveLocked(); err != nil {
+		s.records[id] = previous
 		return err
 	}
 	s.signalLocked()
@@ -417,8 +435,7 @@ func (s *deviceStore) bumpRestart(id string) (adminDevice, error) {
 	rec.Revision++
 	rec.UpdatedAt = time.Now().UTC()
 	appendDeviceAudit(&rec, "admin", "restart_requested", fmt.Sprintf("generation=%d", rec.RestartGeneration))
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	s.signalLocked()
@@ -436,8 +453,7 @@ func (s *deviceStore) bumpSync(id string) (adminDevice, error) {
 	rec.Revision++
 	rec.UpdatedAt = time.Now().UTC()
 	appendDeviceAudit(&rec, "admin", "config_sync_requested", fmt.Sprintf("generation=%d", rec.SyncGeneration))
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	s.signalLocked()
@@ -463,8 +479,7 @@ func (s *deviceStore) bumpUpdate(id, version string) (adminDevice, error) {
 	rec.Revision++
 	rec.UpdatedAt = time.Now().UTC()
 	appendDeviceAudit(&rec, "admin", "update_requested", fmt.Sprintf("generation=%d version=%s", rec.UpdateGeneration, version))
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return adminDevice{}, err
 	}
 	s.signalLocked()
@@ -499,8 +514,7 @@ func (s *deviceStore) pair(code, deviceName, appVersion string) (devicePairRespo
 		rec.LastSeen = &now
 		rec.Observed.AppVersion = strings.TrimSpace(appVersion)
 		appendDeviceAudit(&rec, "device", "paired", "")
-		s.records[id] = rec
-		if err := s.saveLocked(); err != nil {
+		if err := s.saveRecordLocked(rec); err != nil {
 			return devicePairResponse{}, err
 		}
 		s.signalLocked()
@@ -544,8 +558,7 @@ func (s *deviceStore) touch(id string, observed *deviceObserved) (deviceRecord, 
 		needSave = true
 	}
 	if needSave {
-		s.records[id] = rec
-		if err := s.saveLocked(); err != nil {
+		if err := s.saveRecordLocked(rec); err != nil {
 			return deviceRecord{}, err
 		}
 	} else {
@@ -568,8 +581,7 @@ func (s *deviceStore) revokeFromDevice(id string) error {
 	rec.Revision++
 	rec.UpdatedAt = time.Now().UTC()
 	appendDeviceAudit(&rec, "device", "unpaired", "")
-	s.records[id] = rec
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveRecordLocked(rec); err != nil {
 		return err
 	}
 	s.signalLocked()

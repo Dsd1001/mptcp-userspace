@@ -8,8 +8,24 @@ const (
 	controlBurstLimit   = 16
 )
 
+// A Carrier with a Socket write stalled past the round-trip response horizon
+// cannot promptly carry additional WINDOW/OPEN/FIN controls. Only Weighted
+// uses this backpressure hint; other modes keep their established routing.
+// Directed DATA ACK/PING/PONG never go through this generic helper.
+func (s *Session) controlWriterStalled(c *carrier, now time.Time) bool {
+	if c == nil || s.scheduler.configured != SchedulerWeighted {
+		return false
+	}
+	started := c.writeStartedNS.Load()
+	if started == 0 {
+		return false
+	}
+	return now.Sub(time.Unix(0, started)) >= max(100*time.Millisecond, 2*c.minRTT)
+}
+
 // Control packets do not borrow DATA's pending or carrier-flight budget.
 func (s *Session) dispatchControlsLocked() {
+	now := time.Now()
 	for count := 0; count < 128 && s.controlReady.Len() > 0; count++ {
 		p := s.controlReady.Front().Value.(*outbound)
 		var best *carrier
@@ -17,7 +33,11 @@ func (s *Session) dispatchControlsLocked() {
 			if !c.active || len(c.reliableControl) >= controlCarrierQueue || c.controlOutstanding+p.cost > controlPathBudget {
 				continue
 			}
-			if best == nil || c.controlOutstanding < best.controlOutstanding || (c.controlOutstanding == best.controlOutstanding && c.id < best.id) {
+			candidateStalled := s.controlWriterStalled(c, now)
+			bestStalled := s.controlWriterStalled(best, now)
+			if best == nil || (bestStalled && !candidateStalled) ||
+				(bestStalled == candidateStalled && (c.controlOutstanding < best.controlOutstanding ||
+					(c.controlOutstanding == best.controlOutstanding && c.id < best.id))) {
 				best = c
 			}
 		}
@@ -61,7 +81,12 @@ func (c *carrier) releaseQueued(p *outbound) {
 // ready DATA a turn after at most 16 controls. This bounds mutual starvation
 // without creating another payload copy or waiting to assemble a batch.
 func (s *Session) writeCarrier(c *carrier) {
-	streak, turn := 0, 0
+	streak, turn, firstDataBurst := 0, 0, 0
+	// Reuse the batch backing array across writes. writeFrames consumes the
+	// slice synchronously while holding the connection's transmit lock, so the
+	// carrier writer can safely retain this capacity without another allocation
+	// per batch.
+	frames := make([]frame, 0, carrierBatchFrames)
 	next := func(block bool) (frame, sendTask, bool, bool) {
 		if streak >= controlBurstLimit {
 			select {
@@ -92,9 +117,28 @@ func (s *Session) writeCarrier(c *carrier) {
 			return frame{}, task, true, true
 		default:
 		}
+		// A burst of first-DATA frames may never starve regular Bulk.
+		// Reliable controls are always checked before either DATA class.
+		if firstDataBurst >= 4 {
+			select {
+			case task := <-c.queue:
+				streak = 0
+				firstDataBurst = 0
+				return frame{}, task, true, true
+			default:
+			}
+		}
+		select {
+		case task := <-c.priorityDATA:
+			streak = 0
+			firstDataBurst++
+			return frame{}, task, true, true
+		default:
+		}
 		select {
 		case task := <-c.queue:
 			streak = 0
+			firstDataBurst = 0
 			return frame{}, task, true, true
 		default:
 		}
@@ -112,8 +156,13 @@ func (s *Session) writeCarrier(c *carrier) {
 		case task := <-c.reliableControl:
 			streak++
 			return frame{}, task, true, true
+		case task := <-c.priorityDATA:
+			streak = 0
+			firstDataBurst++
+			return frame{}, task, true, true
 		case task := <-c.queue:
 			streak = 0
+			firstDataBurst = 0
 			return frame{}, task, true, true
 		}
 	}
@@ -129,7 +178,7 @@ func (s *Session) writeCarrier(c *carrier) {
 		if !ok {
 			return
 		}
-		frames := make([]frame, 0, 16)
+		frames = frames[:0]
 		wire, payload := 0, 0
 		for {
 			valid := true
@@ -194,10 +243,16 @@ func (s *Session) writeCarrier(c *carrier) {
 			s.carrierFailure(c, err)
 			return
 		}
-		if err := c.conn.writeFrames(frames); err != nil {
-			s.carrierFailure(c, err)
+		c.writeStartedNS.Store(time.Now().UnixNano())
+		writeErr := c.conn.writeFrames(frames)
+		c.writeStartedNS.Store(0)
+		if writeErr != nil {
+			s.carrierFailure(c, writeErr)
 			return
 		}
+		// Pending DATA owns retransmission payloads. The reusable batch should
+		// not keep acknowledged payloads alive while the carrier is idle.
+		clear(frames)
 		s.mu.Lock()
 		c.sent += uint64(payload)
 		s.mu.Unlock()

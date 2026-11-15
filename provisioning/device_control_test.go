@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,6 +39,119 @@ func deviceRequest(t *testing.T, client *http.Client, method, rawURL, id, secret
 		t.Fatal(err)
 	}
 	return resp
+}
+
+func faultedDeviceStore(t *testing.T) (*deviceStore, string, adminDevice) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "devices.json")
+	store, err := newDeviceStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.create("Faulted", "", "", "stopped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return store, path, created
+}
+
+func assertDevicePersistFailurePreserves(t *testing.T, before deviceRecord, store *deviceStore, path string) {
+	t.Helper()
+	after, ok := store.get(before.ID)
+	if !ok || after.Revision != before.Revision || after.Name != before.Name || after.SecretHash != before.SecretHash || after.PairingHash != before.PairingHash || after.Revoked != before.Revoked || after.RestartGeneration != before.RestartGeneration || after.SyncGeneration != before.SyncGeneration || after.UpdateGeneration != before.UpdateGeneration || !reflect.DeepEqual(after.Audit, before.Audit) {
+		t.Fatalf("failed mutation changed in-memory record: before=%+v after=%+v", before, after)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := newDeviceStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reloaded.get(before.ID)
+	if !ok || string(raw) == "" || got.Revision != before.Revision || got.Name != before.Name || got.SecretHash != before.SecretHash || got.PairingHash != before.PairingHash || got.Revoked != before.Revoked || !reflect.DeepEqual(got.Audit, before.Audit) {
+		t.Fatalf("failed mutation changed persisted record: before=%+v got=%+v", before, got)
+	}
+}
+
+func TestDeviceMutatorsAreFailureAtomic(t *testing.T) {
+	t.Run("update", func(t *testing.T) {
+		store, path, created := faultedDeviceStore(t)
+		before, _ := store.get(created.ID)
+		_, err := store.update(created.ID, adminDeviceInput{Name: "changed", DesiredState: "running"})
+		if err == nil {
+			t.Fatal("update unexpectedly succeeded")
+		}
+		assertDevicePersistFailurePreserves(t, before, store, path)
+	})
+	t.Run("new-pairing", func(t *testing.T) {
+		store, path, created := faultedDeviceStore(t)
+		before, _ := store.get(created.ID)
+		_, err := store.newPairing(created.ID)
+		if err == nil {
+			t.Fatal("newPairing unexpectedly succeeded")
+		}
+		assertDevicePersistFailurePreserves(t, before, store, path)
+	})
+	t.Run("delete", func(t *testing.T) {
+		store, path, created := faultedDeviceStore(t)
+		before, _ := store.get(created.ID)
+		if err := store.delete(created.ID); err == nil {
+			t.Fatal("delete unexpectedly succeeded")
+		}
+		assertDevicePersistFailurePreserves(t, before, store, path)
+	})
+	t.Run("restart-sync-update", func(t *testing.T) {
+		for _, name := range []string{"restart", "sync", "update"} {
+			t.Run(name, func(t *testing.T) {
+				store, path, created := faultedDeviceStore(t)
+				before, _ := store.get(created.ID)
+				var err error
+				switch name {
+				case "restart":
+					_, err = store.bumpRestart(created.ID)
+				case "sync":
+					_, err = store.bumpSync(created.ID)
+				default:
+					_, err = store.bumpUpdate(created.ID, "latest")
+				}
+				if err == nil {
+					t.Fatal(name, " unexpectedly succeeded")
+				}
+				assertDevicePersistFailurePreserves(t, before, store, path)
+			})
+		}
+	})
+	t.Run("pair", func(t *testing.T) {
+		store, path, created := faultedDeviceStore(t)
+		before, _ := store.get(created.ID)
+		_, err := store.pair(created.PairingCode, "paired", "1.0")
+		if err == nil {
+			t.Fatal("pair unexpectedly succeeded")
+		}
+		assertDevicePersistFailurePreserves(t, before, store, path)
+	})
+	t.Run("touch", func(t *testing.T) {
+		store, path, created := faultedDeviceStore(t)
+		before, _ := store.get(created.ID)
+		_, err := store.touch(created.ID, &deviceObserved{AppVersion: "1.0", Status: "running"})
+		if err == nil {
+			t.Fatal("touch unexpectedly succeeded")
+		}
+		assertDevicePersistFailurePreserves(t, before, store, path)
+	})
+	t.Run("revoke", func(t *testing.T) {
+		store, path, created := faultedDeviceStore(t)
+		before, _ := store.get(created.ID)
+		if err := store.revokeFromDevice(created.ID); err == nil {
+			t.Fatal("revoke unexpectedly succeeded")
+		}
+		assertDevicePersistFailurePreserves(t, before, store, path)
+	})
 }
 
 func TestDeviceControlPairDesiredReportAndRevoke(t *testing.T) {
