@@ -1446,7 +1446,7 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 	// Weighted DATA selection is work-conserving: only paths able to send
 	// DATA participate in cost ordering. Preserve legacy deferral semantics
 	// for the other scheduler modes.
-	if (s.scheduler.configured != SchedulerWeighted || herdGuard) && best != nil && bestScore > earliest+.025 {
+	if (s.scheduler.configured != SchedulerWeighted || (herdGuard && s.routeGroups == nil)) && best != nil && bestScore > earliest+.025 {
 		s.pathSelection.CostDeferral++
 		return nil
 	}

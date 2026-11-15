@@ -70,7 +70,7 @@ func runTunnelCommand(ctx context.Context, args []string, input io.Reader) error
 		}
 		return runSharedTunnel(ctx, SharedTunnelConfig(c))
 	case "run-bundle", "validate-bundle":
-		return errors.New("1.2.1 已移除独立 Profile/多组 MPX Bundle；请配置一个共享隧道和多个业务入口，不能自动合并旧的 Landing 密钥")
+		return errors.New("1.2.2 已移除独立 Profile/多组 MPX Bundle；请配置一个共享隧道和多个业务入口，不能自动合并旧的 Landing 密钥")
 	default:
 		return fmt.Errorf("unsupported tunnel command %q", command)
 	}

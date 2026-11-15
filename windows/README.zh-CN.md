@@ -1,4 +1,4 @@
-# MPTCP Tunnel for Windows 1.2.1
+# MPTCP Tunnel for Windows 1.2.2
 
 使用 Setup.exe 安装 GUI 与匹配的 mptcp-engine.exe，或解压 Portable.zip；不要混用不同 Source-ID 的 Engine。安装目录和更新身份保留 MPTCP Desk，以便沿用既有配置保护与升级路径。
 

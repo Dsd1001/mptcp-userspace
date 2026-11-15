@@ -286,7 +286,7 @@ def main() -> None:
             for name in ['README.zh-CN.md','VALIDATION.md','tunnel.example.json']:
                 if (resources/name).read_bytes()!=files['macos/'+name]:
                     raise ValueError('Packaged documentation/example differs: '+name)
-            for name in ['SHARED-TUNNEL-1.2.1.zh-CN.md','RELEASE-'+version+'.zh-CN.md','PROTOCOL.md','PROVISIONING.md']:
+            for name in ['SHARED-TUNNEL-1.2.2.zh-CN.md','RELEASE-'+version+'.zh-CN.md','PROTOCOL.md','PROVISIONING.md']:
                 if (resources/'docs/userspace'/name).read_bytes()!=files['docs/userspace/'+name]:
                     raise ValueError('Packaged protocol/deployment documentation differs')
             # Only the shared tunnel schema is a supported product interface.

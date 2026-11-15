@@ -127,7 +127,7 @@ for name in README.zh-CN.md VALIDATION.md tunnel.example.json; do
     cp "$ROOT/macos/$name" "$STAGE/$name"
 done
 mkdir -p "$APP/Contents/Resources/docs/userspace" "$STAGE/docs/userspace"
-for name in SHARED-TUNNEL-1.2.1.zh-CN.md RELEASE-1.2.1.zh-CN.md PROTOCOL.md PROVISIONING.md; do
+for name in SHARED-TUNNEL-1.2.2.zh-CN.md RELEASE-1.2.2.zh-CN.md PROTOCOL.md PROVISIONING.md; do
     cp "$ROOT/docs/userspace/$name" "$APP/Contents/Resources/docs/userspace/"
     cp "$ROOT/docs/userspace/$name" "$STAGE/docs/userspace/"
 done

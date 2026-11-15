@@ -131,7 +131,7 @@ def main() -> None:
     for name in (*[b+'.sha256' for b in NATIVE_BINARIES], 'SOURCE_ID', 'SOURCE_SHA256SUMS', 'TESTS.json', 'PROVENANCE.json'):
         release[name] = safe_file(out, name).read_bytes()
     release.update(evidence)
-    for name in ('RELEASE-'+version+'.zh-CN.md', 'SHARED-TUNNEL-1.2.1.zh-CN.md', 'PROVISIONING.md', 'PROTOCOL.md'):
+    for name in ('RELEASE-'+version+'.zh-CN.md', 'SHARED-TUNNEL-1.2.2.zh-CN.md', 'PROVISIONING.md', 'PROTOCOL.md'):
         release['docs/'+name] = safe_file(ROOT/'docs/userspace', name).read_bytes()
     release['examples/client.json'] = safe_file(ROOT, 'examples/shared-tunnel/client.example.json').read_bytes()
     release['examples/egress.json'] = safe_file(ROOT, 'examples/shared-tunnel/egress.example.json').read_bytes()

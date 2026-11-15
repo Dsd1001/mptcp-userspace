@@ -1,4 +1,4 @@
-# MPTCP Tunnel 1.2.1
+# MPTCP Tunnel 1.2.2
 
 One shared MPX/4 Session, multiple business inlets, and up to eight ordinary TCP Carriers. macOS, Windows and Linux share the Go engine. Every business TCP connection uses an independent MPX Stream; routed UDP-over-TCP associations share the same Session. The common tunnel egress connects allowlisted ordinary TCP/UDP backends. There is no nested MPX or additional smux layer.
 
