@@ -26,17 +26,17 @@ func TestWO01B1Synchronous150SharedBudgetAndCancellationCleanup(t *testing.T) {
 			t.Fatalf("queue %d failed", i)
 		}
 	}
-	if s.firstDataTokenCapLocked() != firstDataTokenCapBusy {
-		t.Fatal("unbounded concurrent OPEN burst")
+	if s.firstDataTokenCapLocked() != firstDataTokenCapNormal {
+		t.Fatal("150 connections unexpectedly reduced first-DATA token cap")
 	}
 	if s.fastReady.Len() != 150 {
 		t.Fatalf("fast ring len=%d", s.fastReady.Len())
 	}
 	s.dispatchLocked(time.Now())
-	if s.firstDataPromoted > 1 {
+	if s.firstDataPromoted > uint64(cap(c.priorityDATA)) {
 		t.Fatalf("first DATA storm promoted=%d", s.firstDataPromoted)
 	}
-	if s.firstDataTokens < 0 || s.firstDataTokens > firstDataTokenCapBusy {
+	if s.firstDataTokens < 0 || s.firstDataTokens > firstDataTokenCapNormal {
 		t.Fatalf("shared tokens out of bound %d", s.firstDataTokens)
 	}
 	// Cancel all unsent data; neither the normal nor fast ring retains any
@@ -48,7 +48,7 @@ func TestWO01B1Synchronous150SharedBudgetAndCancellationCleanup(t *testing.T) {
 		t.Fatalf("leaked ready queues: fast=%d fair=%d ready=%d pending=%d",
 			s.fastReady.Len(), s.readyStreams.Len(), s.readyFrames, len(s.pending))
 	}
-	if s.firstDataTokens < 0 || s.firstDataTokens > firstDataTokenCapBusy {
+	if s.firstDataTokens < 0 || s.firstDataTokens > firstDataTokenCapNormal {
 		t.Fatalf("cancellation overflowed shared tokens %d", s.firstDataTokens)
 	}
 	_ = c
@@ -130,28 +130,26 @@ func TestWO01B1OtherModesNeverPromote(t *testing.T) {
 	}
 }
 
-// Under 150 synchronized OPENs, no DATA receives startup priority. This is a
-// safety fallback, not a fifth scheduler mode; normal round-robin still runs.
-func TestWO01B1HerdGuardDefersFastPriority(t *testing.T) {
-	s, _ := wo01B1Session()
+// Many established connections never silently disable the bounded first
+// DATA lane; carrier priority slots and token quotas still limit dispatch.
+func TestWO01B1150ConnectedStreamsRetainBoundedPriority(t *testing.T) {
+	s, c := wo01B1Session()
 	for i := 0; i < 150; i++ {
 		id := uint64(1 + 2*i)
 		s.streams[id] = &Stream{s: s, id: id}
 	}
 	p := s.queueLocked(frame{kind: kindData, stream: 1, offset: 0, data: make([]byte, MaxPayload)})
 	if p == nil {
-		t.Fatal("failed to enqueue first data")
+		t.Fatal("enqueue failed")
 	}
-	if _, tokens := s.firstDataCandidateLocked(); tokens != 0 {
-		t.Fatal("150 synchronized Streams gained priority")
+	if rq, cost := s.firstDataCandidateLocked(); rq == nil || cost != p.cost {
+		t.Fatal("connected Stream count incorrectly suppressed first DATA")
 	}
-	if !s.weightedHerdGuard {
-		t.Fatal("large fan-in guard did not latch")
+	s.dispatchLocked(time.Now())
+	if !p.firstDataTokenCharged || s.firstDataPromoted != 1 || len(c.priorityDATA) != 1 {
+		t.Fatal("bounded first DATA priority not granted")
 	}
-	for i := 0; i < 119; i++ {
-		delete(s.streams, uint64(1+2*i))
-	}
-	if _, tokens := s.firstDataCandidateLocked(); tokens != p.cost {
-		t.Fatalf("small demand did not recover bounded fast priority: tokens=%d cost=%d", tokens, p.cost)
+	if s.firstDataTokens < 0 || s.firstDataTokens > firstDataTokenCapNormal {
+		t.Fatal("first DATA tokens out of normal bounds")
 	}
 }

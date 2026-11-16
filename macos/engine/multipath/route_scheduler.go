@@ -16,6 +16,7 @@ type routeGroup struct {
 	id                                                        uint32
 	weight                                                    int
 	ready                                                     list.List
+	firstReady                                                list.List // per-route first DATA
 	entry                                                     *list.Element
 	deficit                                                   int
 	readyBytes                                                int

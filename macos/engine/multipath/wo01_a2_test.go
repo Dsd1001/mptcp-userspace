@@ -13,7 +13,7 @@ func TestWO01A2LoadedACKRTTDoesNotInflateFlight(t *testing.T) {
 	c.deliverySamples = 4
 	c.goodput = c.configuredRateBPS
 	now := time.Now()
-	legacy := weightedFlightBudget(c, c.configuredRateBPS)
+	legacy := legacyWeightedFlightBudgetForTest(c, c.configuredRateBPS)
 	adaptive := weightedAdaptiveFlightBudget(c, c.configuredRateBPS, now)
 	if adaptive >= legacy {
 		t.Fatalf("loaded ACK inflated budget: adaptive=%d legacy=%d", adaptive, legacy)

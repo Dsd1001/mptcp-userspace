@@ -67,7 +67,8 @@ func (s *Session) signalQueueAdmissionLocked(freedBytes int) {
 		// Match the next DATA chunk, including Stream/Session WINDOWs and
 		// negotiated Frame/Record size. A full MaxPayload is not required.
 		n, reason := st.writePeerAllowanceLocked()
-		if reason != waitNone || n <= 0 || s.queueAdmissionCeilingLocked(st)-virtualReady-64 < n {
+		if reason != waitNone || n <= 0 || s.queueAdmissionCeilingLocked(st)-virtualReady-64 < n ||
+			(s.routeGroups != nil && s.routeAdmissionRoomLocked(st) < n) {
 			continue
 		}
 		if s.signalStreamWriterLocked(st) {

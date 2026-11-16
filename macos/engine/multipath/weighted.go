@@ -59,25 +59,6 @@ func (p PathCapacity) txRateBPS(server bool) float64 {
 	return configuredRateBPS(p.UploadMbps)
 }
 
-func weightedFlightBudget(c *carrier, rate float64) int {
-	if rate <= 0 {
-		return c.flightBudget()
-	}
-	rtt := c.minRTT
-	if rtt <= 0 {
-		rtt = c.rtt
-	}
-	rtt = min(time.Second, max(time.Millisecond, rtt))
-
-	// Legacy 0.10.x Weighted behavior: let real MPX receipt feedback enlarge
-	// flight beyond the propagation-RTT BDP, but cap that influence at 4x the
-	// base RTT. This avoids both extremes we saw in 1.0.x: a hard minRTT ceiling
-	// that starves delayed feedback, and an unbounded load-RTT feedback loop.
-	feedback := min(4*rtt, max(rtt, c.rtt))
-	desired := int(rate*(1.25*feedback.Seconds()+.015)) + 2*MaxPayload
-	return min(maxPathBudget, max(initialPathBudget, desired))
-}
-
 // weightedAdaptiveTargetBudget uses the unloaded propagation RTT rather than
 // loaded ACK RTT. Configured Mbps is an upper prior, never guaranteed capacity.
 // Three actual delivered-rate epochs are required before applying a measured
@@ -144,21 +125,4 @@ func weightedAdaptiveFlightBudget(c *carrier, rate float64, now time.Time) int {
 	c.weightedAdaptiveBudget = min(maxPathBudget, max(initialPathBudget, c.weightedAdaptiveBudget))
 	c.weightedAdaptiveAt = now
 	return c.weightedAdaptiveBudget
-}
-
-// weightedHerdGuardLocked latches a conservative policy across the full
-// lifetime of synchronized bulk fan-in, avoiding abrupt priority/flight mode
-// oscillation as individual Streams complete. This changes no wire semantics.
-func (s *Session) weightedHerdGuardLocked() bool {
-	if s.scheduler.configured != SchedulerWeighted {
-		return false
-	}
-	if s.weightedHerdGuard {
-		if len(s.streams) < 32 {
-			s.weightedHerdGuard = false
-		}
-	} else if len(s.streams) >= 64 {
-		s.weightedHerdGuard = true
-	}
-	return s.weightedHerdGuard
 }

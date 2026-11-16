@@ -12,7 +12,7 @@ const (
 )
 
 func (s *Session) firstDataTokenCapLocked() int {
-	if len(s.streams) >= 64 || s.readyDataBytes >= 8<<20 {
+	if s.readyDataBytes >= 8<<20 {
 		return firstDataTokenCapBusy
 	}
 	return firstDataTokenCapNormal
@@ -28,9 +28,34 @@ func (s *Session) initFirstDataTokensLocked() {
 	}
 }
 
+// Within a DRR-selected route only, prefer its first DATA over bulk. The
+// candidate must fit the selected route's existing deficit; no extra route
+// turn, credit, DATA copy, or ACK-based token is invented.
+func (s *Session) routedFirstDataCandidateLocked(r *routeGroup) (*dataReadyQueue, int) {
+	if s.scheduler.configured != SchedulerWeighted || r == nil || r.firstReady.Len() == 0 {
+		return nil, 0
+	}
+	s.initFirstDataTokensLocked()
+	rq := r.firstReady.Front().Value.(*dataReadyQueue)
+	if rq.frames.Len() == 0 {
+		return nil, 0
+	}
+	p := rq.frames.Front().Value.(*outbound)
+	if p.f.offset != 0 || p.generation != 0 {
+		return nil, 0
+	}
+	if p.cost > r.deficit {
+		return nil, 0
+	}
+	if p.cost > s.firstDataTokens {
+		s.firstDataFairFallbacks++
+		return nil, 0
+	}
+	return rq, p.cost
+}
+
 func (s *Session) firstDataCandidateLocked() (*dataReadyQueue, int) {
-	if s.scheduler.configured != SchedulerWeighted ||
-		s.weightedHerdGuardLocked() || s.fastReady.Len() == 0 {
+	if s.scheduler.configured != SchedulerWeighted || s.fastReady.Len() == 0 {
 		return nil, 0
 	}
 	s.initFirstDataTokensLocked()
@@ -71,8 +96,7 @@ func (s *Session) firstDataOnReceiptLocked(p *outbound) {
 // DATA-class fairness rule. A saturated normal flight must not stop an
 // eligible short request or response from claiming its bounded bypass slot.
 func (s *Session) firstDataCarrierLocked(p *outbound, now time.Time) *carrier {
-	if s.scheduler.configured != SchedulerWeighted ||
-		s.weightedHerdGuardLocked() || p == nil || p.f.kind != kindData ||
+	if s.scheduler.configured != SchedulerWeighted || p == nil || p.f.kind != kindData ||
 		p.f.offset != 0 || p.generation != 0 {
 		return nil
 	}

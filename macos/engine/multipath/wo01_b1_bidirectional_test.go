@@ -40,7 +40,7 @@ func TestWO01B1ClientAutoUploadUsesLegacyFairPath(t *testing.T) {
 	}
 }
 
-func TestWO01B1Client150HerdNeverGetsFastPath(t *testing.T) {
+func TestWO01B1Client150ConnectionsStillGetsBoundedFastPath(t *testing.T) {
 	s, c := wo01B1Session()
 	s.server = false
 	for i := 0; i < 150; i++ {
@@ -52,7 +52,7 @@ func TestWO01B1Client150HerdNeverGetsFastPath(t *testing.T) {
 		t.Fatal("queue failed")
 	}
 	s.dispatchLocked(time.Now())
-	if len(c.priorityDATA) != 0 || s.firstDataPromoted != 0 || !s.weightedHerdGuard {
-		t.Fatalf("150 client OPEN storm escaped herd guard: prio=%d promoted=%d guard=%v", len(c.priorityDATA), s.firstDataPromoted, s.weightedHerdGuard)
+	if len(c.priorityDATA) != 1 || s.firstDataPromoted != 1 || !p.firstDataTokenCharged {
+		t.Fatalf("large connected set denied bounded first DATA: priority=%d promoted=%d", len(c.priorityDATA), s.firstDataPromoted)
 	}
 }

@@ -40,6 +40,8 @@ type Stream struct {
 	openWake, readWake, writeWake                chan struct{}
 	writeWaiting                                 bool
 	writeWaitReason                              int
+	diagWriteWaits                               [10]creditWait
+	diagWriteWaitStarted                         time.Time
 	sendReset, sendResetQueued, sendResetACK     bool
 	sendResetCode                                uint64
 	receiveStopped, stopQueued                   bool
@@ -579,14 +581,23 @@ func (st *Stream) Write(p []byte) (int, error) {
 			s.windowBlockedWriters++
 		}
 		s.credit.waits[reason].Count++
+		if reason > waitNone && reason < len(st.diagWriteWaits) {
+			st.diagWriteWaits[reason].Count++
+		}
 		started := time.Now()
+		st.diagWriteWaitStarted = started
 		deadline := st.writeDeadline
 		targeted, global := s.beginWriterWaitLocked(st, reason), s.changed
 		s.mu.Unlock()
 		err := waitTargetedChange(s.ctx, targeted, global, deadline)
 		s.mu.Lock()
 		s.endWriterWaitLocked(st)
-		s.credit.waits[reason].NS += uint64(time.Since(started))
+		elapsed := uint64(time.Since(started))
+		s.credit.waits[reason].NS += elapsed
+		if reason > waitNone && reason < len(st.diagWriteWaits) {
+			st.diagWriteWaits[reason].NS += elapsed
+		}
+		st.diagWriteWaitStarted = time.Time{}
 		if blocked {
 			s.windowBlockedWriters--
 		}

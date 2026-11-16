@@ -681,6 +681,9 @@ func (s *Session) readyLocked(p *outbound, front bool) {
 	if s.scheduler.configured == SchedulerWeighted && p.f.offset == 0 && p.generation == 0 &&
 		rq.fastEntry == nil && rq.frames.Front() != nil && rq.frames.Front().Value == p {
 		rq.fastEntry = s.fastReady.PushBack(rq)
+		if rq.route != nil {
+			rq.routeFastEntry = rq.route.firstReady.PushBack(rq)
+		}
 	}
 	if rq.frames.Len() >= 4 {
 		s.bulkReady = rq
@@ -710,6 +713,10 @@ func (s *Session) unreadyLocked(p *outbound) {
 			top.Value.(*outbound).generation != 0 {
 			s.fastReady.Remove(rq.fastEntry)
 			rq.fastEntry = nil
+			if rq.routeFastEntry != nil {
+				rq.route.firstReady.Remove(rq.routeFastEntry)
+				rq.routeFastEntry = nil
+			}
 		}
 	}
 	if s.readyFrames > 0 {
@@ -838,6 +845,14 @@ func (s *Session) dispatchLocked(now time.Time) {
 		rq := s.nextDataReadyLocked()
 		if rq == nil {
 			return
+		}
+		if s.routeGroups != nil && rq.route != nil {
+			if fastRQ, charge := s.routedFirstDataCandidateLocked(rq.route); fastRQ != nil && charge > 0 {
+				if !dispatchOne(fastRQ, true, true) {
+					return
+				}
+				continue
+			}
 		}
 		if !dispatchOne(rq, true, false) {
 			return

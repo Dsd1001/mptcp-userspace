@@ -288,6 +288,11 @@ func (srv *Server) openRoutedBackend(st *Stream, kind byte, finish func(byte)) {
 		return
 	}
 	defer c.Close()
+	if kind == productServiceRoutedTCP {
+		// Optional bounded boost for high-throughput routed backend TCP reads.
+		// Disabled by default to retain kernel receive-buffer autotuning.
+		tuneRoutedBackendReadBuffer(c)
+	}
 	// Re-arm after dialing so a slow but successful dial can still report its
 	// result. A failed route never replays bytes to another backend.
 	st.SetDeadline(time.Now().Add(productServiceResponseTimeout))

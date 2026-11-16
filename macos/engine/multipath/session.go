@@ -46,7 +46,8 @@ type PathStats struct {
 }
 
 type Stats struct {
-	Routes []RouteStats `json:"routes,omitempty"`
+	Routes     []RouteStats      `json:"routes,omitempty"`
+	HotStreams []StreamFlowStats `json:"active_send_streams,omitempty"`
 	SchedulerStats
 	Paths                   int            `json:"paths"`
 	Connections             int            `json:"connections"`
@@ -95,12 +96,13 @@ type outbound struct {
 }
 
 type dataReadyQueue struct {
-	route      *routeGroup
-	routeEntry *list.Element
-	stream     uint64
-	frames     list.List
-	entry      *list.Element
-	fastEntry  *list.Element
+	route          *routeGroup
+	routeEntry     *list.Element
+	stream         uint64
+	frames         list.List
+	entry          *list.Element
+	fastEntry      *list.Element
+	routeFastEntry *list.Element // only Routed Weighted first DATA
 }
 
 type sendTask struct {
@@ -236,7 +238,6 @@ type Session struct {
 	receiveGrowth                                    int
 	dataPendingFrames, controlPendingFrames          int
 	dataPendingBytes, controlPendingBytes            int
-	weightedHerdGuard                                bool
 	windowBlockedWriters                             int
 	pendingWaiters, creditWaiters, writerTurnWaiters int
 	bootstrapWriters                                 int
@@ -483,6 +484,7 @@ func (s *Session) stop(err error) {
 	s.routeLogicalProtected, s.routePhysicalProtected = 0, 0
 	for _, r := range s.routeGroups {
 		r.ready.Init()
+		r.firstReady.Init()
 		r.entry = nil
 		r.deficit = 0
 		r.readyBytes = 0
@@ -1360,7 +1362,6 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 	// Independent of per-Carrier budgets: never allow the sum of all
 	// configured Weighted flights to grow beyond a bounded Session envelope.
 	// The 48 MiB cap still accommodates six 300ms-one-way paths at 92Mbps.
-	herdGuard := s.weightedHerdGuardLocked()
 	if s.scheduler.configured == SchedulerWeighted {
 		totalFlight := 0
 		for _, path := range s.paths {
@@ -1415,11 +1416,7 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		// budget. Filling a slow carrier's OS send buffer creates avoidable HOL.
 		budget := c.flightBudget()
 		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
-			if herdGuard {
-				budget = weightedFlightBudget(c, c.configuredRateBPS)
-			} else {
-				budget = weightedAdaptiveFlightBudget(c, c.configuredRateBPS, now)
-			}
+			budget = weightedAdaptiveFlightBudget(c, c.configuredRateBPS, now)
 		}
 		if c.outstanding >= budget {
 			c.budgetLimited = true
@@ -1434,7 +1431,7 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 		}
 		// A blocked Socket writer is not an available DATA path even when
 		// the application queue has spare slots. Control routing is unchanged.
-		if s.scheduler.configured == SchedulerWeighted && !herdGuard && s.controlWriterStalled(c, now) {
+		if s.scheduler.configured == SchedulerWeighted && s.controlWriterStalled(c, now) {
 			writerStallBlocked++
 			continue
 		}
@@ -1446,7 +1443,7 @@ func (s *Session) aggregatePathLocked(now time.Time, restricted bool) *carrier {
 	// Weighted DATA selection is work-conserving: only paths able to send
 	// DATA participate in cost ordering. Preserve legacy deferral semantics
 	// for the other scheduler modes.
-	if (s.scheduler.configured != SchedulerWeighted || (herdGuard && s.routeGroups == nil)) && best != nil && bestScore > earliest+.025 {
+	if s.scheduler.configured != SchedulerWeighted && best != nil && bestScore > earliest+.025 {
 		s.pathSelection.CostDeferral++
 		return nil
 	}
@@ -1603,6 +1600,7 @@ func (s *Session) Snapshot() Stats {
 	out.StandbyWindow = s.standbyWindowLocked()
 	out.Resources = s.resourceSnapshotLocked()
 	out.Routes = s.routeSnapshotLocked()
+	out.HotStreams = s.hotStreamSnapshotLocked(now)
 	out.Lifecycle = s.lifecycleSnapshotLocked()
 	out.ReadyFrames = s.controlReady.Len() + s.readyFrames
 	for _, st := range s.streams {
@@ -1617,13 +1615,9 @@ func (s *Session) Snapshot() Stats {
 		measured, validSamples := schedulerMeasuredRate(c)
 		budget := c.flightBudget()
 		if s.scheduler.configured == SchedulerWeighted && c.configuredRateBPS > 0 {
-			if s.weightedHerdGuard {
-				budget = weightedFlightBudget(c, c.configuredRateBPS)
-			} else {
-				budget = c.weightedAdaptiveBudget
-				if budget <= 0 {
-					budget = weightedAdaptiveTargetBudget(c, c.configuredRateBPS, now)
-				}
+			budget = c.weightedAdaptiveBudget
+			if budget <= 0 {
+				budget = weightedAdaptiveTargetBudget(c, c.configuredRateBPS, now)
 			}
 		}
 		out.PathStats = append(out.PathStats, PathStats{MeasuredDeliveryBPS: measured, ValidDeliverySamples: validSamples, Role: c.scheduler.role, RoleReason: c.scheduler.lastRoleReason, DeliverySamples: c.deliverySamples, SchedulerProbeCount: c.scheduler.probeCount, SchedulerProbeBytes: c.scheduler.probeBytes, SchedulerProbeDebtPeak: c.scheduler.probeDebtPeak, SchedulerDataACKs: c.scheduler.dataACKs, ID: int(c.id), Address: c.address, Connected: c.active, Sent: c.sent, Received: c.received, RTTMS: float64(c.rtt) / float64(time.Millisecond), GoodputBPS: c.goodput, ConfiguredRateBPS: c.configuredRateBPS, Outstanding: c.outstanding, Queue: c.queued, Errors: c.errors, LastError: c.lastError, Budget: budget, DialAttempts: c.dialAttempts, Connections: c.connects, ConnectedAt: c.connectedAt, DisconnectedAt: c.disconnectedAt, ControlOutstanding: c.controlOutstanding, ControlQueue: c.controlQueued + 64*len(c.control)})

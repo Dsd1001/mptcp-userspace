@@ -204,7 +204,7 @@ func TestWeightedUploadAutoUsesLearnedFlight(t *testing.T) {
 	if got := s.pathLocked(time.Now()); got != c {
 		t.Fatal("upload-auto weighted path became unusable")
 	}
-	if weightedFlightBudget(c, 0) != c.flightBudget() {
+	if legacyWeightedFlightBudgetForTest(c, 0) != c.flightBudget() {
 		t.Fatal("upload-auto did not preserve learned flight")
 	}
 }
@@ -216,7 +216,7 @@ func TestWeightedFeedbackRTTTracksLoadWithinLegacyBound(t *testing.T) {
 	rate := configuredRateBPS(94)
 	want := int(rate*(1.25*(80*time.Millisecond).Seconds()+.015)) + 2*MaxPayload
 	want = min(maxPathBudget, max(initialPathBudget, want))
-	if got := weightedFlightBudget(c, rate); got != want {
+	if got := legacyWeightedFlightBudgetForTest(c, rate); got != want {
 		t.Fatalf("weighted feedback flight=%d want=%d", got, want)
 	}
 }
@@ -229,7 +229,27 @@ func TestWeightedFeedbackRTTIsCappedAtFourTimesBase(t *testing.T) {
 	// Legacy 0.10.x behavior caps feedback at 4 * base RTT = 120 ms.
 	want := int(rate*(1.25*(120*time.Millisecond).Seconds()+.015)) + 2*MaxPayload
 	want = min(maxPathBudget, max(initialPathBudget, want))
-	if got := weightedFlightBudget(c, rate); got != want {
+	if got := legacyWeightedFlightBudgetForTest(c, rate); got != want {
 		t.Fatalf("weighted capped flight=%d want=%d", got, want)
 	}
+}
+
+// Legacy algorithm kept only as a historical unit-test reference.
+func legacyWeightedFlightBudgetForTest(c *carrier, rate float64) int {
+	if rate <= 0 {
+		return c.flightBudget()
+	}
+	rtt := c.minRTT
+	if rtt <= 0 {
+		rtt = c.rtt
+	}
+	rtt = min(time.Second, max(time.Millisecond, rtt))
+
+	// Legacy 0.10.x Weighted behavior: let real MPX receipt feedback enlarge
+	// flight beyond the propagation-RTT BDP, but cap that influence at 4x the
+	// base RTT. This avoids both extremes we saw in 1.0.x: a hard minRTT ceiling
+	// that starves delayed feedback, and an unbounded load-RTT feedback loop.
+	feedback := min(4*rtt, max(rtt, c.rtt))
+	desired := int(rate*(1.25*feedback.Seconds()+.015)) + 2*MaxPayload
+	return min(maxPathBudget, max(initialPathBudget, desired))
 }
